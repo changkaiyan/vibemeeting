@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Smart Meeting Room</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body class="meeting-body">
+  <main class="meeting-shell">
+    <header class="meeting-topbar">
+      <div>
+        <h1 id="meetingTitle" class="meeting-title">Meeting Room</h1>
+        <p id="meetingMeta" class="meeting-meta">Meeting ID: {{ meeting_id }}</p>
+      </div>
+      <div class="meeting-actions">
+        <button id="joinBtn" class="control-btn control-primary">Join</button>
+        <button id="joinMeetUiBtn" class="control-btn">Open LiveKit Meet UI</button>
+      </div>
+    </header>
+
+    <section class="meeting-main">
+      <section class="meeting-stage-wrap">
+        <div id="stageGrid" class="stage-grid">
+          <div class="tile placeholder-tile">
+            <div class="placeholder-content">
+              <p>No media yet</p>
+              <p class="hint-text">Click Join to enter the meeting</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <aside class="meeting-side">
+        <div class="side-card">
+          <h2>Participants</h2>
+          <p id="participantStats" class="side-subtitle">0 online</p>
+          <ul id="participantList" class="participant-list"></ul>
+        </div>
+        <div class="side-card">
+          <h2>Status</h2>
+          <p id="roomMessage" class="room-message">Ready</p>
+        </div>
+        <div class="side-card">
+          <h2>Chat</h2>
+          <div id="chatList" class="chat-list"></div>
+          <form id="chatForm" class="chat-form">
+            <input id="chatInput" name="content" placeholder="Type a message..." maxlength="2000" />
+            <button type="submit" class="control-btn control-primary">Send</button>
+          </form>
+        </div>
+      </aside>
+    </section>
+
+    <footer class="meeting-dock">
+      <button id="micBtn" class="dock-btn" disabled>Mute</button>
+      <button id="camBtn" class="dock-btn" disabled>Camera Off</button>
+      <button id="screenBtn" class="dock-btn" disabled>Share Screen</button>
+      <button id="leaveBtn" class="dock-btn danger" disabled>Leave</button>
+    </footer>
+  </main>
+
+  <script>
+    window.MEETING_ID = {{ meeting_id }};
+    window.LIVEKIT_MEET_URL = "{{ livekit_meet_url }}";
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
+  <script src="/static/meeting-room.js"></script>
+</body>
+</html>

@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>注册 - 智能会议</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body class="auth-body">
+  <main class="auth-shell">
+    <section class="auth-card">
+      <h1>创建账号</h1>
+      <p class="hint">注册后会自动创建你的组织工作空间</p>
+      <form method="post" class="auth-form">
+        {% csrf_token %}
+        {{ form.non_field_errors }}
+        <label class="auth-label">用户名</label>
+        {{ form.username }}
+        {{ form.username.errors }}
+        <label class="auth-label">邮箱</label>
+        {{ form.email }}
+        {{ form.email.errors }}
+        <label class="auth-label">密码</label>
+        {{ form.password1 }}
+        {{ form.password1.errors }}
+        <label class="auth-label">确认密码</label>
+        {{ form.password2 }}
+        {{ form.password2.errors }}
+        <button type="submit" class="auth-btn primary">注册并登录</button>
+      </form>
+      <p class="hint">已有账号？<a href="/accounts/login">去登录</a></p>
+    </section>
+  </main>
+</body>
+</html>

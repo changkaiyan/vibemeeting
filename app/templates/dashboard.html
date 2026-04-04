@@ -1,0 +1,450 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>会议控制台</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body class="console-body">
+  <main class="console-shell">
+    <header class="console-header">
+      <div>
+        <h1>会议控制台</h1>
+        <p class="hint">欢迎，{{ request.user.username }}。你可以创建、编辑、删除并管理会议属性。</p>
+      </div>
+      <div class="console-actions">
+        <a class="auth-btn" href="/admin/" target="_blank">后台管理</a>
+        <form id="logoutForm" method="post" action="/accounts/logout" class="inline-form">
+          {% csrf_token %}
+          <button type="submit" class="auth-btn">退出登录</button>
+        </form>
+      </div>
+    </header>
+
+    <section class="console-grid">
+      <div class="card console-wide">
+        <h2>创建会议</h2>
+        <form id="meetingForm" class="form-grid">
+          <input name="title" placeholder="会议标题" required />
+          <input name="description" placeholder="会议描述（可选）" />
+          <label>
+            开始时间
+            <input name="scheduled_start" type="datetime-local" />
+          </label>
+          <label>
+            会议周期
+            <select name="meeting_recurrence">
+              <option value="once" selected>一次</option>
+              <option value="daily">每天</option>
+              <option value="weekly">每周</option>
+              <option value="monthly">每月</option>
+            </select>
+          </label>
+          <label>
+            时区
+            <select name="meeting_timezone">
+              <option value="Asia/Shanghai" selected>东八区 (Asia/Shanghai)</option>
+              <option value="UTC">UTC</option>
+              <option value="Asia/Tokyo">日本 (Asia/Tokyo)</option>
+              <option value="America/Los_Angeles">美西 (America/Los_Angeles)</option>
+              <option value="America/New_York">美东 (America/New_York)</option>
+              <option value="Europe/London">英国 (Europe/London)</option>
+            </select>
+          </label>
+          <label>
+            时长(分钟)
+            <input name="duration_minutes" type="number" min="1" max="1440" value="30" />
+          </label>
+          <label>
+            人数上限
+            <input name="max_participants" type="number" min="2" max="10000" value="100" />
+          </label>
+          <label>
+            会议密码(可选)
+            <input name="meeting_password" type="text" maxlength="64" />
+          </label>
+          <label class="checkbox-row"><input name="waiting_room_enabled" type="checkbox" />开启等候室</label>
+          <label class="checkbox-row"><input name="mute_on_entry" type="checkbox" />入会默认禁言</label>
+          <label class="checkbox-row"><input name="allow_recording" type="checkbox" checked />允许录制</label>
+          <label class="checkbox-row"><input name="allow_screen_share" type="checkbox" checked />允许屏幕共享</label>
+          <label class="checkbox-row"><input name="allow_chat" type="checkbox" checked />允许聊天</label>
+          <button type="submit">创建会议</button>
+        </form>
+      </div>
+
+      <div class="card">
+        <h2>加入会议</h2>
+        <form id="joinMeetingForm">
+          <input name="meeting_id" placeholder="会议号（优先）" />
+          <input name="room_name" placeholder="或输入房间号 room-xxxx" />
+          <input name="meeting_password" placeholder="会议密码（如有）" />
+          <button type="submit">进入会议</button>
+        </form>
+      </div>
+
+      <div class="card">
+        <h2>Join Token 调试</h2>
+        <pre id="joinTokenBox"></pre>
+      </div>
+
+      <div class="card console-wide">
+        <div class="card-head">
+          <h2>我的会议</h2>
+          <button id="refreshMeetings" class="secondary-btn">刷新</button>
+        </div>
+        <ul id="meetingList" class="meeting-list"></ul>
+      </div>
+
+      <div class="card console-wide hidden" id="editSection">
+        <div class="card-head">
+          <h2>编辑会议</h2>
+          <button id="cancelEditBtn" class="secondary-btn">取消编辑</button>
+        </div>
+        <form id="editMeetingForm" class="form-grid">
+          <input type="hidden" name="meeting_id" />
+          <input name="title" placeholder="会议标题" required />
+          <input name="description" placeholder="会议描述（可选）" />
+          <label>
+            开始时间
+            <input name="scheduled_start" type="datetime-local" />
+          </label>
+          <label>
+            会议周期
+            <select name="meeting_recurrence">
+              <option value="once">一次</option>
+              <option value="daily">每天</option>
+              <option value="weekly">每周</option>
+              <option value="monthly">每月</option>
+            </select>
+          </label>
+          <label>
+            时区
+            <select name="meeting_timezone">
+              <option value="Asia/Shanghai">东八区 (Asia/Shanghai)</option>
+              <option value="UTC">UTC</option>
+              <option value="Asia/Tokyo">日本 (Asia/Tokyo)</option>
+              <option value="America/Los_Angeles">美西 (America/Los_Angeles)</option>
+              <option value="America/New_York">美东 (America/New_York)</option>
+              <option value="Europe/London">英国 (Europe/London)</option>
+            </select>
+          </label>
+          <label>
+            时长(分钟)
+            <input name="duration_minutes" type="number" min="1" max="1440" />
+          </label>
+          <label>
+            人数上限
+            <input name="max_participants" type="number" min="2" max="10000" />
+          </label>
+          <label>
+            设置新密码(留空则不修改)
+            <input name="meeting_password" type="text" maxlength="64" />
+          </label>
+          <label class="checkbox-row"><input name="clear_password" type="checkbox" />清空会议密码</label>
+          <label class="checkbox-row"><input name="waiting_room_enabled" type="checkbox" />开启等候室</label>
+          <label class="checkbox-row"><input name="mute_on_entry" type="checkbox" />入会默认禁言</label>
+          <label class="checkbox-row"><input name="allow_recording" type="checkbox" />允许录制</label>
+          <label class="checkbox-row"><input name="allow_screen_share" type="checkbox" />允许屏幕共享</label>
+          <label class="checkbox-row"><input name="allow_chat" type="checkbox" />允许聊天</label>
+          <button type="submit">保存修改</button>
+        </form>
+      </div>
+    </section>
+
+    <p id="message"></p>
+  </main>
+
+  <script>
+    const messageEl = document.getElementById("message");
+    const meetingList = document.getElementById("meetingList");
+    const joinTokenBox = document.getElementById("joinTokenBox");
+    const editSection = document.getElementById("editSection");
+    const editMeetingForm = document.getElementById("editMeetingForm");
+
+    function setMessage(text, isError = false) {
+      messageEl.textContent = text;
+      messageEl.style.color = isError ? "#b42318" : "#067647";
+    }
+
+    function saveToken(token) {
+      localStorage.setItem("access_token", token);
+    }
+
+    function readToken() {
+      return localStorage.getItem("access_token");
+    }
+
+    function clearToken() {
+      localStorage.removeItem("access_token");
+    }
+
+    async function fetchSessionToken(force = false) {
+      if (!force) {
+        const cached = readToken();
+        if (cached) return cached;
+      }
+      const res = await fetch("/auth/jwt", { credentials: "same-origin" });
+      if (!res.ok) {
+        clearToken();
+        throw new Error("会话已过期，请重新登录");
+      }
+      const data = await res.json();
+      saveToken(data.access_token);
+      return data.access_token;
+    }
+
+    async function api(url, options = {}, retry = true) {
+      const headers = options.headers || {};
+      const token = await fetchSessionToken(false);
+      headers["Authorization"] = `Bearer ${token}`;
+      if (!headers["Content-Type"] && options.body && !(options.body instanceof URLSearchParams)) {
+        headers["Content-Type"] = "application/json";
+      }
+
+      let res = await fetch(url, { ...options, headers, credentials: "same-origin" });
+      if (res.status === 401 && retry) {
+        const freshToken = await fetchSessionToken(true);
+        headers["Authorization"] = `Bearer ${freshToken}`;
+        res = await fetch(url, { ...options, headers, credentials: "same-origin" });
+      }
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: "请求失败" }));
+        throw new Error(err.detail || "请求失败");
+      }
+      return res.json();
+    }
+
+    function formValue(form, name) {
+      return (form.querySelector(`[name="${name}"]`)?.value || "").toString().trim();
+    }
+
+    function checkboxValue(form, name) {
+      return Boolean(form.querySelector(`[name="${name}"]`)?.checked);
+    }
+
+    function toIsoOrNull(datetimeLocalValue) {
+      if (!datetimeLocalValue) return null;
+      if (datetimeLocalValue.length === 16) {
+        return `${datetimeLocalValue}:00`;
+      }
+      return datetimeLocalValue;
+    }
+
+    function toDatetimeLocal(isoString) {
+      if (!isoString) return "";
+      const date = new Date(isoString);
+      if (Number.isNaN(date.getTime())) return "";
+      const offsetMs = date.getTimezoneOffset() * 60000;
+      const local = new Date(date.getTime() - offsetMs);
+      return local.toISOString().slice(0, 16);
+    }
+
+    function renderMeetingRow(m) {
+      const item = document.createElement("li");
+      item.className = "meeting-item";
+      item.innerHTML = `
+        <div>
+          <strong>${m.title}</strong>
+          <div class="meeting-meta-row">
+            <span>ID: ${m.id}</span>
+            <span>Room: ${m.room_name}</span>
+            <span>开始: ${m.scheduled_start || "未设置"}</span>
+            <span>周期: ${m.meeting_recurrence || "once"}</span>
+            <span>时区: ${m.meeting_timezone || "Asia/Shanghai"}</span>
+            <span>时长: ${m.duration_minutes} 分钟</span>
+            <span>上限: ${m.max_participants}</span>
+            <span>密码: ${m.has_password ? "已设置" : "无"}</span>
+          </div>
+        </div>
+        <div class="meeting-actions-row">
+          <button data-action="token" data-id="${m.id}">Token</button>
+          <button data-action="edit" data-id="${m.id}">编辑</button>
+          <button data-action="delete" data-id="${m.id}" class="danger-btn">删除</button>
+          <a class="inline-link" href="/meetings/${m.id}" target="_blank">进入会议页</a>
+        </div>
+      `;
+      return item;
+    }
+
+    async function loadMeetings() {
+      try {
+        const meetings = await api("/api/meetings");
+        meetingList.innerHTML = "";
+        for (const m of meetings) {
+          meetingList.appendChild(renderMeetingRow(m));
+        }
+      } catch (err) {
+        setMessage(err.message, true);
+      }
+    }
+
+    function collectCreatePayload(form) {
+      return {
+        title: formValue(form, "title"),
+        description: formValue(form, "description") || null,
+        scheduled_start: toIsoOrNull(formValue(form, "scheduled_start")),
+        meeting_recurrence: formValue(form, "meeting_recurrence") || "once",
+        meeting_timezone: formValue(form, "meeting_timezone") || "Asia/Shanghai",
+        duration_minutes: Number(formValue(form, "duration_minutes") || 30),
+        max_participants: Number(formValue(form, "max_participants") || 100),
+        meeting_password: formValue(form, "meeting_password") || null,
+        waiting_room_enabled: checkboxValue(form, "waiting_room_enabled"),
+        allow_recording: checkboxValue(form, "allow_recording"),
+        allow_screen_share: checkboxValue(form, "allow_screen_share"),
+        allow_chat: checkboxValue(form, "allow_chat"),
+        mute_on_entry: checkboxValue(form, "mute_on_entry"),
+      };
+    }
+
+    function collectEditPayload(form) {
+      const payload = {
+        title: formValue(form, "title"),
+        description: formValue(form, "description") || null,
+        scheduled_start: toIsoOrNull(formValue(form, "scheduled_start")),
+        meeting_recurrence: formValue(form, "meeting_recurrence") || "once",
+        meeting_timezone: formValue(form, "meeting_timezone") || "Asia/Shanghai",
+        duration_minutes: Number(formValue(form, "duration_minutes") || 30),
+        max_participants: Number(formValue(form, "max_participants") || 100),
+        waiting_room_enabled: checkboxValue(form, "waiting_room_enabled"),
+        allow_recording: checkboxValue(form, "allow_recording"),
+        allow_screen_share: checkboxValue(form, "allow_screen_share"),
+        allow_chat: checkboxValue(form, "allow_chat"),
+        mute_on_entry: checkboxValue(form, "mute_on_entry"),
+      };
+      const newPassword = formValue(form, "meeting_password");
+      const clearPassword = checkboxValue(form, "clear_password");
+      if (clearPassword) {
+        payload.meeting_password = "";
+      } else if (newPassword) {
+        payload.meeting_password = newPassword;
+      }
+      return payload;
+    }
+
+    async function startEditMeeting(meetingId) {
+      const meeting = await api(`/api/meetings/${meetingId}`);
+      editMeetingForm.querySelector('[name="meeting_id"]').value = String(meeting.id);
+      editMeetingForm.querySelector('[name="title"]').value = meeting.title || "";
+      editMeetingForm.querySelector('[name="description"]').value = meeting.description || "";
+      editMeetingForm.querySelector('[name="scheduled_start"]').value = toDatetimeLocal(meeting.scheduled_start);
+      editMeetingForm.querySelector('[name="meeting_recurrence"]').value = meeting.meeting_recurrence || "once";
+      editMeetingForm.querySelector('[name="meeting_timezone"]').value = meeting.meeting_timezone || "Asia/Shanghai";
+      editMeetingForm.querySelector('[name="duration_minutes"]').value = meeting.duration_minutes || 30;
+      editMeetingForm.querySelector('[name="max_participants"]').value = meeting.max_participants || 100;
+      editMeetingForm.querySelector('[name="meeting_password"]').value = "";
+      editMeetingForm.querySelector('[name="clear_password"]').checked = false;
+      editMeetingForm.querySelector('[name="waiting_room_enabled"]').checked = Boolean(meeting.waiting_room_enabled);
+      editMeetingForm.querySelector('[name="allow_recording"]').checked = Boolean(meeting.allow_recording);
+      editMeetingForm.querySelector('[name="allow_screen_share"]').checked = Boolean(meeting.allow_screen_share);
+      editMeetingForm.querySelector('[name="allow_chat"]').checked = Boolean(meeting.allow_chat);
+      editMeetingForm.querySelector('[name="mute_on_entry"]').checked = Boolean(meeting.mute_on_entry);
+      editSection.classList.remove("hidden");
+      window.scrollTo({ top: editSection.offsetTop - 16, behavior: "smooth" });
+    }
+
+    document.getElementById("meetingForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      try {
+        await api("/api/meetings", {
+          method: "POST",
+          body: JSON.stringify(collectCreatePayload(e.target)),
+        });
+        setMessage("会议创建成功");
+        e.target.reset();
+        await loadMeetings();
+      } catch (err) {
+        setMessage(err.message, true);
+      }
+    });
+
+    document.getElementById("joinMeetingForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const form = new FormData(e.target);
+      const meetingIdRaw = (form.get("meeting_id") || "").toString().trim();
+      const roomNameRaw = (form.get("room_name") || "").toString().trim();
+      const meetingPasswordRaw = (form.get("meeting_password") || "").toString().trim();
+      try {
+        const payload = {};
+        if (meetingIdRaw) payload.meeting_id = Number(meetingIdRaw);
+        if (!meetingIdRaw && roomNameRaw) payload.room_name = roomNameRaw;
+        if (meetingPasswordRaw) payload.meeting_password = meetingPasswordRaw;
+        const meeting = await api("/api/meetings/join", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+        window.open(`/meetings/${meeting.id}`, "_blank");
+      } catch (err) {
+        setMessage(err.message, true);
+      }
+    });
+
+    meetingList.addEventListener("click", async (e) => {
+      const button = e.target.closest("button[data-action]");
+      if (!button) return;
+      const action = button.getAttribute("data-action");
+      const meetingId = button.getAttribute("data-id");
+      if (!meetingId) return;
+
+      try {
+        if (action === "token") {
+          const data = await api(`/api/meetings/${meetingId}/join-token`, { method: "POST" });
+          joinTokenBox.textContent = JSON.stringify(data, null, 2);
+          return;
+        }
+        if (action === "edit") {
+          await startEditMeeting(meetingId);
+          return;
+        }
+        if (action === "delete") {
+          const ok = window.confirm("确定删除该会议？此操作不可恢复。");
+          if (!ok) return;
+          await api(`/api/meetings/${meetingId}`, { method: "DELETE" });
+          setMessage("会议已删除");
+          if (editMeetingForm.querySelector('[name="meeting_id"]').value === String(meetingId)) {
+            editSection.classList.add("hidden");
+          }
+          await loadMeetings();
+        }
+      } catch (err) {
+        setMessage(err.message, true);
+      }
+    });
+
+    editMeetingForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const meetingId = editMeetingForm.querySelector('[name="meeting_id"]').value;
+      if (!meetingId) return;
+      try {
+        await api(`/api/meetings/${meetingId}`, {
+          method: "PATCH",
+          body: JSON.stringify(collectEditPayload(editMeetingForm)),
+        });
+        setMessage("会议已更新");
+        editSection.classList.add("hidden");
+        await loadMeetings();
+      } catch (err) {
+        setMessage(err.message, true);
+      }
+    });
+
+    document.getElementById("cancelEditBtn").addEventListener("click", () => {
+      editSection.classList.add("hidden");
+    });
+
+    document.getElementById("refreshMeetings").addEventListener("click", loadMeetings);
+    document.getElementById("logoutForm").addEventListener("submit", () => {
+      clearToken();
+    });
+
+    (async function bootstrap() {
+      try {
+        await fetchSessionToken(true);
+        await loadMeetings();
+      } catch (err) {
+        setMessage(err.message, true);
+      }
+    })();
+  </script>
+</body>
+</html>

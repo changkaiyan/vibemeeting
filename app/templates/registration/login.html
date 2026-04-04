@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>登录 - 智能会议</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body class="auth-body">
+  <main class="auth-shell">
+    <section class="auth-card">
+      <h1>登录账号</h1>
+      <p class="hint">使用 Django 原生认证系统</p>
+      <form method="post" class="auth-form">
+        {% csrf_token %}
+        {{ form.non_field_errors }}
+        <label class="auth-label">用户名</label>
+        {{ form.username }}
+        {{ form.username.errors }}
+        <label class="auth-label">密码</label>
+        {{ form.password }}
+        {{ form.password.errors }}
+        <button type="submit" class="auth-btn primary">登录</button>
+      </form>
+      <p class="hint">还没有账号？<a href="/accounts/register">立即注册</a></p>
+    </section>
+  </main>
+</body>
+</html>
