@@ -10,8 +10,6 @@ urlpatterns = [
     path("dashboard/", views.dashboard_view),
     path("billing", views.billing_dashboard_view),
     path("billing/", views.billing_dashboard_view),
-    path("dashboard/legacy", views.dashboard_legacy_view),
-    path("dashboard/legacy/", views.dashboard_legacy_view),
     path("my/meetings/<str:meeting_ref>", views.meeting_room_ref_view),
     path("my/meetings/<str:meeting_ref>/", views.meeting_room_ref_view),
     path("m/<str:share_code>", views.meeting_room_share_view),

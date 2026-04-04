@@ -1482,7 +1482,12 @@ def dashboard_view(request):
             "flutter_dashboard.html",
             {"flutter_cache_bust": _flutter_cache_bust()},
         )
-    return redirect("/dashboard/legacy")
+    return HttpResponse(
+        "Flutter dashboard static files are missing. Run `puro flutter build web` in "
+        "`flutter_dashboard` and sync `build/web` to `app/static/flutter_dashboard`.",
+        status=503,
+        content_type="text/plain; charset=utf-8",
+    )
 
 
 @login_required(login_url="/accounts/login")
@@ -1496,12 +1501,12 @@ def billing_dashboard_view(request):
             "flutter_dashboard.html",
             {"flutter_cache_bust": _flutter_cache_bust()},
         )
-    return redirect("/dashboard/legacy")
-
-
-@login_required(login_url="/accounts/login")
-def dashboard_legacy_view(request):
-    return render(request, "dashboard.html")
+    return HttpResponse(
+        "Flutter dashboard static files are missing. Run `puro flutter build web` in "
+        "`flutter_dashboard` and sync `build/web` to `app/static/flutter_dashboard`.",
+        status=503,
+        content_type="text/plain; charset=utf-8",
+    )
 
 
 @login_required(login_url="/accounts/login")
