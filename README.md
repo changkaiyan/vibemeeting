@@ -1,51 +1,68 @@
-# 智能会议（Django 版）
+# 智能会议（Django + LiveKit）
 
-项目后端已全量切换为 Django + DRF，并采用分离的认证页面流程：
+基于 Django + DRF 的在线会议系统，支持会议管理、权限控制、聊天与 LiveKit 入会能力。
+
+## 页面入口
 
 - 首页：`/`
 - 登录：`/accounts/login`
 - 注册：`/accounts/register`
 - 会议控制台：`/dashboard`
-- Django Admin：`/admin`
+- Django 管理后台：`/admin`
 
-## 核心能力
+## 功能概览
 
-- 用户注册/登录（Django 原生认证）
+- 用户注册/登录（Django 认证体系）
 - 登录失败风控（失败次数锁定）
 - 会议创建、加入、编辑、删除
-- 会议角色模型（主持人 / 联席主持人 / 参会者）
-- 成员管理（加人、改角色、移除、静音）
-- 会议文本聊天
+- 角色模型（主持人 / 联席主持人 / 参会者）
+- 成员管理（邀请、改角色、移除、静音）
+- 会议聊天消息
 - 审计日志
-- 组织与多租户基础隔离
-- LiveKit 房间创建与参会 Token
+- 组织维度隔离
+- LiveKit 房间与参会 Token 签发
 
-## 会议可编辑属性
-
-- 标题、描述
-- 开始时间、时长
-- 会议密码
-- 等候室开关
-- 入会默认禁言
-- 最大参会人数
-- 允许录制
-- 允许屏幕共享
-- 允许聊天
-
-## 快速启动
+## 快速启动（Windows PowerShell）
 
 ```powershell
 py -3.10 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 Copy-Item .env.example .env
-python manage.py makemigrations
 python manage.py migrate
 python manage.py createsuperuser
 python manage.py runserver 0.0.0.0:8000
 ```
 
-HTTPS测试手册详见HTTPS_TESTING.md
+启动后访问 `http://127.0.0.1:8000`。
+
+## 环境变量
+
+以 `.env.example` 为模板创建 `.env`：
+
+```powershell
+Copy-Item .env.example .env
+```
+
+关键配置：
+
+- `SECRET_KEY`：Django 密钥
+- `DEBUG`：开发建议 `1`，生产设为 `0`
+- `ALLOWED_HOSTS`：允许访问域名/IP 列表
+- `DATABASE_URL`：数据库连接（默认 SQLite）
+- `LIVEKIT_URL`：服务端连接 LiveKit 的地址
+- `LIVEKIT_PUBLIC_URL`：前端可访问的 LiveKit 地址（HTTPS 页面需 `wss://`）
+- `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET`：LiveKit 服务端鉴权
+- `LIVEKIT_MEET_URL`：打开 LiveKit Meet 的地址（默认官方托管）
+
+说明：
+
+- `.env` 已被 `.gitignore` 忽略，不应提交到仓库。
+- 仅提交 `.env.example` 作为变量模板。
+
+## HTTPS 本地联调
+
+参考 [HTTPS_TESTING.md](./HTTPS_TESTING.md) 与 [LIVEKIT_SSL_STARTUP.md](./LIVEKIT_SSL_STARTUP.md)。
 
 ## 主要 API
 
