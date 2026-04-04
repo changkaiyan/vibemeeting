@@ -11,7 +11,9 @@ from unittest.mock import patch
 from django.conf import settings
 from django.contrib.auth.models import User
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.db import connection
 from django.test import TestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from livekit import api as lk_api
 from livekit.api.twirp_client import TwirpError
@@ -32,8 +34,35 @@ from conference.models import (
     UserBillingProfile,
     WaitingRoomStatus,
 )
+from conference.meeting_resolver import MeetingLookup
 from conference.meeting_refs import ensure_meeting_ref
 from conference.share import build_meeting_share_code
+
+
+class MeetingLookupTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="lookup", password="pass1234")
+        self.meeting = Meeting.objects.create(
+            title="Lookup",
+            room_name="room-lookup-test",
+            owner=self.user,
+        )
+        self.meeting_ref = ensure_meeting_ref(self.meeting, self.user)
+
+    def test_resolve_by_meeting_id(self):
+        lookup = MeetingLookup(meeting_id=self.meeting.id)
+        resolved = lookup.resolve(self.user)
+        self.assertEqual(resolved.id, self.meeting.id)
+
+    def test_resolve_by_meeting_ref(self):
+        lookup = MeetingLookup(meeting_ref=self.meeting_ref, hidden_forbidden=True)
+        resolved = lookup.resolve(self.user)
+        self.assertEqual(resolved.id, self.meeting.id)
+
+    def test_requires_identifier(self):
+        lookup = MeetingLookup()
+        with self.assertRaises(ValueError):
+            lookup.resolve(self.user)
 
 
 class MeetingControlPolicyTests(TestCase):
@@ -625,6 +654,10 @@ class MeetingModerationControlTests(TestCase):
         client.force_authenticate(user=user)
         return client
 
+    def _assert_response_keys_equal(self, left_payload, right_payload, keys):
+        for key in keys:
+            self.assertEqual(left_payload[key], right_payload[key])
+
     def test_waiting_room_review_approve_allows_join_token(self):
         participant_client = self._auth_client(self.participant)
         response = participant_client.post(
@@ -681,6 +714,216 @@ class MeetingModerationControlTests(TestCase):
             pending_token_response.json().get("waiting_room_status"),
             WaitingRoomStatus.PENDING,
         )
+
+    def test_join_token_ref_matches_primary_endpoint_payload_shape(self):
+        self.meeting.waiting_room_enabled = False
+        self.meeting.save(update_fields=["waiting_room_enabled"])
+        MeetingMember.objects.create(
+            meeting=self.meeting,
+            user=self.participant,
+            role=MeetingRole.PARTICIPANT,
+            muted_by_host=False,
+        )
+        meeting_ref = ensure_meeting_ref(self.meeting, self.participant)
+        participant_client = self._auth_client(self.participant)
+
+        with patch(
+            "conference.views.livekit_service.create_participant_token",
+            return_value="fake-token",
+        ):
+            id_response = participant_client.post(
+                f"/api/meetings/{self.meeting.id}/join-token",
+                {"display_name": "Participant"},
+                format="json",
+            )
+            ref_response = participant_client.post(
+                f"/api/my/meetings/{meeting_ref}/join-token",
+                {"display_name": "Participant"},
+                format="json",
+            )
+
+        self.assertEqual(id_response.status_code, 200)
+        self.assertEqual(ref_response.status_code, 200)
+        id_payload = id_response.json()
+        ref_payload = ref_response.json()
+        for key in (
+            "meeting_ref",
+            "room_name",
+            "participant_identity",
+            "livekit_url",
+            "livekit_meet_url",
+            "display_name",
+            "waiting_room_enabled",
+            "max_participants",
+            "mute_on_entry",
+            "allow_guest_link_join",
+            "allow_recording",
+            "allow_screen_share",
+            "allow_chat",
+            "allow_self_unmute",
+            "allow_member_video",
+            "can_publish",
+            "token",
+        ):
+            self.assertEqual(id_payload[key], ref_payload[key])
+
+    def test_meeting_detail_ref_matches_primary_endpoint_payload(self):
+        meeting_ref = ensure_meeting_ref(self.meeting, self.host)
+        host_client = self._auth_client(self.host)
+
+        id_response = host_client.get(f"/api/meetings/{self.meeting.id}")
+        ref_response = host_client.get(f"/api/my/meetings/{meeting_ref}")
+
+        self.assertEqual(id_response.status_code, 200)
+        self.assertEqual(ref_response.status_code, 200)
+        self.assertEqual(id_response.json(), ref_response.json())
+
+    def test_meeting_detail_query_count_stays_bounded(self):
+        host_client = self._auth_client(self.host)
+
+        with CaptureQueriesContext(connection) as queries:
+            response = host_client.get(f"/api/meetings/{self.meeting.id}")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertLessEqual(len(queries), 12)
+
+    def test_my_display_name_ref_matches_primary_endpoint_payload_shape(self):
+        meeting_ref = ensure_meeting_ref(self.meeting, self.host)
+        host_client = self._auth_client(self.host)
+        membership = MeetingMember.objects.get(meeting=self.meeting, user=self.host)
+        membership.display_name = "Host Initial"
+        membership.display_name_version = 7
+        membership.save(update_fields=["display_name", "display_name_version"])
+
+        with patch("conference.views.livekit_service.update_participant_name") as update_name:
+            id_response = host_client.patch(
+                f"/api/meetings/{self.meeting.id}/my-display-name",
+                {
+                    "display_name": "Host Renamed",
+                    "expected_display_name_version": 7,
+                },
+                format="json",
+            )
+
+            membership.refresh_from_db()
+            membership.display_name = "Host Initial"
+            membership.display_name_version = 7
+            membership.save(update_fields=["display_name", "display_name_version"])
+
+            ref_response = host_client.patch(
+                f"/api/my/meetings/{meeting_ref}/my-display-name",
+                {
+                    "display_name": "Host Renamed",
+                    "expected_display_name_version": 7,
+                },
+                format="json",
+            )
+
+        self.assertEqual(id_response.status_code, 200)
+        self.assertEqual(ref_response.status_code, 200)
+        self.assertEqual(update_name.call_count, 2)
+        self.assertEqual(id_response.json(), ref_response.json())
+
+    def test_meeting_members_ref_matches_primary_endpoint_payload(self):
+        MeetingMember.objects.create(
+            meeting=self.meeting,
+            user=self.participant,
+            role=MeetingRole.PARTICIPANT,
+            muted_by_host=False,
+        )
+        meeting_ref = ensure_meeting_ref(self.meeting, self.host)
+        host_client = self._auth_client(self.host)
+
+        id_response = host_client.get(f"/api/meetings/{self.meeting.id}/members")
+        ref_response = host_client.get(f"/api/my/meetings/{meeting_ref}/members")
+
+        self.assertEqual(id_response.status_code, 200)
+        self.assertEqual(ref_response.status_code, 200)
+        self.assertEqual(id_response.json(), ref_response.json())
+
+    def test_raise_hand_ref_matches_primary_endpoint_payload_shape(self):
+        self.meeting.waiting_room_enabled = False
+        self.meeting.allow_self_unmute = False
+        self.meeting.save(update_fields=["waiting_room_enabled", "allow_self_unmute"])
+        MeetingMember.objects.create(
+            meeting=self.meeting,
+            user=self.participant,
+            role=MeetingRole.PARTICIPANT,
+            muted_by_host=False,
+        )
+        meeting_ref = ensure_meeting_ref(self.meeting, self.participant)
+        participant_client = self._auth_client(self.participant)
+
+        id_response = participant_client.post(
+            f"/api/meetings/{self.meeting.id}/members/raise-hand",
+            {"request": "mic"},
+            format="json",
+        )
+
+        membership = MeetingMember.objects.get(meeting=self.meeting, user=self.participant)
+        membership.mic_request_pending = False
+        membership.save(update_fields=["mic_request_pending"])
+
+        ref_response = participant_client.post(
+            f"/api/my/meetings/{meeting_ref}/members/raise-hand",
+            {"request": "mic"},
+            format="json",
+        )
+
+        self.assertEqual(id_response.status_code, 200)
+        self.assertEqual(ref_response.status_code, 200)
+        self.assertEqual(id_response.json(), ref_response.json())
+
+    def test_join_token_query_count_stays_bounded_for_primary_endpoint(self):
+        self.meeting.waiting_room_enabled = False
+        self.meeting.save(update_fields=["waiting_room_enabled"])
+        MeetingMember.objects.create(
+            meeting=self.meeting,
+            user=self.participant,
+            role=MeetingRole.PARTICIPANT,
+            muted_by_host=False,
+        )
+        participant_client = self._auth_client(self.participant)
+
+        with patch(
+            "conference.views.livekit_service.create_participant_token",
+            return_value="fake-token",
+        ):
+            with CaptureQueriesContext(connection) as queries:
+                response = participant_client.post(
+                    f"/api/meetings/{self.meeting.id}/join-token",
+                    {"display_name": "Participant"},
+                    format="json",
+                )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertLessEqual(len(queries), 17)
+
+    def test_join_token_query_count_stays_bounded_for_ref_endpoint(self):
+        self.meeting.waiting_room_enabled = False
+        self.meeting.save(update_fields=["waiting_room_enabled"])
+        MeetingMember.objects.create(
+            meeting=self.meeting,
+            user=self.participant,
+            role=MeetingRole.PARTICIPANT,
+            muted_by_host=False,
+        )
+        meeting_ref = ensure_meeting_ref(self.meeting, self.participant)
+        participant_client = self._auth_client(self.participant)
+
+        with patch(
+            "conference.views.livekit_service.create_participant_token",
+            return_value="fake-token",
+        ):
+            with CaptureQueriesContext(connection) as queries:
+                response = participant_client.post(
+                    f"/api/my/meetings/{meeting_ref}/join-token",
+                    {"display_name": "Participant"},
+                    format="json",
+                )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertLessEqual(len(queries), 16)
 
     def test_host_can_leave_and_transfer_to_member(self):
         MeetingMember.objects.create(

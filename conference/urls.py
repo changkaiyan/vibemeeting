@@ -1,5 +1,5 @@
 from django.contrib.auth import views as auth_views
-from django.urls import path
+from django.urls import include, path
 
 from conference.forms import MeetingAuthenticationForm
 from conference import views
@@ -47,63 +47,10 @@ urlpatterns = [
     path("api/meetings/join", views.join_meeting),
     path("api/meetings/<int:meeting_id>", views.meeting_detail),
     path("api/meetings/<int:meeting_id>/outlook.ics", views.meeting_outlook_ics),
-    path("api/meetings/<int:meeting_id>/controls", views.meeting_controls),
     path("api/meetings/<int:meeting_id>/join-token", views.meeting_join_token),
     path("api/meetings/<int:meeting_id>/my-display-name", views.my_meeting_display_name),
     path("api/meetings/<int:meeting_id>/members", views.meeting_members),
     path("api/meetings/<int:meeting_id>/members/raise-hand", views.meeting_raise_hand),
-    path("api/meetings/<int:meeting_id>/members/mute-all", views.meeting_mute_all),
-    path("api/meetings/<int:meeting_id>/members/<int:target_user_id>/role", views.meeting_member_role),
-    path("api/meetings/<int:meeting_id>/members/<int:target_user_id>/mute", views.meeting_member_mute),
-    path("api/meetings/<int:meeting_id>/members/<int:target_user_id>/video", views.meeting_member_video),
-    path("api/meetings/<int:meeting_id>/members/<int:target_user_id>/mic-permission", views.meeting_member_mic_permission),
-    path("api/meetings/<int:meeting_id>/members/<int:target_user_id>/video-permission", views.meeting_member_video_permission),
-    path("api/meetings/<int:meeting_id>/members/<int:target_user_id>/chat-permission", views.meeting_member_chat_permission),
-    path("api/meetings/<int:meeting_id>/members/<int:target_user_id>/screen-share-permission", views.meeting_member_screen_share_permission),
-    path("api/meetings/<int:meeting_id>/members/<int:target_user_id>/display-name", views.meeting_member_display_name_control),
-    path("api/meetings/<int:meeting_id>/members/<int:target_user_id>/stop-share", views.meeting_member_stop_share),
-    path("api/meetings/<int:meeting_id>/members/<int:target_user_id>", views.meeting_member_remove),
-    path(
-        "api/meetings/<int:meeting_id>/participants/<str:participant_identity>/mute",
-        views.meeting_participant_mute,
-    ),
-    path(
-        "api/meetings/<int:meeting_id>/participants/<str:participant_identity>/video",
-        views.meeting_participant_video,
-    ),
-    path(
-        "api/meetings/<int:meeting_id>/participants/<str:participant_identity>/mic-permission",
-        views.meeting_participant_mic_permission,
-    ),
-    path(
-        "api/meetings/<int:meeting_id>/participants/<str:participant_identity>/video-permission",
-        views.meeting_participant_video_permission,
-    ),
-    path(
-        "api/meetings/<int:meeting_id>/participants/<str:participant_identity>/chat-permission",
-        views.meeting_participant_chat_permission,
-    ),
-    path(
-        "api/meetings/<int:meeting_id>/participants/<str:participant_identity>/screen-share-permission",
-        views.meeting_participant_screen_share_permission,
-    ),
-    path(
-        "api/meetings/<int:meeting_id>/participants/<str:participant_identity>/display-name",
-        views.meeting_participant_display_name_control,
-    ),
-    path(
-        "api/meetings/<int:meeting_id>/participants/<str:participant_identity>/stop-share",
-        views.meeting_participant_stop_share,
-    ),
-    path(
-        "api/meetings/<int:meeting_id>/participants/<str:participant_identity>",
-        views.meeting_participant_remove,
-    ),
-    path("api/meetings/<int:meeting_id>/host-leave", views.meeting_host_leave),
-    path("api/meetings/<int:meeting_id>/waiting-room", views.meeting_waiting_room_entries),
-    path("api/meetings/<int:meeting_id>/waiting-room/<int:target_user_id>", views.meeting_waiting_room_review),
-    path("api/meetings/<int:meeting_id>/blocked-members", views.meeting_blocked_members),
-    path("api/meetings/<int:meeting_id>/blocked-members/<int:target_user_id>", views.meeting_unblock_member),
     path("api/meetings/<int:meeting_id>/messages", views.meeting_messages),
     path("api/meetings/<int:meeting_id>/messages/<int:message_id>", views.meeting_message_recall),
     path("api/meetings/<int:meeting_id>/recordings", views.meeting_recordings),
@@ -112,63 +59,10 @@ urlpatterns = [
     path("api/meetings/<int:meeting_id>/recordings/egress/stop", views.meeting_recording_egress_stop),
     path("api/my/meetings/<str:meeting_ref>", views.meeting_detail_ref),
     path("api/my/meetings/<str:meeting_ref>/outlook.ics", views.meeting_outlook_ics_ref),
-    path("api/my/meetings/<str:meeting_ref>/controls", views.meeting_controls_ref),
     path("api/my/meetings/<str:meeting_ref>/join-token", views.meeting_join_token_ref),
     path("api/my/meetings/<str:meeting_ref>/my-display-name", views.my_meeting_display_name_ref),
     path("api/my/meetings/<str:meeting_ref>/members", views.meeting_members_ref),
     path("api/my/meetings/<str:meeting_ref>/members/raise-hand", views.meeting_raise_hand_ref),
-    path("api/my/meetings/<str:meeting_ref>/members/mute-all", views.meeting_mute_all_ref),
-    path("api/my/meetings/<str:meeting_ref>/members/<int:target_user_id>/role", views.meeting_member_role_ref),
-    path("api/my/meetings/<str:meeting_ref>/members/<int:target_user_id>/mute", views.meeting_member_mute_ref),
-    path("api/my/meetings/<str:meeting_ref>/members/<int:target_user_id>/video", views.meeting_member_video_ref),
-    path("api/my/meetings/<str:meeting_ref>/members/<int:target_user_id>/mic-permission", views.meeting_member_mic_permission_ref),
-    path("api/my/meetings/<str:meeting_ref>/members/<int:target_user_id>/video-permission", views.meeting_member_video_permission_ref),
-    path("api/my/meetings/<str:meeting_ref>/members/<int:target_user_id>/chat-permission", views.meeting_member_chat_permission_ref),
-    path("api/my/meetings/<str:meeting_ref>/members/<int:target_user_id>/screen-share-permission", views.meeting_member_screen_share_permission_ref),
-    path("api/my/meetings/<str:meeting_ref>/members/<int:target_user_id>/display-name", views.meeting_member_display_name_control_ref),
-    path("api/my/meetings/<str:meeting_ref>/members/<int:target_user_id>/stop-share", views.meeting_member_stop_share_ref),
-    path("api/my/meetings/<str:meeting_ref>/members/<int:target_user_id>", views.meeting_member_remove_ref),
-    path(
-        "api/my/meetings/<str:meeting_ref>/participants/<str:participant_identity>/mute",
-        views.meeting_participant_mute_ref,
-    ),
-    path(
-        "api/my/meetings/<str:meeting_ref>/participants/<str:participant_identity>/video",
-        views.meeting_participant_video_ref,
-    ),
-    path(
-        "api/my/meetings/<str:meeting_ref>/participants/<str:participant_identity>/mic-permission",
-        views.meeting_participant_mic_permission_ref,
-    ),
-    path(
-        "api/my/meetings/<str:meeting_ref>/participants/<str:participant_identity>/video-permission",
-        views.meeting_participant_video_permission_ref,
-    ),
-    path(
-        "api/my/meetings/<str:meeting_ref>/participants/<str:participant_identity>/chat-permission",
-        views.meeting_participant_chat_permission_ref,
-    ),
-    path(
-        "api/my/meetings/<str:meeting_ref>/participants/<str:participant_identity>/screen-share-permission",
-        views.meeting_participant_screen_share_permission_ref,
-    ),
-    path(
-        "api/my/meetings/<str:meeting_ref>/participants/<str:participant_identity>/display-name",
-        views.meeting_participant_display_name_control_ref,
-    ),
-    path(
-        "api/my/meetings/<str:meeting_ref>/participants/<str:participant_identity>/stop-share",
-        views.meeting_participant_stop_share_ref,
-    ),
-    path(
-        "api/my/meetings/<str:meeting_ref>/participants/<str:participant_identity>",
-        views.meeting_participant_remove_ref,
-    ),
-    path("api/my/meetings/<str:meeting_ref>/host-leave", views.meeting_host_leave_ref),
-    path("api/my/meetings/<str:meeting_ref>/waiting-room", views.meeting_waiting_room_entries_ref),
-    path("api/my/meetings/<str:meeting_ref>/waiting-room/<int:target_user_id>", views.meeting_waiting_room_review_ref),
-    path("api/my/meetings/<str:meeting_ref>/blocked-members", views.meeting_blocked_members_ref),
-    path("api/my/meetings/<str:meeting_ref>/blocked-members/<int:target_user_id>", views.meeting_unblock_member_ref),
     path("api/my/meetings/<str:meeting_ref>/messages", views.meeting_messages_ref),
     path("api/my/meetings/<str:meeting_ref>/messages/<int:message_id>", views.meeting_message_recall_ref),
     path("api/my/meetings/<str:meeting_ref>/recordings", views.meeting_recordings_ref),
@@ -183,4 +77,5 @@ urlpatterns = [
     path("api/orgs/my", views.my_orgs),
     path("api/orgs/<int:org_id>/members", views.org_members),
     path("api/audit/logs", views.audit_logs),
+    path("", include("conference.routes.controls")),
 ]
