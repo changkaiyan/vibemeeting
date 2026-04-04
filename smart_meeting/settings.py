@@ -18,6 +18,7 @@ DEBUG = os.getenv("DEBUG", "1") == "1"
 ALLOWED_HOSTS = _csv_env("ALLOWED_HOSTS", "127.0.0.1,localhost,testserver,*")
 
 INSTALLED_APPS = [
+    "unfold",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
