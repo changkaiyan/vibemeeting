@@ -1,6 +1,5 @@
-from typing import Iterable
-
 from conference import views
+from conference.services import member_controls, participant_controls
 
 
 def _meeting_member_control(request, meeting_id: int, target_user_id: int, action: str):
@@ -17,10 +16,10 @@ def _meeting_member_control_impl(request, meeting, target_user_id: int, action: 
         return views.Response({"detail": "Member not found"}, status=views.status.HTTP_404_NOT_FOUND)
 
     member_handlers = {
-        "role": views._handle_member_role_action,
-        "mute": views._handle_member_mute_action,
-        "video": views._handle_member_video_action,
-        "mic_permission": lambda req, mtg, actor, member, resource_id: views._handle_member_permission_action(
+        "role": member_controls.handle_role_action,
+        "mute": member_controls.handle_mute_action,
+        "video": member_controls.handle_video_action,
+        "mic_permission": lambda req, mtg, actor, member, resource_id: member_controls.handle_permission_action(
             req,
             mtg,
             actor,
@@ -28,7 +27,7 @@ def _meeting_member_control_impl(request, meeting, target_user_id: int, action: 
             resource_id,
             action="mic_permission",
         ),
-        "video_permission": lambda req, mtg, actor, member, resource_id: views._handle_member_permission_action(
+        "video_permission": lambda req, mtg, actor, member, resource_id: member_controls.handle_permission_action(
             req,
             mtg,
             actor,
@@ -36,7 +35,7 @@ def _meeting_member_control_impl(request, meeting, target_user_id: int, action: 
             resource_id,
             action="video_permission",
         ),
-        "chat_permission": lambda req, mtg, actor, member, resource_id: views._handle_member_permission_action(
+        "chat_permission": lambda req, mtg, actor, member, resource_id: member_controls.handle_permission_action(
             req,
             mtg,
             actor,
@@ -44,7 +43,7 @@ def _meeting_member_control_impl(request, meeting, target_user_id: int, action: 
             resource_id,
             action="chat_permission",
         ),
-        "screen_share_permission": lambda req, mtg, actor, member, resource_id: views._handle_member_permission_action(
+        "screen_share_permission": lambda req, mtg, actor, member, resource_id: member_controls.handle_permission_action(
             req,
             mtg,
             actor,
@@ -52,9 +51,9 @@ def _meeting_member_control_impl(request, meeting, target_user_id: int, action: 
             resource_id,
             action="screen_share_permission",
         ),
-        "display_name": views._handle_member_display_name_action,
-        "stop_share": views._handle_member_stop_share_action,
-        "remove": views._handle_member_remove_action,
+        "display_name": member_controls.handle_display_name_action,
+        "stop_share": member_controls.handle_stop_share_action,
+        "remove": member_controls.handle_remove_action,
     }
     handler = member_handlers.get(action)
     if handler:
@@ -67,29 +66,6 @@ def _meeting_member_control_impl(request, meeting, target_user_id: int, action: 
         )
 
     return views.Response({"detail": "Unsupported action"}, status=views.status.HTTP_400_BAD_REQUEST)
-
-
-def _guest_permission_payload(publish_sources: Iterable[str], can_publish_data: bool):
-    source_set = set(publish_sources)
-    return {
-        "allow_self_unmute": "microphone" in source_set,
-        "allow_member_video": "camera" in source_set,
-        "allow_screen_share": "screen_share" in source_set or "screen_share_audio" in source_set,
-        "allow_chat": bool(can_publish_data),
-    }
-
-
-def _validate_guest_participant_identity(identity: str):
-    normalized_identity = (identity or "").strip()
-    if not normalized_identity:
-        return None, views.Response({"detail": "Participant identity is required"}, status=views.status.HTTP_400_BAD_REQUEST)
-    if views._user_id_from_participant_identity(normalized_identity) is not None:
-        return None, views.Response(
-            {"detail": "Registered members should be managed by member id"},
-            status=views.status.HTTP_400_BAD_REQUEST,
-        )
-    return normalized_identity, None
-
 
 def _meeting_participant_control(request, meeting_id: int, participant_identity: str, action: str):
     meeting, error = views._meeting_for_user_or_403(request.user, meeting_id)
@@ -118,45 +94,45 @@ def _meeting_participant_control_impl(
             status=views.status.HTTP_403_FORBIDDEN,
         )
 
-    identity, error = _validate_guest_participant_identity(participant_identity)
+    identity, error = participant_controls.validate_guest_participant_identity(participant_identity)
     if error:
         return error
 
     participant_handlers = {
-        "detail": views._handle_participant_detail_action,
-        "mute": views._handle_participant_mute_action,
-        "video": views._handle_participant_video_action,
-        "mic_permission": lambda req, mtg, ident, resource_id: views._handle_participant_permission_action(
+        "detail": participant_controls.handle_detail_action,
+        "mute": participant_controls.handle_mute_action,
+        "video": participant_controls.handle_video_action,
+        "mic_permission": lambda req, mtg, ident, resource_id: participant_controls.handle_permission_action(
             req,
             mtg,
             ident,
             resource_id,
             action="mic_permission",
         ),
-        "video_permission": lambda req, mtg, ident, resource_id: views._handle_participant_permission_action(
+        "video_permission": lambda req, mtg, ident, resource_id: participant_controls.handle_permission_action(
             req,
             mtg,
             ident,
             resource_id,
             action="video_permission",
         ),
-        "chat_permission": lambda req, mtg, ident, resource_id: views._handle_participant_permission_action(
+        "chat_permission": lambda req, mtg, ident, resource_id: participant_controls.handle_permission_action(
             req,
             mtg,
             ident,
             resource_id,
             action="chat_permission",
         ),
-        "screen_share_permission": lambda req, mtg, ident, resource_id: views._handle_participant_permission_action(
+        "screen_share_permission": lambda req, mtg, ident, resource_id: participant_controls.handle_permission_action(
             req,
             mtg,
             ident,
             resource_id,
             action="screen_share_permission",
         ),
-        "display_name": views._handle_participant_display_name_action,
-        "stop_share": views._handle_participant_stop_share_action,
-        "remove": views._handle_participant_remove_action,
+        "display_name": participant_controls.handle_display_name_action,
+        "stop_share": participant_controls.handle_stop_share_action,
+        "remove": participant_controls.handle_remove_action,
     }
     handler = participant_handlers.get(action)
     if handler:
@@ -168,7 +144,6 @@ def _meeting_participant_control_impl(
         )
 
     return views.Response({"detail": "Unsupported action"}, status=views.status.HTTP_400_BAD_REQUEST)
-
 
 def _meeting_host_leave_impl(request, meeting, resource_id_for_log: int):
     actor_membership = views.meeting_membership(meeting.id, request.user.id)
