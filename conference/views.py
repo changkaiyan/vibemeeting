@@ -72,6 +72,8 @@ from conference.serializers import (
     MeetingMemberAddSerializer,
     MeetingMemberDisplayNameControlSerializer,
     MeetingHostLeaveSerializer,
+    MeetingRealtimeBotConnectivityTestSerializer,
+    MeetingRealtimeBotControlSerializer,
     MeetingPermissionControlSerializer,
     MeetingRaiseHandSerializer,
     MeetingMemberSerializer,
@@ -131,6 +133,14 @@ _MEETING_ROOM_LIMIT_TIMERS: dict[int, threading.Timer] = {}
 _MEETING_ROOM_LIMIT_TIMERS_LOCK = threading.Lock()
 _TECHCLOUD_OAUTH_STATE_KEY = "techcloud_oauth_state"
 _TECHCLOUD_OAUTH_NEXT_KEY = "techcloud_oauth_next"
+_REALTIME_BOT_SYSTEM_USERNAME = "__meeting_realtime_bot__"
+_REALTIME_BOT_SYSTEM_EMAIL = "meeting-realtime-bot@local.invalid"
+_REALTIME_BOT_DEFAULT_BASE_URL = "https://api.openai.com"
+_REALTIME_BOT_DEFAULT_MODEL = "gpt-realtime"
+_REALTIME_BOT_DEFAULT_VOICE = "marin"
+_REALTIME_BOT_DEFAULT_DISPLAY_NAME = "实时语音助手"
+_REALTIME_BOT_WS_CONNECT_TIMEOUT_SECONDS = 10
+_REALTIME_BOT_RESPONSE_TIMEOUT_SECONDS = 20
 
 
 def _host_without_port(host: str) -> str:
@@ -2917,8 +2927,520 @@ def _apply_meeting_payload(meeting, payload: dict):
             setattr(meeting, key, (value or "").strip() or None)
         elif key == "meeting_timezone":
             setattr(meeting, key, (value or "").strip() or "Asia/Shanghai")
+        elif key == "realtime_bot_api_key":
+            setattr(meeting, key, (value or "").strip())
+        elif key == "realtime_bot_base_url":
+            setattr(meeting, key, _normalized_realtime_base_url(value))
+        elif key in {"realtime_bot_model", "realtime_bot_voice", "realtime_bot_display_name"}:
+            setattr(meeting, key, (value or "").strip())
         else:
             setattr(meeting, key, value)
+
+
+def _normalized_realtime_base_url(raw_value: str) -> str:
+    value = (raw_value or "").strip()
+    if not value:
+        return _REALTIME_BOT_DEFAULT_BASE_URL
+    if "://" not in value:
+        value = f"https://{value}"
+    return value.rstrip("/")
+
+
+def _meeting_realtime_bot_display_name(meeting) -> str:
+    value = (meeting.realtime_bot_display_name or "").strip()
+    return value or _REALTIME_BOT_DEFAULT_DISPLAY_NAME
+
+
+def _meeting_realtime_bot_ready(meeting) -> bool:
+    return bool(meeting.realtime_bot_enabled and (meeting.realtime_bot_api_key or "").strip())
+
+
+def _meeting_realtime_bot_identity(meeting) -> str:
+    return f"ai_realtime_bot_{meeting.id}"[:64]
+
+
+def _sync_realtime_bot_presence(meeting) -> None:
+    identity = _meeting_realtime_bot_identity(meeting)
+    if not meeting.realtime_bot_enabled:
+        MeetingGuestParticipant.objects.filter(
+            meeting=meeting,
+            participant_identity=identity,
+        ).delete()
+        return
+
+    guest, _ = MeetingGuestParticipant.objects.get_or_create(
+        meeting=meeting,
+        participant_identity=identity,
+        defaults={
+            "display_name": _meeting_realtime_bot_display_name(meeting),
+            "display_name_version": 1,
+        },
+    )
+    desired_display_name = _meeting_realtime_bot_display_name(meeting)
+    if (guest.display_name or "").strip() != desired_display_name:
+        guest.display_name = desired_display_name
+        guest.display_name_version = max(1, int(guest.display_name_version or 1)) + 1
+        guest.save(update_fields=["display_name", "display_name_version", "updated_at"])
+
+
+def _realtime_bot_system_user() -> User:
+    user, created = User.objects.get_or_create(
+        username=_REALTIME_BOT_SYSTEM_USERNAME,
+        defaults={
+            "email": _REALTIME_BOT_SYSTEM_EMAIL,
+            "is_active": True,
+        },
+    )
+    if created:
+        user.set_unusable_password()
+        user.save(update_fields=["password"])
+    return user
+
+
+def _iter_json_nodes(value):
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from _iter_json_nodes(child)
+        return
+    if isinstance(value, list):
+        for child in value:
+            yield from _iter_json_nodes(child)
+
+
+def _extract_text_from_model_payload(payload) -> str:
+    if isinstance(payload, dict):
+        output_text = payload.get("output_text")
+        if isinstance(output_text, str) and output_text.strip():
+            return output_text.strip()
+        if isinstance(output_text, list):
+            joined = "".join(str(item) for item in output_text if str(item).strip()).strip()
+            if joined:
+                return joined
+
+    parts: list[str] = []
+    for node in _iter_json_nodes(payload):
+        if not isinstance(node, dict):
+            continue
+        node_type = str(node.get("type") or "").strip().lower()
+        text_value = node.get("text")
+        delta_value = node.get("delta")
+        transcript_value = node.get("transcript")
+        if node_type in {"output_text", "text"} and isinstance(text_value, str) and text_value.strip():
+            parts.append(text_value.strip())
+        if "text" in node_type and "delta" in node_type and isinstance(delta_value, str) and delta_value:
+            parts.append(delta_value)
+        if "transcript" in node_type and isinstance(delta_value, str) and delta_value:
+            parts.append(delta_value)
+        if isinstance(transcript_value, str) and transcript_value.strip():
+            parts.append(transcript_value.strip())
+    return "".join(parts).strip()
+
+
+def _extract_audio_from_model_payload(payload) -> tuple[str, str]:
+    candidates: list[tuple[str, str]] = []
+    for node in _iter_json_nodes(payload):
+        if not isinstance(node, dict):
+            continue
+
+        node_type = str(node.get("type") or "").strip().lower()
+        mime = str(
+            node.get("mime_type")
+            or node.get("content_type")
+            or node.get("format")
+            or "",
+        ).strip()
+
+        data_value = node.get("data")
+        if (
+            isinstance(data_value, str)
+            and data_value.strip()
+            and ("audio" in node_type or node_type in {"output_audio", "audio"})
+        ):
+            candidates.append((data_value.strip(), mime or "audio/wav"))
+
+        audio_block = node.get("audio")
+        if isinstance(audio_block, dict):
+            nested_data = audio_block.get("data")
+            nested_mime = str(
+                audio_block.get("mime_type")
+                or audio_block.get("content_type")
+                or audio_block.get("format")
+                or "",
+            ).strip()
+            if isinstance(nested_data, str) and nested_data.strip():
+                candidates.append((nested_data.strip(), nested_mime or mime or "audio/wav"))
+
+    if not candidates:
+        return "", ""
+    return candidates[0]
+
+
+def _realtime_ws_url(base_url: str, model: str) -> str:
+    normalized_base = _normalized_realtime_base_url(base_url)
+    parsed = urlsplit(normalized_base)
+    scheme = "wss" if parsed.scheme.lower() == "https" else "ws"
+    path = (parsed.path or "").rstrip("/")
+    if path.endswith("/v1"):
+        path = path[:-3]
+    ws_path = f"{path}/v1/realtime"
+    query = urlencode({"model": model})
+    return urlunsplit((scheme, parsed.netloc, ws_path, query, ""))
+
+
+def _realtime_http_base_url(base_url: str) -> str:
+    parsed = urlsplit(_normalized_realtime_base_url(base_url))
+    path = (parsed.path or "").rstrip("/")
+    if path.endswith("/v1"):
+        path = path[:-3]
+    return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
+
+
+def _call_realtime_bot_via_websocket(
+    *,
+    base_url: str,
+    model: str,
+    api_key: str,
+    voice: str,
+    prompt: str,
+    request_audio: bool,
+) -> tuple[str, str, str]:
+    try:
+        import websocket  # type: ignore
+    except Exception as exc:
+        raise RuntimeError("websocket client library is not available") from exc
+
+    ws_url = _realtime_ws_url(base_url, model)
+    headers = [
+        f"Authorization: Bearer {api_key}",
+        "Content-Type: application/json",
+    ]
+    ws = websocket.create_connection(
+        ws_url,
+        header=headers,
+        timeout=_REALTIME_BOT_WS_CONNECT_TIMEOUT_SECONDS,
+    )
+    try:
+        if hasattr(ws, "settimeout"):
+            ws.settimeout(1)
+
+        session_payload = {
+            "type": "session.update",
+            "session": {
+                "type": "realtime",
+                "model": model,
+                "instructions": (
+                    "You are a concise realtime meeting assistant. "
+                    "Always answer in Chinese and keep replies brief and clear."
+                ),
+                "audio": {
+                    "output": {
+                        "voice": voice,
+                    },
+                },
+            },
+        }
+        ws.send(json.dumps(session_payload, ensure_ascii=False, separators=(",", ":")))
+        ws.send(
+            json.dumps(
+                {
+                    "type": "conversation.item.create",
+                    "item": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_text",
+                                "text": prompt,
+                            }
+                        ],
+                    },
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        )
+        ws.send(
+            json.dumps(
+                {
+                    "type": "response.create",
+                    "response": {
+                        "modalities": ["text", "audio"] if request_audio else ["text"],
+                    },
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        )
+
+        text_chunks: list[str] = []
+        audio_chunks: list[str] = []
+        audio_mime = "audio/wav" if request_audio else ""
+        deadline = time.time() + _REALTIME_BOT_RESPONSE_TIMEOUT_SECONDS
+        timeout_error = getattr(websocket, "WebSocketTimeoutException", Exception)
+        while time.time() < deadline:
+            try:
+                raw = ws.recv()
+            except timeout_error:
+                continue
+            if not raw:
+                continue
+            event = json.loads(raw)
+            if not isinstance(event, dict):
+                continue
+            event_type = str(event.get("type") or "").strip().lower()
+            if event_type == "error":
+                error_detail = event.get("error") or event.get("message") or event
+                raise RuntimeError(f"realtime ws error: {error_detail}")
+
+            delta = event.get("delta")
+            if isinstance(delta, str) and delta:
+                if "audio" in event_type and "transcript" not in event_type:
+                    audio_chunks.append(delta)
+                elif "text" in event_type or "transcript" in event_type:
+                    text_chunks.append(delta)
+
+            if event_type in {"response.done", "response.completed"}:
+                done_text = _extract_text_from_model_payload(event)
+                if done_text:
+                    text_chunks.append(done_text)
+                done_audio, done_audio_mime = _extract_audio_from_model_payload(event)
+                if done_audio:
+                    audio_chunks.append(done_audio)
+                    if done_audio_mime:
+                        audio_mime = done_audio_mime
+                break
+
+        text = "".join(text_chunks).strip()
+        audio_base64 = "".join(audio_chunks).strip()
+        if not text:
+            text = _extract_text_from_model_payload({"output": [{"text": text}]})
+        if not text:
+            raise RuntimeError("realtime ws did not return text output")
+        if request_audio and not audio_base64:
+            # Keep text reply even if audio chunk is unavailable.
+            audio_mime = ""
+        return text, audio_base64, audio_mime
+    finally:
+        try:
+            ws.close()
+        except Exception:
+            pass
+
+
+def _call_realtime_bot_via_responses(
+    *,
+    base_url: str,
+    model: str,
+    api_key: str,
+    voice: str,
+    prompt: str,
+    request_audio: bool,
+) -> tuple[str, str, str]:
+    endpoint = f"{_realtime_http_base_url(base_url)}/v1/responses"
+    payload: dict = {
+        "model": model,
+        "input": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": prompt,
+                    }
+                ],
+            }
+        ],
+        "modalities": ["text", "audio"] if request_audio else ["text"],
+    }
+    if request_audio:
+        payload["audio"] = {
+            "voice": voice,
+            "format": "wav",
+        }
+    request = Request(
+        endpoint,
+        data=json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+    )
+
+    with urlopen(request, timeout=_REALTIME_BOT_RESPONSE_TIMEOUT_SECONDS) as response:
+        raw = response.read().decode("utf-8", errors="replace")
+    data = json.loads(raw or "{}")
+    text = _extract_text_from_model_payload(data)
+    if not text:
+        raise RuntimeError("responses API did not return text output")
+    audio_base64, audio_mime = _extract_audio_from_model_payload(data)
+    if not request_audio:
+        audio_base64 = ""
+        audio_mime = ""
+    return text, audio_base64, audio_mime
+
+
+def _call_realtime_bot(
+    *,
+    meeting,
+    prompt: str,
+) -> tuple[str, str, str]:
+    base_url = _normalized_realtime_base_url(meeting.realtime_bot_base_url)
+    model = (meeting.realtime_bot_model or "").strip() or _REALTIME_BOT_DEFAULT_MODEL
+    api_key = (meeting.realtime_bot_api_key or "").strip()
+    voice = (meeting.realtime_bot_voice or "").strip() or _REALTIME_BOT_DEFAULT_VOICE
+    request_audio = not bool(meeting.realtime_bot_muted)
+    if not api_key:
+        raise RuntimeError("Realtime bot API key is empty")
+
+    errors: list[str] = []
+    try:
+        return _call_realtime_bot_via_websocket(
+            base_url=base_url,
+            model=model,
+            api_key=api_key,
+            voice=voice,
+            prompt=prompt,
+            request_audio=request_audio,
+        )
+    except Exception as exc:
+        errors.append(f"websocket={exc}")
+
+    try:
+        return _call_realtime_bot_via_responses(
+            base_url=base_url,
+            model=model,
+            api_key=api_key,
+            voice=voice,
+            prompt=prompt,
+            request_audio=request_audio,
+        )
+    except Exception as exc:
+        errors.append(f"responses={exc}")
+
+    raise RuntimeError("; ".join(errors) or "Realtime model request failed")
+
+
+def _message_mentions_realtime_bot(meeting, content: str) -> bool:
+    text = (content or "").replace("＠", "@")
+    if "@" not in text:
+        return False
+    display_name = _meeting_realtime_bot_display_name(meeting)
+    lower_text = text.lower()
+    lower_display_name = display_name.lower()
+    tokens = {
+        "@ai",
+        "@assistant",
+        "@realtime",
+        "@实时语音",
+        "@实时语音助手",
+        "@它",
+        f"@{lower_display_name}",
+    }
+    return any(token in lower_text for token in tokens if token.strip())
+
+
+def _build_realtime_bot_prompt(meeting, message: MeetingMessage) -> str:
+    bot_display_name = _meeting_realtime_bot_display_name(meeting)
+    sender_name = _fallback_display_name(message.sender_user)
+    normalized_content = (message.content or "").replace("＠", "@")
+    mention_pattern = rf"@{re.escape(bot_display_name)}|@ai|@assistant|@realtime|@实时语音|@实时语音助手"
+    clean_content = re.sub(mention_pattern, "", normalized_content, flags=re.IGNORECASE).strip()
+    if not clean_content:
+        clean_content = normalized_content.strip()
+    return (
+        f"你是在线会议中的实时语音成员“{bot_display_name}”。"
+        "请用中文简洁回复，控制在120字以内。"
+        f"发言人：{sender_name}。"
+        f"发言内容：{clean_content}"
+    )
+
+
+def _realtime_bot_reply_worker(
+    *,
+    meeting_id: int,
+    trigger_message_id: int,
+):
+    close_old_connections()
+    try:
+        meeting = Meeting.objects.filter(id=meeting_id).first()
+        if not meeting or not _meeting_realtime_bot_ready(meeting):
+            return
+        trigger_message = (
+            MeetingMessage.objects.filter(id=trigger_message_id, meeting=meeting)
+            .select_related("sender_user")
+            .first()
+        )
+        if not trigger_message:
+            return
+
+        bot_user = _realtime_bot_system_user()
+        if trigger_message.sender_user_id == bot_user.id:
+            return
+
+        prompt = _build_realtime_bot_prompt(meeting, trigger_message)
+        reply_text, reply_audio_base64, reply_audio_mime = _call_realtime_bot(
+            meeting=meeting,
+            prompt=prompt,
+        )
+        content = (reply_text or "").strip()
+        if not content:
+            return
+        content = content[:2000]
+        MeetingMessage.objects.create(
+            meeting=meeting,
+            sender_user=bot_user,
+            sender_display_name_override=_meeting_realtime_bot_display_name(meeting),
+            is_realtime_bot=True,
+            audio_mime_type=(reply_audio_mime or "").strip()[:120],
+            audio_base64=(reply_audio_base64 or "").strip(),
+            content=content,
+        )
+        log_audit(
+            user=bot_user,
+            action="meeting.realtime_bot_reply",
+            resource_type="meeting",
+            resource_id=meeting.id,
+            detail=f"trigger_message_id={trigger_message_id}",
+        )
+    except Exception as exc:
+        try:
+            fallback_meeting = Meeting.objects.filter(id=meeting_id).first()
+            if fallback_meeting:
+                MeetingMessage.objects.create(
+                    meeting=fallback_meeting,
+                    sender_user=_realtime_bot_system_user(),
+                    sender_display_name_override=_meeting_realtime_bot_display_name(fallback_meeting),
+                    is_realtime_bot=True,
+                    content="实时语音助手暂时不可用，请稍后再试。",
+                )
+        except Exception:
+            pass
+        log_audit(
+            action="meeting.realtime_bot_reply_failed",
+            resource_type="meeting",
+            resource_id=meeting_id,
+            detail=f"trigger_message_id={trigger_message_id}, error={exc}",
+        )
+    finally:
+        close_old_connections()
+
+
+def _maybe_trigger_realtime_bot_reply(meeting, message: MeetingMessage):
+    if not _meeting_realtime_bot_ready(meeting):
+        return
+    if not _message_mentions_realtime_bot(meeting, message.content):
+        return
+    worker = threading.Thread(
+        target=_realtime_bot_reply_worker,
+        kwargs={
+            "meeting_id": meeting.id,
+            "trigger_message_id": message.id,
+        },
+        daemon=True,
+    )
+    worker.start()
 
 
 def _ics_escape_text(value: str) -> str:
@@ -4228,6 +4750,7 @@ def public_meeting_messages(request, share_code: str):
         return Response({"detail": "Message content cannot be empty"}, status=status.HTTP_400_BAD_REQUEST)
 
     msg = MeetingMessage.objects.create(meeting=meeting, sender_user=request.user, content=content)
+    _maybe_trigger_realtime_bot_reply(meeting, msg)
     log_audit(
         user=request.user,
         action="meeting.chat_send_share",
@@ -4566,6 +5089,1602 @@ def _meeting_raise_hand_impl(request, meeting):
     return Response(MeetingMemberSerializer(membership, context={"meeting": meeting}).data)
 
 
+def _meeting_member_control_impl(request, meeting, target_user_id: int, action: str, resource_id_for_log: int):
+    actor_membership = meeting_membership(meeting.id, request.user.id)
+    target = MeetingMember.objects.filter(meeting=meeting, user_id=target_user_id).select_related("user").first()
+    if not target:
+        return Response({"detail": "Member not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    if action == "role":
+        if not can_change_roles(request.user, actor_membership):
+            return Response({"detail": "Only host/cohost can change role"}, status=status.HTTP_403_FORBIDDEN)
+        serializer = MeetingRoleUpdateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        next_role = serializer.validated_data["role"]
+        if next_role == MeetingRole.HOST and not request.user.is_superuser:
+            return Response({"detail": "Only admin can assign host role"}, status=status.HTTP_403_FORBIDDEN)
+        if target.role == MeetingRole.HOST and next_role != MeetingRole.HOST and not request.user.is_superuser:
+            return Response({"detail": "Host role cannot be changed by non-admin"}, status=status.HTTP_403_FORBIDDEN)
+        if target.user_id == request.user.id and not request.user.is_superuser:
+            return Response({"detail": "Cannot change your own role"}, status=status.HTTP_400_BAD_REQUEST)
+        if target.role != next_role:
+            target.role = next_role
+            target.save(update_fields=["role"])
+            try:
+                _sync_livekit_permissions_for_member(meeting, target)
+            except Exception:
+                pass
+        log_audit(
+            user=request.user,
+            action="meeting.member_role_update",
+            resource_type="meeting",
+            resource_id=resource_id_for_log,
+            detail=f"target_user_id={target_user_id}, role={target.role}",
+            ip_address=client_ip(request),
+        )
+        return Response(MeetingMemberSerializer(target, context={"meeting": meeting}).data)
+
+    if action == "mute":
+        if not can_moderate(request.user, actor_membership):
+            return Response({"detail": "Only host/cohost can mute members"}, status=status.HTTP_403_FORBIDDEN)
+        if target.role == MeetingRole.HOST and not request.user.is_superuser:
+            return Response({"detail": "Host cannot be muted by non-admin"}, status=status.HTTP_403_FORBIDDEN)
+        serializer = MeetingMuteSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        next_muted = serializer.validated_data["muted"]
+        if not next_muted and not _member_can_self_unmute(meeting, target):
+            return Response(
+                {"detail": "Member has no microphone permission. Allow mic first."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        target.muted_by_host = next_muted
+        update_fields = ["muted_by_host"]
+        if not next_muted and target.mic_request_pending:
+            target.mic_request_pending = False
+            update_fields.append("mic_request_pending")
+        target.save(update_fields=update_fields)
+        try:
+            _sync_livekit_permissions_for_member(
+                meeting,
+                target,
+                force_unmute_microphone=not target.muted_by_host,
+            )
+            if not next_muted:
+                _request_participant_device_open(
+                    meeting,
+                    _stable_participant_identity(target.user),
+                    open_microphone=True,
+                )
+        except Exception:
+            pass
+        log_audit(
+            user=request.user,
+            action="meeting.member_mute",
+            resource_type="meeting",
+            resource_id=resource_id_for_log,
+            detail=f"target_user_id={target_user_id}, muted={target.muted_by_host}",
+            ip_address=client_ip(request),
+        )
+        return Response(MeetingMemberSerializer(target, context={"meeting": meeting}).data)
+
+    if action == "video":
+        if not can_moderate(request.user, actor_membership):
+            return Response({"detail": "Only host/cohost can control member video"}, status=status.HTTP_403_FORBIDDEN)
+        if target.role == MeetingRole.HOST and not request.user.is_superuser:
+            return Response({"detail": "Host video cannot be controlled by non-admin"}, status=status.HTTP_403_FORBIDDEN)
+        serializer = MeetingVideoControlSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        disabled = serializer.validated_data["disabled"]
+        if not disabled and not _member_can_video(meeting, target):
+            return Response(
+                {"detail": "Member has no camera permission. Allow video first."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        target.video_blocked_by_host = disabled
+        update_fields = ["video_blocked_by_host"]
+        if not disabled and target.video_request_pending:
+            target.video_request_pending = False
+            update_fields.append("video_request_pending")
+        target.save(update_fields=update_fields)
+        try:
+            _sync_livekit_permissions_for_member(
+                meeting,
+                target,
+                force_unmute_camera=not disabled,
+            )
+            if not disabled:
+                _request_participant_device_open(
+                    meeting,
+                    _stable_participant_identity(target.user),
+                    open_camera=True,
+                )
+        except Exception:
+            pass
+        log_audit(
+            user=request.user,
+            action="meeting.member_video_control",
+            resource_type="meeting",
+            resource_id=resource_id_for_log,
+            detail=f"target_user_id={target_user_id}, disabled={disabled}",
+            ip_address=client_ip(request),
+        )
+        return Response(MeetingMemberSerializer(target, context={"meeting": meeting}).data)
+
+    if action in {"mic_permission", "video_permission", "chat_permission", "screen_share_permission"}:
+        if not can_moderate(request.user, actor_membership):
+            return Response(
+                {"detail": "Only host/cohost can update member permissions"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if target.role == MeetingRole.HOST and not request.user.is_superuser:
+            return Response(
+                {"detail": "Host member permission cannot be changed by non-admin"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        serializer = MeetingPermissionControlSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        allowed = serializer.validated_data["allowed"]
+
+        update_fields: list[str] = []
+        action_name = ""
+        if action == "mic_permission":
+            target.allow_self_unmute_override = allowed
+            update_fields.append("allow_self_unmute_override")
+            if not allowed and not target.muted_by_host:
+                target.muted_by_host = True
+                update_fields.append("muted_by_host")
+            if allowed and target.mic_request_pending:
+                target.mic_request_pending = False
+                update_fields.append("mic_request_pending")
+            action_name = "meeting.member_mic_permission"
+        elif action == "video_permission":
+            target.allow_member_video_override = allowed
+            update_fields.append("allow_member_video_override")
+            if not allowed and not target.video_blocked_by_host:
+                target.video_blocked_by_host = True
+                update_fields.append("video_blocked_by_host")
+            if allowed and target.video_request_pending:
+                target.video_request_pending = False
+                update_fields.append("video_request_pending")
+            action_name = "meeting.member_video_permission"
+        elif action == "chat_permission":
+            target.allow_chat_override = allowed
+            update_fields.append("allow_chat_override")
+            action_name = "meeting.member_chat_permission"
+        else:
+            target.allow_screen_share_override = allowed
+            update_fields.append("allow_screen_share_override")
+            action_name = "meeting.member_screen_share_permission"
+
+        if update_fields:
+            target.save(update_fields=update_fields)
+
+        try:
+            _sync_livekit_permissions_for_member(meeting, target)
+            if action == "screen_share_permission" and not allowed:
+                identity = _stable_participant_identity(target.user)
+                livekit_service.mute_participant_track_sources(
+                    meeting.room_name,
+                    identity,
+                    track_sources=["screen_share", "screen_share_audio"],
+                    muted=True,
+                )
+        except Exception:
+            pass
+
+        log_audit(
+            user=request.user,
+            action=action_name,
+            resource_type="meeting",
+            resource_id=resource_id_for_log,
+            detail=f"target_user_id={target_user_id}, allowed={allowed}",
+            ip_address=client_ip(request),
+        )
+        return Response(MeetingMemberSerializer(target, context={"meeting": meeting}).data)
+
+    if action == "display_name":
+        if not can_moderate(request.user, actor_membership):
+            return Response({"detail": "Only host/cohost can rename members"}, status=status.HTTP_403_FORBIDDEN)
+        serializer = MeetingMemberDisplayNameControlSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        next_display_name = serializer.validated_data["display_name"].strip()
+        expected_display_name_version = serializer.validated_data.get(
+            "expected_display_name_version"
+        )
+        target, conflict = _update_member_display_name_consistently(
+            meeting,
+            target.id,
+            next_display_name=next_display_name,
+            expected_display_name_version=expected_display_name_version,
+        )
+        if conflict is not None:
+            return _display_name_conflict_response(
+                current_display_name=conflict.display_name,
+                current_display_name_version=conflict.display_name_version,
+            )
+        if target is None:
+            return Response({"detail": "Member not found"}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            identity = _stable_participant_identity(target.user)
+            livekit_service.update_participant_name(
+                meeting.room_name,
+                identity,
+                name=next_display_name,
+            )
+        except Exception:
+            pass
+        log_audit(
+            user=request.user,
+            action="meeting.member_display_name_control",
+            resource_type="meeting",
+            resource_id=resource_id_for_log,
+            detail=f"target_user_id={target_user_id}, display_name={next_display_name}",
+            ip_address=client_ip(request),
+        )
+        return Response(MeetingMemberSerializer(target, context={"meeting": meeting}).data)
+
+    if action == "stop_share":
+        if not can_moderate(request.user, actor_membership):
+            return Response({"detail": "Only host/cohost can stop screen share"}, status=status.HTTP_403_FORBIDDEN)
+        identity = _stable_participant_identity(target.user)
+        try:
+            livekit_service.mute_participant_track_sources(
+                meeting.room_name,
+                identity,
+                track_sources=["screen_share", "screen_share_audio"],
+                muted=True,
+            )
+        except Exception:
+            pass
+        log_audit(
+            user=request.user,
+            action="meeting.member_stop_share",
+            resource_type="meeting",
+            resource_id=resource_id_for_log,
+            detail=f"target_user_id={target_user_id}",
+            ip_address=client_ip(request),
+        )
+        return Response(MeetingMemberSerializer(target, context={"meeting": meeting}).data)
+
+    if action == "remove":
+        if not can_moderate(request.user, actor_membership):
+            return Response({"detail": "Only host/cohost can remove members"}, status=status.HTTP_403_FORBIDDEN)
+        if target.role == MeetingRole.HOST and not request.user.is_superuser:
+            return Response({"detail": "Host cannot be removed by non-admin"}, status=status.HTTP_403_FORBIDDEN)
+        ban_after_remove = _bool_value(request.query_params.get("ban", "1"), default=True)
+        reason = (request.query_params.get("reason") or "").strip()[:200]
+        target_user = target.user
+        target_identity = _stable_participant_identity(target_user)
+        target.delete()
+        if ban_after_remove:
+            MeetingBlockedMember.objects.update_or_create(
+                meeting=meeting,
+                user=target_user,
+                defaults={
+                    "blocked_by": request.user,
+                    "reason": reason or "removed_by_moderator",
+                },
+            )
+            _mark_waiting_room_status(
+                meeting,
+                target_user,
+                WaitingRoomStatus.REJECTED,
+                reviewed_by=request.user,
+            )
+        try:
+            livekit_service.remove_participant(meeting.room_name, target_identity)
+        except Exception:
+            pass
+        log_audit(
+            user=request.user,
+            action="meeting.member_remove",
+            resource_type="meeting",
+            resource_id=resource_id_for_log,
+            detail=f"target_user_id={target_user_id}, banned={ban_after_remove}",
+            ip_address=client_ip(request),
+        )
+        return Response({"ok": True, "banned": ban_after_remove})
+
+    return Response({"detail": "Unsupported action"}, status=status.HTTP_400_BAD_REQUEST)
+
+
+def _meeting_participant_control(request, meeting_id: int, participant_identity: str, action: str):
+    meeting, error = _meeting_for_user_or_403(request.user, meeting_id)
+    if error:
+        return error
+    return _meeting_participant_control_impl(
+        request,
+        meeting,
+        participant_identity,
+        action,
+        meeting_id,
+    )
+
+
+def _meeting_realtime_bot_participant_control_impl(
+    request,
+    meeting,
+    *,
+    action: str,
+    resource_id_for_log: int,
+):
+    if action == "detail":
+        return Response(
+            {
+                "ok": True,
+                "identity": _meeting_realtime_bot_identity(meeting),
+                "display_name": _meeting_realtime_bot_display_name(meeting),
+                "display_name_version": 1,
+                "muted": bool(meeting.realtime_bot_muted),
+                "is_realtime_bot": True,
+            }
+        )
+
+    if action == "mute":
+        serializer = MeetingMuteSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        muted = serializer.validated_data["muted"]
+        if meeting.realtime_bot_muted != muted:
+            meeting.realtime_bot_muted = muted
+            meeting.save(update_fields=["realtime_bot_muted"])
+        log_audit(
+            user=request.user,
+            action="meeting.realtime_bot_mute",
+            resource_type="meeting",
+            resource_id=resource_id_for_log,
+            detail=f"muted={muted}",
+            ip_address=client_ip(request),
+        )
+        return Response(
+            {
+                "ok": True,
+                "identity": _meeting_realtime_bot_identity(meeting),
+                "muted": muted,
+                "is_realtime_bot": True,
+            }
+        )
+
+    if action == "display_name":
+        serializer = MeetingMemberDisplayNameControlSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        display_name = serializer.validated_data["display_name"].strip()
+        if not display_name:
+            return Response({"detail": "display_name is required"}, status=status.HTTP_400_BAD_REQUEST)
+        if meeting.realtime_bot_display_name != display_name:
+            meeting.realtime_bot_display_name = display_name
+            meeting.save(update_fields=["realtime_bot_display_name"])
+            _sync_realtime_bot_presence(meeting)
+        return Response(
+            {
+                "ok": True,
+                "identity": _meeting_realtime_bot_identity(meeting),
+                "display_name": _meeting_realtime_bot_display_name(meeting),
+                "display_name_version": 1,
+                "is_realtime_bot": True,
+            }
+        )
+
+    if action in {"remove"}:
+        if meeting.realtime_bot_enabled:
+            meeting.realtime_bot_enabled = False
+            meeting.save(update_fields=["realtime_bot_enabled"])
+            _sync_realtime_bot_presence(meeting)
+        log_audit(
+            user=request.user,
+            action="meeting.realtime_bot_disable",
+            resource_type="meeting",
+            resource_id=resource_id_for_log,
+            ip_address=client_ip(request),
+        )
+        return Response(
+            {
+                "ok": True,
+                "identity": _meeting_realtime_bot_identity(meeting),
+                "banned": False,
+                "is_realtime_bot": True,
+            }
+        )
+
+    return Response({"detail": "Unsupported action for realtime bot participant"}, status=status.HTTP_400_BAD_REQUEST)
+
+
+def _meeting_participant_control_impl(
+    request,
+    meeting,
+    participant_identity: str,
+    action: str,
+    resource_id_for_log: int,
+):
+    actor_membership = meeting_membership(meeting.id, request.user.id)
+    if not can_moderate(request.user, actor_membership):
+        return Response(
+            {"detail": "Only host/cohost can manage participants"},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    identity = (participant_identity or "").strip()
+    if not identity:
+        return Response({"detail": "Participant identity is required"}, status=status.HTTP_400_BAD_REQUEST)
+    if identity == _meeting_realtime_bot_identity(meeting):
+        return _meeting_realtime_bot_participant_control_impl(
+            request,
+            meeting,
+            action=action,
+            resource_id_for_log=resource_id_for_log,
+        )
+    if _user_id_from_participant_identity(identity) is not None:
+        return Response(
+            {"detail": "Registered members should be managed by member id"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    def _guest_permission_payload(publish_sources: Iterable[str], can_publish_data: bool):
+        source_set = set(publish_sources)
+        return {
+            "allow_self_unmute": "microphone" in source_set,
+            "allow_member_video": "camera" in source_set,
+            "allow_screen_share": "screen_share" in source_set or "screen_share_audio" in source_set,
+            "allow_chat": bool(can_publish_data),
+        }
+
+    if action == "detail":
+        livekit_name = _livekit_participant_name(meeting, identity).strip()
+        guest = _ensure_guest_participant_record(
+            meeting,
+            identity,
+            fallback_display_name=livekit_name,
+        )
+        return Response(
+            {
+                "ok": True,
+                "identity": identity,
+                "display_name": guest.display_name,
+                "display_name_version": guest.display_name_version,
+                "livekit_display_name": livekit_name,
+            }
+        )
+
+    if action == "mute":
+        serializer = MeetingMuteSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        muted = serializer.validated_data["muted"]
+        sources = _resolved_guest_publish_sources(meeting, identity)
+        effective_sources = _effective_guest_publish_sources(meeting, sources)
+        effective_source_set = set(effective_sources)
+        if not muted and "microphone" not in effective_source_set:
+            return Response(
+                {"detail": "Participant has no microphone permission. Allow mic first."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        can_publish_data = _resolved_guest_publish_data_allowed(meeting, identity)
+        try:
+            _sync_livekit_permissions_for_guest_participant(
+                meeting,
+                identity,
+                publish_sources=effective_sources,
+                can_publish_data=can_publish_data,
+                force_unmute_microphone=not muted,
+            )
+            if not muted:
+                _request_participant_device_open(
+                    meeting,
+                    identity,
+                    open_microphone=True,
+                )
+            if muted:
+                livekit_service.mute_participant_track_sources(
+                    meeting.room_name,
+                    identity,
+                    track_sources=["microphone"],
+                    muted=True,
+                )
+        except Exception:
+            pass
+        log_audit(
+            user=request.user,
+            action="meeting.participant_mute",
+            resource_type="meeting",
+            resource_id=resource_id_for_log,
+            detail=f"participant_identity={identity}, muted={muted}",
+            ip_address=client_ip(request),
+        )
+        return Response(
+            {
+                "ok": True,
+                "identity": identity,
+                "muted": muted,
+                **_guest_permission_payload(effective_sources, can_publish_data),
+            }
+        )
+
+    if action == "video":
+        serializer = MeetingVideoControlSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        disabled = serializer.validated_data["disabled"]
+        sources = _resolved_guest_publish_sources(meeting, identity)
+        effective_sources = _effective_guest_publish_sources(meeting, sources)
+        effective_source_set = set(effective_sources)
+        if not disabled and "camera" not in effective_source_set:
+            return Response(
+                {"detail": "Participant has no camera permission. Allow video first."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        can_publish_data = _resolved_guest_publish_data_allowed(meeting, identity)
+        try:
+            _sync_livekit_permissions_for_guest_participant(
+                meeting,
+                identity,
+                publish_sources=effective_sources,
+                can_publish_data=can_publish_data,
+                force_unmute_camera=not disabled,
+            )
+            if not disabled:
+                _request_participant_device_open(
+                    meeting,
+                    identity,
+                    open_camera=True,
+                )
+            if disabled:
+                livekit_service.mute_participant_track_sources(
+                    meeting.room_name,
+                    identity,
+                    track_sources=["camera"],
+                    muted=True,
+                )
+        except Exception:
+            pass
+        log_audit(
+            user=request.user,
+            action="meeting.participant_video_control",
+            resource_type="meeting",
+            resource_id=resource_id_for_log,
+            detail=f"participant_identity={identity}, disabled={disabled}",
+            ip_address=client_ip(request),
+        )
+        return Response(
+            {
+                "ok": True,
+                "identity": identity,
+                "disabled": disabled,
+                **_guest_permission_payload(effective_sources, can_publish_data),
+            }
+        )
+
+    if action in {"mic_permission", "video_permission", "chat_permission", "screen_share_permission"}:
+        if action == "chat_permission":
+            return Response(
+                {"detail": "Guest chat permission follows meeting-level controls and cannot be overridden per participant"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        serializer = MeetingPermissionControlSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        allowed = serializer.validated_data["allowed"]
+        sources = _resolved_guest_publish_sources(meeting, identity)
+        can_publish_data = _resolved_guest_publish_data_allowed(meeting, identity)
+
+        if action == "mic_permission":
+            if allowed:
+                sources.add("microphone")
+            else:
+                sources.discard("microphone")
+            audit_action = "meeting.participant_mic_permission"
+        elif action == "video_permission":
+            if allowed:
+                sources.add("camera")
+            else:
+                sources.discard("camera")
+            audit_action = "meeting.participant_video_permission"
+        elif action == "chat_permission":
+            can_publish_data = allowed
+            audit_action = "meeting.participant_chat_permission"
+        else:
+            if allowed:
+                sources.update({"screen_share", "screen_share_audio"})
+            else:
+                sources.discard("screen_share")
+                sources.discard("screen_share_audio")
+            audit_action = "meeting.participant_screen_share_permission"
+
+        effective_sources = _effective_guest_publish_sources(meeting, sources)
+        effective_can_publish_data = bool(can_publish_data and meeting.allow_chat)
+        try:
+            _sync_livekit_permissions_for_guest_participant(
+                meeting,
+                identity,
+                publish_sources=effective_sources,
+                can_publish_data=effective_can_publish_data,
+            )
+            if action == "screen_share_permission" and not allowed:
+                livekit_service.mute_participant_track_sources(
+                    meeting.room_name,
+                    identity,
+                    track_sources=["screen_share", "screen_share_audio"],
+                    muted=True,
+                )
+        except Exception:
+            pass
+        log_audit(
+            user=request.user,
+            action=audit_action,
+            resource_type="meeting",
+            resource_id=resource_id_for_log,
+            detail=f"participant_identity={identity}, allowed={allowed}",
+            ip_address=client_ip(request),
+        )
+        return Response(
+            {
+                "ok": True,
+                "identity": identity,
+                **_guest_permission_payload(effective_sources, effective_can_publish_data),
+            }
+        )
+
+    if action == "display_name":
+        serializer = MeetingMemberDisplayNameControlSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        next_display_name = serializer.validated_data["display_name"].strip()
+        expected_display_name_version = serializer.validated_data.get(
+            "expected_display_name_version"
+        )
+        guest, conflict = _update_guest_display_name_consistently(
+            meeting,
+            identity,
+            next_display_name=next_display_name,
+            expected_display_name_version=expected_display_name_version,
+        )
+        if conflict is not None:
+            return _display_name_conflict_response(
+                current_display_name=conflict.display_name,
+                current_display_name_version=conflict.display_name_version,
+            )
+        try:
+            livekit_service.update_participant_name(
+                meeting.room_name,
+                identity,
+                name=guest.display_name,
+            )
+        except Exception:
+            pass
+        log_audit(
+            user=request.user,
+            action="meeting.participant_display_name_control",
+            resource_type="meeting",
+            resource_id=resource_id_for_log,
+            detail=(
+                f"participant_identity={identity}, "
+                f"display_name={guest.display_name}, "
+                f"display_name_version={guest.display_name_version}"
+            ),
+            ip_address=client_ip(request),
+        )
+        return Response(
+            {
+                "ok": True,
+                "identity": identity,
+                "display_name": guest.display_name,
+                "display_name_version": guest.display_name_version,
+            }
+        )
+
+    if action == "stop_share":
+        try:
+            livekit_service.mute_participant_track_sources(
+                meeting.room_name,
+                identity,
+                track_sources=["screen_share", "screen_share_audio"],
+                muted=True,
+            )
+        except Exception:
+            pass
+        log_audit(
+            user=request.user,
+            action="meeting.participant_stop_share",
+            resource_type="meeting",
+            resource_id=resource_id_for_log,
+            detail=f"participant_identity={identity}",
+            ip_address=client_ip(request),
+        )
+        return Response({"ok": True, "identity": identity})
+
+    if action == "remove":
+        MeetingGuestParticipant.objects.filter(
+            meeting=meeting,
+            participant_identity=identity,
+        ).delete()
+        try:
+            livekit_service.remove_participant(meeting.room_name, identity)
+        except Exception:
+            pass
+        log_audit(
+            user=request.user,
+            action="meeting.participant_remove",
+            resource_type="meeting",
+            resource_id=resource_id_for_log,
+            detail=f"participant_identity={identity}",
+            ip_address=client_ip(request),
+        )
+        return Response({"ok": True, "identity": identity, "banned": False})
+
+    return Response({"detail": "Unsupported action"}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def meeting_member_role(request, meeting_id: int, target_user_id: int):
+    return _meeting_member_control(request, meeting_id, target_user_id, "role")
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def meeting_member_mute(request, meeting_id: int, target_user_id: int):
+    return _meeting_member_control(request, meeting_id, target_user_id, "mute")
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def meeting_member_video(request, meeting_id: int, target_user_id: int):
+    return _meeting_member_control(request, meeting_id, target_user_id, "video")
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def meeting_member_mic_permission(request, meeting_id: int, target_user_id: int):
+    return _meeting_member_control(request, meeting_id, target_user_id, "mic_permission")
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def meeting_member_video_permission(request, meeting_id: int, target_user_id: int):
+    return _meeting_member_control(request, meeting_id, target_user_id, "video_permission")
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def meeting_member_chat_permission(request, meeting_id: int, target_user_id: int):
+    return _meeting_member_control(request, meeting_id, target_user_id, "chat_permission")
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def meeting_member_screen_share_permission(request, meeting_id: int, target_user_id: int):
+    return _meeting_member_control(request, meeting_id, target_user_id, "screen_share_permission")
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def meeting_member_display_name_control(request, meeting_id: int, target_user_id: int):
+    return _meeting_member_control(request, meeting_id, target_user_id, "display_name")
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def meeting_member_stop_share(request, meeting_id: int, target_user_id: int):
+    return _meeting_member_control(request, meeting_id, target_user_id, "stop_share")
+
+
+@api_view(["DELETE"])
+@permission_classes([IsAuthenticated])
+def meeting_member_remove(request, meeting_id: int, target_user_id: int):
+    return _meeting_member_control(request, meeting_id, target_user_id, "remove")
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def meeting_participant_mute(request, meeting_id: int, participant_identity: str):
+    return _meeting_participant_control(request, meeting_id, participant_identity, "mute")
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def meeting_participant_video(request, meeting_id: int, participant_identity: str):
+    return _meeting_participant_control(request, meeting_id, participant_identity, "video")
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def meeting_participant_mic_permission(request, meeting_id: int, participant_identity: str):
+    return _meeting_participant_control(request, meeting_id, participant_identity, "mic_permission")
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def meeting_participant_video_permission(request, meeting_id: int, participant_identity: str):
+    return _meeting_participant_control(request, meeting_id, participant_identity, "video_permission")
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def meeting_participant_chat_permission(request, meeting_id: int, participant_identity: str):
+    return _meeting_participant_control(request, meeting_id, participant_identity, "chat_permission")
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def meeting_participant_screen_share_permission(request, meeting_id: int, participant_identity: str):
+    return _meeting_participant_control(request, meeting_id, participant_identity, "screen_share_permission")
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def meeting_participant_display_name_control(request, meeting_id: int, participant_identity: str):
+    return _meeting_participant_control(request, meeting_id, participant_identity, "display_name")
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def meeting_participant_stop_share(request, meeting_id: int, participant_identity: str):
+    return _meeting_participant_control(request, meeting_id, participant_identity, "stop_share")
+
+
+@api_view(["GET", "DELETE"])
+@permission_classes([IsAuthenticated])
+def meeting_participant_remove(request, meeting_id: int, participant_identity: str):
+    action = "detail" if request.method == "GET" else "remove"
+    return _meeting_participant_control(request, meeting_id, participant_identity, action)
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def meeting_member_role_ref(request, meeting_ref: str, target_user_id: int):
+    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
+    if error:
+        return error
+    return _meeting_member_control_impl(request, meeting, target_user_id, "role", meeting.id)
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def meeting_member_mute_ref(request, meeting_ref: str, target_user_id: int):
+    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
+    if error:
+        return error
+    return _meeting_member_control_impl(request, meeting, target_user_id, "mute", meeting.id)
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def meeting_member_video_ref(request, meeting_ref: str, target_user_id: int):
+    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
+    if error:
+        return error
+    return _meeting_member_control_impl(request, meeting, target_user_id, "video", meeting.id)
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def meeting_member_mic_permission_ref(request, meeting_ref: str, target_user_id: int):
+    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
+    if error:
+        return error
+    return _meeting_member_control_impl(request, meeting, target_user_id, "mic_permission", meeting.id)
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def meeting_member_video_permission_ref(request, meeting_ref: str, target_user_id: int):
+    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
+    if error:
+        return error
+    return _meeting_member_control_impl(request, meeting, target_user_id, "video_permission", meeting.id)
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def meeting_member_chat_permission_ref(request, meeting_ref: str, target_user_id: int):
+    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
+    if error:
+        return error
+    return _meeting_member_control_impl(request, meeting, target_user_id, "chat_permission", meeting.id)
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def meeting_member_screen_share_permission_ref(request, meeting_ref: str, target_user_id: int):
+    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
+    if error:
+        return error
+    return _meeting_member_control_impl(request, meeting, target_user_id, "screen_share_permission", meeting.id)
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def meeting_member_display_name_control_ref(request, meeting_ref: str, target_user_id: int):
+    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
+    if error:
+        return error
+    return _meeting_member_control_impl(request, meeting, target_user_id, "display_name", meeting.id)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def meeting_member_stop_share_ref(request, meeting_ref: str, target_user_id: int):
+    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
+    if error:
+        return error
+    return _meeting_member_control_impl(request, meeting, target_user_id, "stop_share", meeting.id)
+
+
+@api_view(["DELETE"])
+@permission_classes([IsAuthenticated])
+def meeting_member_remove_ref(request, meeting_ref: str, target_user_id: int):
+    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
+    if error:
+        return error
+    return _meeting_member_control_impl(request, meeting, target_user_id, "remove", meeting.id)
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def meeting_participant_mute_ref(request, meeting_ref: str, participant_identity: str):
+    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
+    if error:
+        return error
+    return _meeting_participant_control_impl(request, meeting, participant_identity, "mute", meeting.id)
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def meeting_participant_video_ref(request, meeting_ref: str, participant_identity: str):
+    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
+    if error:
+        return error
+    return _meeting_participant_control_impl(request, meeting, participant_identity, "video", meeting.id)
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def meeting_participant_mic_permission_ref(request, meeting_ref: str, participant_identity: str):
+    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
+    if error:
+        return error
+    return _meeting_participant_control_impl(request, meeting, participant_identity, "mic_permission", meeting.id)
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def meeting_participant_video_permission_ref(request, meeting_ref: str, participant_identity: str):
+    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
+    if error:
+        return error
+    return _meeting_participant_control_impl(request, meeting, participant_identity, "video_permission", meeting.id)
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def meeting_participant_chat_permission_ref(request, meeting_ref: str, participant_identity: str):
+    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
+    if error:
+        return error
+    return _meeting_participant_control_impl(request, meeting, participant_identity, "chat_permission", meeting.id)
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def meeting_participant_screen_share_permission_ref(request, meeting_ref: str, participant_identity: str):
+    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
+    if error:
+        return error
+    return _meeting_participant_control_impl(
+        request,
+        meeting,
+        participant_identity,
+        "screen_share_permission",
+        meeting.id,
+    )
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def meeting_participant_display_name_control_ref(request, meeting_ref: str, participant_identity: str):
+    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
+    if error:
+        return error
+    return _meeting_participant_control_impl(request, meeting, participant_identity, "display_name", meeting.id)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def meeting_participant_stop_share_ref(request, meeting_ref: str, participant_identity: str):
+    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
+    if error:
+        return error
+    return _meeting_participant_control_impl(request, meeting, participant_identity, "stop_share", meeting.id)
+
+
+@api_view(["GET", "DELETE"])
+@permission_classes([IsAuthenticated])
+def meeting_participant_remove_ref(request, meeting_ref: str, participant_identity: str):
+    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
+    if error:
+        return error
+    action = "detail" if request.method == "GET" else "remove"
+    return _meeting_participant_control_impl(request, meeting, participant_identity, action, meeting.id)
+
+
+def _meeting_host_leave_impl(request, meeting, resource_id_for_log: int):
+    actor_membership = meeting_membership(meeting.id, request.user.id)
+    if not actor_membership or actor_membership.role != MeetingRole.HOST:
+        return Response({"detail": "Only host can end or transfer meeting"}, status=status.HTTP_403_FORBIDDEN)
+
+    serializer = MeetingHostLeaveSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    transfer_user_id = serializer.validated_data.get("transfer_user_id")
+    online_user_ids = _list_registered_participant_user_ids(meeting)
+
+    if transfer_user_id is not None:
+        if online_user_ids is None:
+            return Response(
+                {"detail": "Unable to verify participant presence. Please try again."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        if transfer_user_id not in online_user_ids:
+            return Response(
+                {"detail": "Target user is not currently in meeting"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        target = MeetingMember.objects.filter(meeting=meeting, user_id=transfer_user_id).select_related("user").first()
+        if not target:
+            return Response({"detail": "Target user not found"}, status=status.HTTP_404_NOT_FOUND)
+        if target.user_id == request.user.id:
+            return Response({"detail": "Cannot transfer host to yourself"}, status=status.HTTP_400_BAD_REQUEST)
+        with transaction.atomic():
+            target.role = MeetingRole.HOST
+            target.save(update_fields=["role"])
+            actor_membership.delete()
+            if meeting.owner_id != target.user_id:
+                _transfer_meeting_owner_with_session_usage(meeting, new_owner=target.user)
+        try:
+            _sync_livekit_permissions_for_member(meeting, target)
+        except Exception:
+            pass
+        log_audit(
+            user=request.user,
+            action="meeting.host_leave_transfer",
+            resource_type="meeting",
+            resource_id=resource_id_for_log,
+            detail=f"handover_to_user_id={target.user_id}",
+            ip_address=client_ip(request),
+        )
+        return Response(
+            {
+                "ok": True,
+                "meeting_ended": False,
+                "handover_to_user_id": target.user_id,
+            }
+        )
+
+    next_host = (
+        MeetingMember.objects.filter(meeting=meeting, role=MeetingRole.COHOST)
+        .exclude(user=request.user)
+        .select_related("user")
+        .order_by("created_at")
+        .first()
+    )
+    if next_host:
+        with transaction.atomic():
+            next_host.role = MeetingRole.HOST
+            next_host.save(update_fields=["role"])
+            actor_membership.delete()
+            if meeting.owner_id != next_host.user_id:
+                _transfer_meeting_owner_with_session_usage(meeting, new_owner=next_host.user)
+        try:
+            _sync_livekit_permissions_for_member(meeting, next_host)
+        except Exception:
+            pass
+        log_audit(
+            user=request.user,
+            action="meeting.host_leave_auto_handover",
+            resource_type="meeting",
+            resource_id=resource_id_for_log,
+            detail=f"handover_to_user_id={next_host.user_id}",
+            ip_address=client_ip(request),
+        )
+        return Response(
+            {
+                "ok": True,
+                "meeting_ended": False,
+                "handover_to_user_id": next_host.user_id,
+                "auto_handover": True,
+            }
+        )
+
+    room_name = meeting.room_name
+    deleted_meeting_id = meeting.id
+    _finalize_room_session_if_needed(meeting)
+    meeting.delete()
+    try:
+        livekit_service.delete_room(room_name)
+    except Exception:
+        pass
+    log_audit(
+        user=request.user,
+        action="meeting.host_leave_end_no_cohost",
+        resource_type="meeting",
+        resource_id=resource_id_for_log,
+        detail=f"deleted_meeting_id={deleted_meeting_id}, room={room_name}",
+        ip_address=client_ip(request),
+    )
+    return Response(
+        {
+            "ok": True,
+            "meeting_ended": True,
+            "deleted_meeting_id": deleted_meeting_id,
+        }
+    )
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def meeting_host_leave(request, meeting_id: int):
+    meeting, error = _meeting_for_user_or_403(request.user, meeting_id)
+    if error:
+        return error
+    return _meeting_host_leave_impl(request, meeting, meeting_id)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def meeting_host_leave_ref(request, meeting_ref: str):
+    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
+    if error:
+        return error
+    return _meeting_host_leave_impl(request, meeting, meeting.id)
+
+
+def _meeting_controls_impl(request, meeting, resource_id_for_log: int):
+    actor_membership = meeting_membership(meeting.id, request.user.id)
+    if not can_moderate(request.user, actor_membership):
+        return Response({"detail": "Only host/cohost can update meeting controls"}, status=status.HTTP_403_FORBIDDEN)
+
+    serializer = MeetingControlUpdateSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    payload = serializer.validated_data
+    if not payload:
+        return Response(MeetingSerializer(meeting, context={"request": request}).data)
+
+    _apply_meeting_payload(meeting, payload)
+    meeting.save(update_fields=list(payload.keys()))
+    members = MeetingMember.objects.filter(meeting=meeting).select_related("user")
+    _sync_livekit_permissions_for_members(meeting, members)
+    _sync_livekit_permissions_for_guest_participants(meeting)
+    log_audit(
+        user=request.user,
+        action="meeting.controls_update",
+        resource_type="meeting",
+        resource_id=resource_id_for_log,
+        detail=f"fields={','.join(payload.keys())}",
+        ip_address=client_ip(request),
+    )
+    return Response(MeetingSerializer(meeting, context={"request": request}).data)
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def meeting_controls(request, meeting_id: int):
+    meeting, error = _meeting_for_user_or_403(request.user, meeting_id)
+    if error:
+        return error
+    return _meeting_controls_impl(request, meeting, meeting_id)
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def meeting_controls_ref(request, meeting_ref: str):
+    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
+    if error:
+        return error
+    return _meeting_controls_impl(request, meeting, meeting.id)
+
+
+def _meeting_ai_controls_impl(request, meeting, resource_id_for_log: int):
+    actor_membership = meeting_membership(meeting.id, request.user.id)
+    if not can_moderate(request.user, actor_membership):
+        return Response({"detail": "Only host/cohost can update AI controls"}, status=status.HTTP_403_FORBIDDEN)
+
+    if request.method == "GET":
+        _sync_realtime_bot_presence(meeting)
+        return Response(MeetingSerializer(meeting, context={"request": request}).data)
+
+    serializer = MeetingRealtimeBotControlSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    payload = serializer.validated_data
+    if not payload:
+        return Response(MeetingSerializer(meeting, context={"request": request}).data)
+
+    next_enabled = payload.get("realtime_bot_enabled", meeting.realtime_bot_enabled)
+    next_key = payload.get("realtime_bot_api_key", meeting.realtime_bot_api_key)
+    next_base_url = payload.get("realtime_bot_base_url", meeting.realtime_bot_base_url)
+    next_model = payload.get("realtime_bot_model", meeting.realtime_bot_model)
+    next_voice = payload.get("realtime_bot_voice", meeting.realtime_bot_voice)
+    next_display_name = payload.get("realtime_bot_display_name", meeting.realtime_bot_display_name)
+
+    if next_enabled and not (next_key or "").strip():
+        return Response(
+            {"detail": "Realtime voice is enabled but API key is empty"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if not (next_base_url or "").strip():
+        return Response({"detail": "Realtime base URL cannot be empty"}, status=status.HTTP_400_BAD_REQUEST)
+    if not (next_model or "").strip():
+        return Response({"detail": "Realtime model cannot be empty"}, status=status.HTTP_400_BAD_REQUEST)
+    if not (next_voice or "").strip():
+        return Response({"detail": "Realtime voice cannot be empty"}, status=status.HTTP_400_BAD_REQUEST)
+    if not (next_display_name or "").strip():
+        return Response({"detail": "Realtime display name cannot be empty"}, status=status.HTTP_400_BAD_REQUEST)
+
+    _apply_meeting_payload(meeting, payload)
+    meeting.save(update_fields=list(payload.keys()))
+    _sync_realtime_bot_presence(meeting)
+    log_audit(
+        user=request.user,
+        action="meeting.ai_controls_update",
+        resource_type="meeting",
+        resource_id=resource_id_for_log,
+        detail=f"fields={','.join(payload.keys())}",
+        ip_address=client_ip(request),
+    )
+    return Response(MeetingSerializer(meeting, context={"request": request}).data)
+
+
+@api_view(["GET", "PATCH"])
+@permission_classes([IsAuthenticated])
+def meeting_ai_controls(request, meeting_id: int):
+    meeting, error = _meeting_for_user_or_403(request.user, meeting_id)
+    if error:
+        return error
+    return _meeting_ai_controls_impl(request, meeting, meeting_id)
+
+
+@api_view(["GET", "PATCH"])
+@permission_classes([IsAuthenticated])
+def meeting_ai_controls_ref(request, meeting_ref: str):
+    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
+    if error:
+        return error
+    return _meeting_ai_controls_impl(request, meeting, meeting.id)
+
+
+def _meeting_ai_controls_test_impl(request, meeting, resource_id_for_log: int):
+    actor_membership = meeting_membership(meeting.id, request.user.id)
+    if not can_moderate(request.user, actor_membership):
+        return Response({"detail": "Only host/cohost can test AI connectivity"}, status=status.HTTP_403_FORBIDDEN)
+
+    serializer = MeetingRealtimeBotConnectivityTestSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    payload = serializer.validated_data
+
+    base_url = _normalized_realtime_base_url(payload.get("base_url") or meeting.realtime_bot_base_url)
+    model = (payload.get("model") or meeting.realtime_bot_model or _REALTIME_BOT_DEFAULT_MODEL).strip()
+    api_key = (payload.get("api_key") or meeting.realtime_bot_api_key).strip()
+    voice = (payload.get("voice") or meeting.realtime_bot_voice or _REALTIME_BOT_DEFAULT_VOICE).strip()
+    prompt = (payload.get("prompt") or "请简要回复：连接成功。").strip()
+    if not api_key:
+        return Response({"detail": "API key is required for connectivity test"}, status=status.HTTP_400_BAD_REQUEST)
+
+    class _RealtimeMeetingConfig:
+        pass
+
+    test_meeting = _RealtimeMeetingConfig()
+    test_meeting.realtime_bot_base_url = base_url
+    test_meeting.realtime_bot_model = model
+    test_meeting.realtime_bot_api_key = api_key
+    test_meeting.realtime_bot_voice = voice
+    test_meeting.realtime_bot_muted = True
+
+    started_at = time.time()
+    try:
+        text, _, _ = _call_realtime_bot(meeting=test_meeting, prompt=prompt)
+        latency_ms = int((time.time() - started_at) * 1000)
+        log_audit(
+            user=request.user,
+            action="meeting.ai_controls_test",
+            resource_type="meeting",
+            resource_id=resource_id_for_log,
+            detail=f"ok=1,latency_ms={latency_ms}",
+            ip_address=client_ip(request),
+        )
+        return Response(
+            {
+                "ok": True,
+                "latency_ms": latency_ms,
+                "preview_text": (text or "").strip()[:200],
+            }
+        )
+    except Exception as exc:
+        latency_ms = int((time.time() - started_at) * 1000)
+        log_audit(
+            user=request.user,
+            action="meeting.ai_controls_test",
+            resource_type="meeting",
+            resource_id=resource_id_for_log,
+            detail=f"ok=0,latency_ms={latency_ms},error={exc}",
+            ip_address=client_ip(request),
+        )
+        return Response(
+            {
+                "ok": False,
+                "latency_ms": latency_ms,
+                "detail": str(exc),
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def meeting_ai_controls_test(request, meeting_id: int):
+    meeting, error = _meeting_for_user_or_403(request.user, meeting_id)
+    if error:
+        return error
+    return _meeting_ai_controls_test_impl(request, meeting, meeting_id)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def meeting_ai_controls_test_ref(request, meeting_ref: str):
+    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
+    if error:
+        return error
+    return _meeting_ai_controls_test_impl(request, meeting, meeting.id)
+
+
+def _meeting_mute_all_impl(request, meeting, resource_id_for_log: int):
+    actor_membership = meeting_membership(meeting.id, request.user.id)
+    if not can_moderate(request.user, actor_membership):
+        return Response({"detail": "Only host/cohost can mute all members"}, status=status.HTTP_403_FORBIDDEN)
+
+    targets = list(
+        MeetingMember.objects.filter(meeting=meeting)
+        .exclude(role=MeetingRole.HOST)
+        .exclude(user=request.user)
+        .select_related("user")
+    )
+    if targets:
+        target_ids = [row.id for row in targets]
+        MeetingMember.objects.filter(id__in=target_ids).update(muted_by_host=True)
+        for row in targets:
+            row.muted_by_host = True
+        _sync_livekit_permissions_for_members(meeting, targets)
+    guest_identities = _list_guest_participant_identities(meeting)
+    muted_guest_count = 0
+    for identity in guest_identities:
+        try:
+            sources = _resolved_guest_publish_sources(meeting, identity)
+            if meeting.allow_self_unmute:
+                sources.add("microphone")
+            else:
+                sources.discard("microphone")
+            effective_sources = _effective_guest_publish_sources(meeting, sources)
+            _sync_livekit_permissions_for_guest_participant(
+                meeting,
+                identity,
+                publish_sources=effective_sources,
+            )
+            livekit_service.mute_participant_track_sources(
+                meeting.room_name,
+                identity,
+                track_sources=["microphone"],
+                muted=True,
+            )
+            muted_guest_count += 1
+        except Exception:
+            continue
+    log_audit(
+        user=request.user,
+        action="meeting.mute_all",
+        resource_type="meeting",
+        resource_id=resource_id_for_log,
+        detail=f"muted_count={len(targets) + muted_guest_count}",
+        ip_address=client_ip(request),
+    )
+    return Response({"ok": True, "muted_count": len(targets) + muted_guest_count})
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def meeting_mute_all(request, meeting_id: int):
+    meeting, error = _meeting_for_user_or_403(request.user, meeting_id)
+    if error:
+        return error
+    return _meeting_mute_all_impl(request, meeting, meeting_id)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def meeting_mute_all_ref(request, meeting_ref: str):
+    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
+    if error:
+        return error
+    return _meeting_mute_all_impl(request, meeting, meeting.id)
+
+
+def _meeting_waiting_room_entries_impl(request, meeting):
+    actor_membership = meeting_membership(meeting.id, request.user.id)
+    if not can_moderate(request.user, actor_membership):
+        return Response({"detail": "Only host/cohost can manage waiting room"}, status=status.HTTP_403_FORBIDDEN)
+
+    status_filter = (request.GET.get("status") or "").strip().lower()
+    include_reviewed = _bool_value(request.GET.get("all"), default=False)
+    entries = MeetingWaitingRoomEntry.objects.filter(meeting=meeting)
+    if status_filter in {
+        WaitingRoomStatus.PENDING,
+        WaitingRoomStatus.APPROVED,
+        WaitingRoomStatus.REJECTED,
+    }:
+        entries = entries.filter(status=status_filter)
+    elif not include_reviewed:
+        entries = entries.filter(status=WaitingRoomStatus.PENDING)
+    entries = entries.select_related("user", "reviewed_by").order_by("created_at")
+    return Response(MeetingWaitingRoomEntrySerializer(entries, many=True).data)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def meeting_waiting_room_entries(request, meeting_id: int):
+    meeting, error = _meeting_for_user_or_403(request.user, meeting_id)
+    if error:
+        return error
+    return _meeting_waiting_room_entries_impl(request, meeting)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def meeting_waiting_room_entries_ref(request, meeting_ref: str):
+    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
+    if error:
+        return error
+    return _meeting_waiting_room_entries_impl(request, meeting)
+
+
+def _meeting_waiting_room_review_impl(request, meeting, target_user_id: int, resource_id_for_log: int):
+    actor_membership = meeting_membership(meeting.id, request.user.id)
+    if not can_moderate(request.user, actor_membership):
+        return Response({"detail": "Only host/cohost can manage waiting room"}, status=status.HTTP_403_FORBIDDEN)
+
+    target_user = User.objects.filter(id=target_user_id).first()
+    if not target_user:
+        return Response({"detail": "Target user not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    serializer = WaitingRoomReviewSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    next_status = serializer.validated_data["status"]
+
+    if next_status == WaitingRoomStatus.APPROVED:
+        with transaction.atomic():
+            MeetingBlockedMember.objects.filter(meeting=meeting, user=target_user).delete()
+            member = MeetingMember.objects.filter(meeting=meeting, user=target_user).first()
+            if not member:
+                member_count = MeetingMember.objects.filter(meeting=meeting).count()
+                if member_count >= meeting.max_participants:
+                    return Response(
+                        {"detail": "Meeting has reached max participants"},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                member = MeetingMember.objects.create(
+                    meeting=meeting,
+                    user=target_user,
+                    role=MeetingRole.PARTICIPANT,
+                    display_name=_fallback_display_name(target_user),
+                    muted_by_host=meeting.mute_on_entry,
+                )
+            entry = _mark_waiting_room_status(
+                meeting,
+                target_user,
+                WaitingRoomStatus.APPROVED,
+                reviewed_by=request.user,
+            )
+        try:
+            _sync_livekit_permissions_for_member(meeting, member)
+        except Exception:
+            pass
+    elif next_status == WaitingRoomStatus.REJECTED:
+        entry = _mark_waiting_room_status(
+            meeting,
+            target_user,
+            WaitingRoomStatus.REJECTED,
+            reviewed_by=request.user,
+        )
+    else:
+        entry = _mark_waiting_room_status(
+            meeting,
+            target_user,
+            WaitingRoomStatus.PENDING,
+            reviewed_by=request.user,
+        )
+
+    log_audit(
+        user=request.user,
+        action="meeting.waiting_room_review",
+        resource_type="meeting",
+        resource_id=resource_id_for_log,
+        detail=f"target_user_id={target_user_id}, status={next_status}",
+        ip_address=client_ip(request),
+    )
+    return Response(MeetingWaitingRoomEntrySerializer(entry).data)
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def meeting_waiting_room_review(request, meeting_id: int, target_user_id: int):
+    meeting, error = _meeting_for_user_or_403(request.user, meeting_id)
+    if error:
+        return error
+    return _meeting_waiting_room_review_impl(request, meeting, target_user_id, meeting_id)
+
+
+@api_view(["PATCH"])
+@permission_classes([IsAuthenticated])
+def meeting_waiting_room_review_ref(request, meeting_ref: str, target_user_id: int):
+    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
+    if error:
+        return error
+    return _meeting_waiting_room_review_impl(request, meeting, target_user_id, meeting.id)
+
+
+def _meeting_blocked_members_impl(request, meeting):
+    actor_membership = meeting_membership(meeting.id, request.user.id)
+    if not can_moderate(request.user, actor_membership):
+        return Response({"detail": "Only host/cohost can view blocked members"}, status=status.HTTP_403_FORBIDDEN)
+    rows = MeetingBlockedMember.objects.filter(meeting=meeting).select_related("user", "blocked_by").order_by("-created_at")
+    return Response(MeetingBlockedMemberSerializer(rows, many=True).data)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def meeting_blocked_members(request, meeting_id: int):
+    meeting, error = _meeting_for_user_or_403(request.user, meeting_id)
+    if error:
+        return error
+    return _meeting_blocked_members_impl(request, meeting)
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def meeting_blocked_members_ref(request, meeting_ref: str):
+    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
+    if error:
+        return error
+    return _meeting_blocked_members_impl(request, meeting)
+
+
+def _meeting_unblock_member_impl(request, meeting, target_user_id: int, resource_id_for_log: int):
+    actor_membership = meeting_membership(meeting.id, request.user.id)
+    if not can_moderate(request.user, actor_membership):
+        return Response({"detail": "Only host/cohost can unblock members"}, status=status.HTTP_403_FORBIDDEN)
+
+    blocked = MeetingBlockedMember.objects.filter(meeting=meeting, user_id=target_user_id).first()
+    if not blocked:
+        return Response({"detail": "Blocked member not found"}, status=status.HTTP_404_NOT_FOUND)
+    blocked.delete()
+    log_audit(
+        user=request.user,
+        action="meeting.member_unblock",
+        resource_type="meeting",
+        resource_id=resource_id_for_log,
+        detail=f"target_user_id={target_user_id}",
+        ip_address=client_ip(request),
+    )
+    return Response({"ok": True})
+
+
+@api_view(["DELETE"])
+@permission_classes([IsAuthenticated])
+def meeting_unblock_member(request, meeting_id: int, target_user_id: int):
+    meeting, error = _meeting_for_user_or_403(request.user, meeting_id)
+    if error:
+        return error
+    return _meeting_unblock_member_impl(request, meeting, target_user_id, meeting_id)
+
+
+@api_view(["DELETE"])
+@permission_classes([IsAuthenticated])
+def meeting_unblock_member_ref(request, meeting_ref: str, target_user_id: int):
+    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
+    if error:
+        return error
+    return _meeting_unblock_member_impl(request, meeting, target_user_id, meeting.id)
+
+
 @api_view(["GET", "POST"])
 @permission_classes([IsAuthenticated])
 def meeting_messages(request, meeting_id: int):
@@ -4600,6 +6719,7 @@ def _meeting_messages_impl(request, meeting, resource_id_for_log: int):
     if not content:
         return Response({"detail": "Message content cannot be empty"}, status=status.HTTP_400_BAD_REQUEST)
     msg = MeetingMessage.objects.create(meeting=meeting, sender_user=request.user, content=content)
+    _maybe_trigger_realtime_bot_reply(meeting, msg)
     log_audit(
         user=request.user,
         action="meeting.chat_send",

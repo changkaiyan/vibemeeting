@@ -201,6 +201,24 @@ class MeetingControlUpdateSerializer(serializers.Serializer):
     allow_member_video = serializers.BooleanField(required=False)
 
 
+class MeetingRealtimeBotControlSerializer(serializers.Serializer):
+    realtime_bot_enabled = serializers.BooleanField(required=False)
+    realtime_bot_muted = serializers.BooleanField(required=False)
+    realtime_bot_base_url = serializers.CharField(required=False, allow_blank=False, max_length=255)
+    realtime_bot_model = serializers.CharField(required=False, allow_blank=False, max_length=120)
+    realtime_bot_api_key = serializers.CharField(required=False, allow_blank=True, max_length=255)
+    realtime_bot_voice = serializers.CharField(required=False, allow_blank=False, max_length=40)
+    realtime_bot_display_name = serializers.CharField(required=False, allow_blank=False, max_length=80)
+
+
+class MeetingRealtimeBotConnectivityTestSerializer(serializers.Serializer):
+    base_url = serializers.CharField(required=False, allow_blank=False, max_length=255)
+    model = serializers.CharField(required=False, allow_blank=False, max_length=120)
+    api_key = serializers.CharField(required=False, allow_blank=False, max_length=255)
+    voice = serializers.CharField(required=False, allow_blank=False, max_length=40)
+    prompt = serializers.CharField(required=False, allow_blank=False, max_length=500)
+
+
 class MeetingSerializer(serializers.ModelSerializer):
     meeting_ref = serializers.SerializerMethodField()
     has_password = serializers.SerializerMethodField()
@@ -211,6 +229,10 @@ class MeetingSerializer(serializers.ModelSerializer):
     can_debug_token = serializers.SerializerMethodField()
     share_code = serializers.SerializerMethodField()
     share_url = serializers.SerializerMethodField()
+    realtime_bot_api_key_set = serializers.SerializerMethodField()
+    realtime_bot_api_key = serializers.SerializerMethodField()
+    realtime_bot_user_id = serializers.SerializerMethodField()
+    realtime_bot_identity = serializers.SerializerMethodField()
 
     class Meta:
         model = Meeting
@@ -235,6 +257,16 @@ class MeetingSerializer(serializers.ModelSerializer):
             "allow_self_unmute",
             "allow_member_video",
             "mute_on_entry",
+            "realtime_bot_enabled",
+            "realtime_bot_muted",
+            "realtime_bot_base_url",
+            "realtime_bot_model",
+            "realtime_bot_voice",
+            "realtime_bot_display_name",
+            "realtime_bot_api_key_set",
+            "realtime_bot_api_key",
+            "realtime_bot_user_id",
+            "realtime_bot_identity",
             "owner_id",
             "created_at",
             "current_user_role",
@@ -267,6 +299,16 @@ class MeetingSerializer(serializers.ModelSerializer):
             return True
         membership = MeetingMember.objects.filter(meeting=obj, user=user).first()
         return bool(membership and membership.role == MeetingRole.HOST)
+
+    def _can_manage_realtime_bot(self, obj, user) -> bool:
+        if not user or not user.is_authenticated:
+            return False
+        if user.is_superuser or obj.owner_id == user.id:
+            return True
+        membership = MeetingMember.objects.filter(meeting=obj, user=user).first()
+        if not membership:
+            return False
+        return membership.role in {MeetingRole.HOST, MeetingRole.COHOST}
 
     def get_current_user_role(self, obj):
         user = self._request_user()
@@ -304,6 +346,29 @@ class MeetingSerializer(serializers.ModelSerializer):
         if request:
             return request.build_absolute_uri(path)
         return path
+
+    def get_realtime_bot_api_key_set(self, obj):
+        user = self._request_user()
+        if not self._can_manage_realtime_bot(obj, user):
+            return False
+        return bool((obj.realtime_bot_api_key or "").strip())
+
+    def get_realtime_bot_api_key(self, obj):
+        user = self._request_user()
+        if not self._can_manage_realtime_bot(obj, user):
+            return ""
+        return (obj.realtime_bot_api_key or "").strip()
+
+    def get_realtime_bot_user_id(self, obj):
+        if not obj.realtime_bot_enabled:
+            return None
+        user = User.objects.filter(username="__meeting_realtime_bot__").first()
+        if not user:
+            return None
+        return user.id
+
+    def get_realtime_bot_identity(self, obj):
+        return f"ai_realtime_bot_{obj.id}"[:64]
 
 
 class MeetingJoinSerializer(serializers.Serializer):
@@ -520,11 +585,16 @@ class MeetingMessageSerializer(serializers.ModelSerializer):
             "sender_user_id",
             "sender_username",
             "sender_display_name",
+            "is_realtime_bot",
+            "audio_mime_type",
+            "audio_base64",
             "content",
             "created_at",
         )
 
     def get_sender_display_name(self, obj):
+        if (obj.sender_display_name_override or "").strip():
+            return obj.sender_display_name_override.strip()
         membership = MeetingMember.objects.filter(meeting=obj.meeting, user=obj.sender_user).first()
         if membership and membership.display_name:
             return membership.display_name

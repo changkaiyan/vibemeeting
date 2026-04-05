@@ -336,7 +336,7 @@ def _meeting_mute_all_impl(request, meeting, resource_id_for_log: int):
     return views.Response({"ok": True, "muted_count": len(targets) + muted_guest_count})
 
 
-def _meeting_waiting_room_entries_impl(request, meeting):
+def _meeting_waiting_room_entries_impl(request, meeting, resource_id_for_log: int | None = None):
     actor_membership = views.meeting_membership(meeting.id, request.user.id)
     if not views.can_moderate(request.user, actor_membership):
         return views.Response({"detail": "Only host/cohost can manage waiting room"}, status=views.status.HTTP_403_FORBIDDEN)
@@ -423,7 +423,7 @@ def _meeting_waiting_room_review_impl(request, meeting, target_user_id: int, res
     return views.Response(views.MeetingWaitingRoomEntrySerializer(entry).data)
 
 
-def _meeting_blocked_members_impl(request, meeting):
+def _meeting_blocked_members_impl(request, meeting, resource_id_for_log: int | None = None):
     actor_membership = views.meeting_membership(meeting.id, request.user.id)
     if not views.can_moderate(request.user, actor_membership):
         return views.Response({"detail": "Only host/cohost can view blocked members"}, status=views.status.HTTP_403_FORBIDDEN)

@@ -69,6 +69,15 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
   bool _allowChat = true;
   bool _allowSelfUnmute = true;
   bool _allowMemberVideo = true;
+  bool _realtimeBotEnabled = false;
+  bool _realtimeBotMuted = false;
+  String _realtimeBotBaseUrl = 'https://api.openai.com';
+  String _realtimeBotModel = 'gpt-realtime';
+  String _realtimeBotVoice = 'marin';
+  String _realtimeBotDisplayName = '实时语音助手';
+  String _realtimeBotIdentity = '';
+  bool _realtimeBotApiKeySet = false;
+  int? _realtimeBotUserId;
   String _currentUserRole = '';
   String _resolvedMeetingRef = '';
   bool _recordingActive = false;
@@ -152,6 +161,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
   StreamSubscription<html.Event>? _fullscreenSubscription;
   int _latestMessageId = 0;
   final List<_ChatMessage> _messages = [];
+  final Set<int> _playedRealtimeBotAudioMessageIds = <int>{};
   final Set<int> _recallingMessageIds = <int>{};
   Map<int, _MeetingMemberProfile> _memberProfiles = {};
   final Map<String, String> _runtimeDisplayNamesByIdentity = <String, String>{};
@@ -327,6 +337,9 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
   }
 
   String _meetingControlsApiPath() => '${_privateMeetingApiBase()}/controls';
+  String _meetingAiControlsApiPath() => '${_privateMeetingApiBase()}/ai-controls';
+  String _meetingAiControlsTestApiPath() =>
+      '${_privateMeetingApiBase()}/ai-controls/test';
 
   String _meetingMuteAllApiPath() =>
       '${_privateMeetingApiBase()}/members/mute-all';
@@ -739,6 +752,12 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     final userId = _userIdFromIdentity(identity);
     if (userId == null) return null;
     return _memberProfiles[userId];
+  }
+
+  String _realtimeBotVirtualIdentity() {
+    final identity = _realtimeBotIdentity.trim();
+    if (identity.isNotEmpty) return identity;
+    return '__realtime_bot__';
   }
 
   String _friendlyIdentityFallback(String identity) {
@@ -2893,6 +2912,40 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     await _refreshModerationState(reloadMessages: true);
   }
 
+  Future<void> _patchMeetingAiControls(Map<String, dynamic> payload) async {
+    if (_isShareEntry || payload.isEmpty) return;
+    final res = await _request(
+      'PATCH',
+      _meetingAiControlsApiPath(),
+      body: payload,
+    );
+    await _jsonOrThrow(res);
+    await _refreshModerationState(reloadMessages: true);
+  }
+
+  Future<Map<String, dynamic>> _testMeetingAiConnectivity({
+    required String baseUrl,
+    required String model,
+    required String voice,
+    String apiKey = '',
+    String? prompt,
+  }) async {
+    final key = apiKey.trim();
+    final res = await _request(
+      'POST',
+      _meetingAiControlsTestApiPath(),
+      body: <String, dynamic>{
+        'base_url': baseUrl,
+        'model': model,
+        'voice': voice,
+        if (key.isNotEmpty) 'api_key': key,
+        if ((prompt ?? '').trim().isNotEmpty) 'prompt': prompt!.trim(),
+      },
+    );
+    final payload = await _jsonOrThrow(res) as Map<String, dynamic>;
+    return payload;
+  }
+
   Future<void> _muteAllMembers() async {
     if (_isShareEntry) return;
     final res = await _request(
@@ -3821,6 +3874,249 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     );
   }
 
+  Future<void> _openAiControlDialog() async {
+    if (!_isModerator || _isShareEntry) return;
+    var enabled = _realtimeBotEnabled;
+    var muted = _realtimeBotMuted;
+    var apiKeySet = _realtimeBotApiKeySet;
+    final baseUrlController = TextEditingController(text: _realtimeBotBaseUrl);
+    final modelController = TextEditingController(text: _realtimeBotModel);
+    final voiceController = TextEditingController(text: _realtimeBotVoice);
+    final displayNameController =
+        TextEditingController(text: _realtimeBotDisplayName);
+    final apiKeyController = TextEditingController();
+    var busy = false;
+    String? errorMessage;
+    String? testMessage;
+
+    Future<void> saveConfig(StateSetter setDialogState) async {
+      if (busy) return;
+      final baseUrl = baseUrlController.text.trim();
+      final model = modelController.text.trim();
+      final voice = voiceController.text.trim();
+      final displayName = displayNameController.text.trim();
+      final keyInput = apiKeyController.text.trim();
+      if (baseUrl.isEmpty || model.isEmpty || voice.isEmpty || displayName.isEmpty) {
+        setDialogState(() => errorMessage = '实时语音配置项不能为空');
+        return;
+      }
+      if (enabled && !apiKeySet && keyInput.isEmpty) {
+        setDialogState(() => errorMessage = '启用实时语音前请填写 API Key');
+        return;
+      }
+      final payload = <String, dynamic>{
+        'realtime_bot_enabled': enabled,
+        'realtime_bot_muted': muted,
+        'realtime_bot_base_url': baseUrl,
+        'realtime_bot_model': model,
+        'realtime_bot_voice': voice,
+        'realtime_bot_display_name': displayName,
+      };
+      if (keyInput.isNotEmpty) {
+        payload['realtime_bot_api_key'] = keyInput;
+      }
+      setDialogState(() {
+        busy = true;
+        errorMessage = null;
+        testMessage = null;
+      });
+      try {
+        await _patchMeetingAiControls(payload);
+        setDialogState(() {
+          enabled = _realtimeBotEnabled;
+          muted = _realtimeBotMuted;
+          apiKeySet = _realtimeBotApiKeySet;
+          baseUrlController.text = _realtimeBotBaseUrl;
+          modelController.text = _realtimeBotModel;
+          voiceController.text = _realtimeBotVoice;
+          displayNameController.text = _realtimeBotDisplayName;
+          apiKeyController.clear();
+          busy = false;
+          errorMessage = null;
+          testMessage = '配置已保存';
+        });
+      } catch (e) {
+        setDialogState(() {
+          busy = false;
+          errorMessage = _friendlyError(e);
+        });
+      }
+    }
+
+    Future<void> testConnectivity(StateSetter setDialogState) async {
+      if (busy) return;
+      final baseUrl = baseUrlController.text.trim();
+      final model = modelController.text.trim();
+      final voice = voiceController.text.trim();
+      final keyInput = apiKeyController.text.trim();
+      if (baseUrl.isEmpty || model.isEmpty || voice.isEmpty) {
+        setDialogState(() => errorMessage = '请先填写 Base URL、Model 和 Voice');
+        return;
+      }
+      if (!apiKeySet && keyInput.isEmpty) {
+        setDialogState(() => errorMessage = '测试连通性需要 API Key（可先填后测）');
+        return;
+      }
+      setDialogState(() {
+        busy = true;
+        errorMessage = null;
+        testMessage = null;
+      });
+      try {
+        final result = await _testMeetingAiConnectivity(
+          baseUrl: baseUrl,
+          model: model,
+          voice: voice,
+          apiKey: keyInput,
+          prompt: '请回复：连通性测试成功',
+        );
+        final latency = _intFromJson(result['latency_ms'], 0);
+        final preview = (result['preview_text'] ?? '').toString().trim();
+        setDialogState(() {
+          busy = false;
+          testMessage = preview.isEmpty
+              ? '连通性测试成功（${latency}ms）'
+              : '连通性测试成功（${latency}ms）：$preview';
+        });
+      } catch (e) {
+        setDialogState(() {
+          busy = false;
+          errorMessage = _friendlyError(e);
+        });
+      }
+    }
+
+    try {
+      await showDialog<void>(
+        context: context,
+        builder: (context) => StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Text('AI管控'),
+              content: SizedBox(
+                width: 680,
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      SwitchListTile.adaptive(
+                        value: enabled,
+                        onChanged: busy ? null : (v) => setDialogState(() => enabled = v),
+                        contentPadding: EdgeInsets.zero,
+                        title: const Text('启用实时语音成员'),
+                      ),
+                      SwitchListTile.adaptive(
+                        value: muted,
+                        onChanged: busy ? null : (v) => setDialogState(() => muted = v),
+                        contentPadding: EdgeInsets.zero,
+                        title: const Text('静音实时语音成员'),
+                      ),
+                      const SizedBox(height: 8),
+                      TextField(
+                        controller: displayNameController,
+                        enabled: !busy,
+                        decoration: const InputDecoration(
+                          labelText: '会议内显示名称',
+                          hintText: '实时语音助手',
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      TextField(
+                        controller: baseUrlController,
+                        enabled: !busy,
+                        decoration: const InputDecoration(
+                          labelText: 'Base URL',
+                          hintText: 'https://api.openai.com',
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      TextField(
+                        controller: modelController,
+                        enabled: !busy,
+                        decoration: const InputDecoration(
+                          labelText: 'Model',
+                          hintText: 'gpt-realtime',
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      TextField(
+                        controller: voiceController,
+                        enabled: !busy,
+                        decoration: const InputDecoration(
+                          labelText: 'Voice',
+                          hintText: 'marin',
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      TextField(
+                        controller: apiKeyController,
+                        enabled: !busy,
+                        obscureText: true,
+                        decoration: InputDecoration(
+                          labelText: apiKeySet ? 'API Key（留空表示沿用已保存）' : 'API Key',
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          FilledButton.icon(
+                            onPressed: busy ? null : () => unawaited(saveConfig(setDialogState)),
+                            icon: const Icon(Icons.save_outlined),
+                            label: const Text('保存配置'),
+                          ),
+                          OutlinedButton.icon(
+                            onPressed: busy ? null : () => unawaited(testConnectivity(setDialogState)),
+                            icon: const Icon(Icons.network_check_outlined),
+                            label: const Text('测试连通性'),
+                          ),
+                        ],
+                      ),
+                      if ((testMessage ?? '').trim().isNotEmpty) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          testMessage!,
+                          style: const TextStyle(
+                            color: Color(0xFF067647),
+                            fontSize: 12.5,
+                          ),
+                        ),
+                      ],
+                      if ((errorMessage ?? '').trim().isNotEmpty) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          errorMessage!,
+                          style: const TextStyle(
+                            color: Color(0xFFB42318),
+                            fontSize: 12.5,
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: busy ? null : () => Navigator.pop(context),
+                  child: const Text('关闭'),
+                ),
+              ],
+            );
+          },
+        ),
+      );
+    } finally {
+      baseUrlController.dispose();
+      modelController.dispose();
+      voiceController.dispose();
+      displayNameController.dispose();
+      apiKeyController.dispose();
+    }
+  }
+
   Future<void> _loadMeetingInfo() async {
     final res = await _request(
       'GET',
@@ -3843,6 +4139,25 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     final allowChat = _boolFromJson(data['allow_chat'], true);
     final allowSelfUnmute = _boolFromJson(data['allow_self_unmute'], true);
     final allowMemberVideo = _boolFromJson(data['allow_member_video'], true);
+    final realtimeBotEnabled = _boolFromJson(data['realtime_bot_enabled'], false);
+    final realtimeBotMuted = _boolFromJson(data['realtime_bot_muted'], false);
+    final realtimeBotBaseUrl =
+        (data['realtime_bot_base_url'] ?? 'https://api.openai.com')
+            .toString()
+            .trim();
+    final realtimeBotModel =
+        (data['realtime_bot_model'] ?? 'gpt-realtime').toString().trim();
+    final realtimeBotVoice =
+        (data['realtime_bot_voice'] ?? 'marin').toString().trim();
+    final realtimeBotDisplayName =
+        (data['realtime_bot_display_name'] ?? '实时语音助手')
+            .toString()
+            .trim();
+    final realtimeBotApiKeySet =
+        _boolFromJson(data['realtime_bot_api_key_set'], false);
+    final realtimeBotUserId = _intFromJson(data['realtime_bot_user_id'], 0);
+    final realtimeBotIdentity =
+        (data['realtime_bot_identity'] ?? '').toString().trim();
     final currentUserRole = (data['current_user_role'] ?? '').toString();
     final meetingRefFromApi = (data['meeting_ref'] ?? '').toString().trim();
     setState(() {
@@ -3860,6 +4175,20 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
       _allowChat = allowChat;
       _allowSelfUnmute = allowSelfUnmute;
       _allowMemberVideo = allowMemberVideo;
+      _realtimeBotEnabled = realtimeBotEnabled;
+      _realtimeBotMuted = realtimeBotMuted;
+      _realtimeBotBaseUrl = realtimeBotBaseUrl.isEmpty
+          ? 'https://api.openai.com'
+          : realtimeBotBaseUrl;
+      _realtimeBotModel =
+          realtimeBotModel.isEmpty ? 'gpt-realtime' : realtimeBotModel;
+      _realtimeBotVoice = realtimeBotVoice.isEmpty ? 'marin' : realtimeBotVoice;
+      _realtimeBotDisplayName = realtimeBotDisplayName.isEmpty
+          ? '实时语音助手'
+          : realtimeBotDisplayName;
+      _realtimeBotIdentity = realtimeBotIdentity;
+      _realtimeBotApiKeySet = realtimeBotApiKeySet;
+      _realtimeBotUserId = realtimeBotUserId > 0 ? realtimeBotUserId : null;
       _currentUserRole = currentUserRole;
       if (meetingRefFromApi.isNotEmpty) {
         _resolvedMeetingRef = meetingRefFromApi;
@@ -3887,6 +4216,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
       setState(() {
         _messages.clear();
         _latestMessageId = 0;
+        _playedRealtimeBotAudioMessageIds.clear();
         _recallingMessageIds.clear();
       });
       return;
@@ -3907,10 +4237,14 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
         ..clear()
         ..addAll(rows);
       _latestMessageId = _messages.isEmpty ? 0 : _messages.last.id;
+      _playedRealtimeBotAudioMessageIds.removeWhere(
+        (messageId) => !_messages.any((message) => message.id == messageId),
+      );
       _recallingMessageIds.removeWhere(
         (messageId) => !_messages.any((message) => message.id == messageId),
       );
     });
+    _playRealtimeBotAudioForNewMessages(rows, previousLatest);
     if (_latestMessageId > previousLatest) {
       _scrollChatToBottom();
     }
@@ -3935,10 +4269,14 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
           ..clear()
           ..addAll(rows);
         _latestMessageId = _messages.isEmpty ? 0 : _messages.last.id;
+        _playedRealtimeBotAudioMessageIds.removeWhere(
+          (messageId) => !_messages.any((message) => message.id == messageId),
+        );
         _recallingMessageIds.removeWhere(
           (messageId) => !_messages.any((message) => message.id == messageId),
         );
       });
+      _playRealtimeBotAudioForNewMessages(rows, previousLatest);
       if (_latestMessageId > previousLatest) {
         _scrollChatToBottom();
       }
@@ -3954,9 +4292,67 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
       if (current.senderUserId != next.senderUserId) return false;
       if (current.senderDisplayName != next.senderDisplayName) return false;
       if (current.content != next.content) return false;
+      if (current.isRealtimeBot != next.isRealtimeBot) return false;
+      if (current.audioMimeType != next.audioMimeType) return false;
+      if (current.audioBase64 != next.audioBase64) return false;
       if (current.createdAt != next.createdAt) return false;
     }
     return true;
+  }
+
+  bool _isRealtimeBotMutedForPlayback() {
+    if (_realtimeBotMuted) return true;
+    final botUserId = _realtimeBotUserId;
+    if (botUserId == null) return false;
+    final profile = _memberProfiles[botUserId];
+    if (profile == null) return false;
+    return profile.mutedByHost;
+  }
+
+  bool _isRealtimeBotMessage(_ChatMessage message) {
+    if (message.isRealtimeBot) return true;
+    final botUserId = _realtimeBotUserId;
+    if (botUserId == null) return false;
+    return message.senderUserId == botUserId;
+  }
+
+  Future<void> _playRealtimeBotAudio(_ChatMessage message) async {
+    if (!_isRealtimeBotMessage(message)) return;
+    if (_isRealtimeBotMutedForPlayback()) return;
+    if (_playedRealtimeBotAudioMessageIds.contains(message.id)) return;
+    final audioBase64 = message.audioBase64.trim();
+    if (audioBase64.isEmpty) return;
+    try {
+      final bytes = base64Decode(audioBase64);
+      final mimeType =
+          message.audioMimeType.trim().isEmpty ? 'audio/wav' : message.audioMimeType.trim();
+      final blob = html.Blob(<dynamic>[bytes], mimeType);
+      final url = html.Url.createObjectUrlFromBlob(blob);
+      final audio = html.AudioElement(url)
+        ..autoplay = true
+        ..preload = 'auto';
+      audio.onEnded.first.then((_) {
+        html.Url.revokeObjectUrl(url);
+        audio.remove();
+      });
+      audio.onError.first.then((_) {
+        html.Url.revokeObjectUrl(url);
+        audio.remove();
+      });
+      await audio.play();
+      _playedRealtimeBotAudioMessageIds.add(message.id);
+    } catch (_) {}
+  }
+
+  void _playRealtimeBotAudioForNewMessages(List<_ChatMessage> rows, int previousLatest) {
+    if (previousLatest <= 0) return;
+    if (_isRealtimeBotMutedForPlayback()) return;
+    for (final message in rows) {
+      if (message.id <= previousLatest) continue;
+      if (!_isRealtimeBotMessage(message)) continue;
+      if (message.audioBase64.trim().isEmpty) continue;
+      unawaited(_playRealtimeBotAudio(message));
+    }
   }
 
   void _startChatPolling() {
@@ -5018,6 +5414,9 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
         _latestMessageId = msg.id;
         _chatController.clear();
       });
+      if (_isRealtimeBotMessage(msg)) {
+        unawaited(_playRealtimeBotAudio(msg));
+      }
       _scrollChatToBottom();
     } catch (e) {
       _setStatus('发送消息失败：${_friendlyError(e)}');
@@ -5359,6 +5758,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
         _ParticipantRowData(
           identity: local.identity,
           userId: userId,
+          isRealtimeBot: false,
           displayName: _displayNameForIdentity(
             local.identity,
             fallback: local.name.trim().isNotEmpty
@@ -5443,6 +5843,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
         _ParticipantRowData(
           identity: p.identity,
           userId: userId,
+          isRealtimeBot: false,
           displayName: _displayNameForIdentity(
             p.identity,
             fallback: p.name.trim().isEmpty ? p.identity : p.name,
@@ -5476,6 +5877,34 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
         ),
       );
     }
+    if (_realtimeBotEnabled &&
+        !rows.any((row) => row.identity == _realtimeBotVirtualIdentity())) {
+      rows.add(
+        _ParticipantRowData(
+          identity: _realtimeBotVirtualIdentity(),
+          userId: _realtimeBotUserId,
+          isRealtimeBot: true,
+          displayName: _realtimeBotDisplayName.trim().isEmpty
+              ? '实时语音助手'
+              : _realtimeBotDisplayName.trim(),
+          avatarUrl: '',
+          role: 'AI成员',
+          roleKey: 'ai',
+          micEnabled: !_realtimeBotMuted,
+          cameraEnabled: false,
+          mutedByHost: _realtimeBotMuted,
+          videoBlockedByHost: true,
+          allowSelfUnmute: !_realtimeBotMuted,
+          allowMemberVideo: false,
+          allowChat: _allowChat,
+          allowScreenShare: false,
+          micRequestPending: false,
+          videoRequestPending: false,
+          screenShareRequestPending: false,
+          isScreenSharing: false,
+        ),
+      );
+    }
     return rows;
   }
 
@@ -5502,6 +5931,11 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
       case 'moderator':
         if (_isModerator && !_isShareEntry) {
           await _openModeratorControlDialog();
+        }
+        return;
+      case 'ai_control':
+        if (_isModerator && !_isShareEntry) {
+          await _openAiControlDialog();
         }
         return;
       case 'display_name':
@@ -5678,6 +6112,14 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                 icon: Icons.admin_panel_settings_outlined,
                 title: '会议管控',
                 subtitle: '成员权限、等候室与主持控制',
+              ),
+            );
+            entries.add(
+              _buildMobileMenuItem(
+                value: 'ai_control',
+                icon: Icons.smart_toy_outlined,
+                title: 'AI管控',
+                subtitle: '实时语音模型配置与连通性测试',
               ),
             );
           }
@@ -6216,6 +6658,12 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                               ? Icons.notifications_active
                               : Icons.admin_panel_settings,
                           onPressed: _openModeratorControlDialog,
+                        ),
+                      if (_isModerator && !_isShareEntry)
+                        _buildDesktopHeaderAction(
+                          label: 'AI管控',
+                          icon: Icons.smart_toy_outlined,
+                          onPressed: _openAiControlDialog,
                         ),
                       _buildDesktopHeaderAction(
                         label: _isShareEntry ? '返回首页' : '返回控制台',
@@ -6882,6 +7330,29 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
       }
       return;
     }
+    if (row.isRealtimeBot) {
+      if (!_isModerator || !_hasPrivateMeetingApiScope) return;
+      try {
+        if (action == 'mute') {
+          await _patchMeetingAiControls({'realtime_bot_muted': true});
+          _setStatus('已将实时语音成员静音');
+          return;
+        }
+        if (action == 'unmute') {
+          await _patchMeetingAiControls({'realtime_bot_muted': false});
+          _setStatus('已取消实时语音成员静音');
+          return;
+        }
+        if (action == 'ai_control' || action == 'rename_member') {
+          await _openAiControlDialog();
+          return;
+        }
+      } catch (e) {
+        _setStatus('AI成员控制失败：${_friendlyError(e)}');
+        return;
+      }
+      return;
+    }
     final userId = row.userId;
     final isGuest = userId == null;
     if (!_hasPrivateMeetingApiScope) return;
@@ -7423,7 +7894,30 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     }
 
     final canModerateTarget = _isModerator && _hasPrivateMeetingApiScope;
-    if (!canModerateTarget || row.roleKey == 'host') {
+    if (!canModerateTarget) {
+      return items;
+    }
+    if (row.isRealtimeBot) {
+      items.add(_participantMenuSectionRefined('AI 控制'));
+      items.add(
+        _participantMenuActionItemRefined(
+          value: row.mutedByHost ? 'unmute' : 'mute',
+          title: row.mutedByHost ? '允许 AI 发言' : '静音 AI 发言',
+          subtitle: row.mutedByHost ? '当前：已静音' : '当前：可发言',
+          icon: row.mutedByHost ? Icons.mic : Icons.mic_off,
+        ),
+      );
+      items.add(
+        _participantMenuActionItemRefined(
+          value: 'ai_control',
+          title: '打开 AI 管控',
+          subtitle: '配置模型参数并测试连通性',
+          icon: Icons.smart_toy_outlined,
+        ),
+      );
+      return items;
+    }
+    if (row.roleKey == 'host') {
       return items;
     }
     final isGuest = row.userId == null;
@@ -7804,7 +8298,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                       final menuItems =
                           _participantMenuItemsRefined(row, isSelf);
                       final pendingActionChips = <Widget>[];
-                      if (_isModerator && !isSelf) {
+                      if (_isModerator && !isSelf && !row.isRealtimeBot) {
                         if (row.micRequestPending && !row.allowSelfUnmute) {
                           pendingActionChips.add(
                             _buildPendingRequestChip(
@@ -7851,10 +8345,12 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                       }
                       return GestureDetector(
                         behavior: HitTestBehavior.opaque,
-                        onDoubleTap: () => _focusParticipantTile(
-                          row.identity,
-                          allowToggle: false,
-                        ),
+                        onDoubleTap: row.isRealtimeBot
+                            ? null
+                            : () => _focusParticipantTile(
+                                  row.identity,
+                                  allowToggle: false,
+                                ),
                         child: Container(
                           padding: const EdgeInsets.symmetric(vertical: 4),
                           decoration: BoxDecoration(
@@ -8648,6 +9144,9 @@ class _ChatMessage {
   final int senderUserId;
   final String senderUsername;
   final String senderDisplayName;
+  final bool isRealtimeBot;
+  final String audioMimeType;
+  final String audioBase64;
   final String content;
   final DateTime? createdAt;
 
@@ -8656,6 +9155,9 @@ class _ChatMessage {
     required this.senderUserId,
     required this.senderUsername,
     required this.senderDisplayName,
+    required this.isRealtimeBot,
+    required this.audioMimeType,
+    required this.audioBase64,
     required this.content,
     required this.createdAt,
   });
@@ -8688,9 +9190,23 @@ class _ChatMessage {
       senderUserId: _asInt(json['sender_user_id'], 0),
       senderUsername: senderUsername,
       senderDisplayName: senderDisplayName,
+      isRealtimeBot: _asBool(json['is_realtime_bot'], false),
+      audioMimeType: (json['audio_mime_type'] ?? '').toString(),
+      audioBase64: (json['audio_base64'] ?? '').toString(),
       content: (json['content'] ?? '').toString(),
       createdAt: _asDateTime(json['created_at']),
     );
+  }
+
+  static bool _asBool(dynamic value, bool fallback) {
+    if (value is bool) return value;
+    if (value is num) return value != 0;
+    if (value is String) {
+      final normalized = value.trim().toLowerCase();
+      if (normalized == 'true' || normalized == '1') return true;
+      if (normalized == 'false' || normalized == '0') return false;
+    }
+    return fallback;
   }
 }
 
@@ -8743,6 +9259,7 @@ class _RequestPendingFlags {
 class _ParticipantRowData {
   final String identity;
   final int? userId;
+  final bool isRealtimeBot;
   final String displayName;
   final String avatarUrl;
   final String role;
@@ -8763,6 +9280,7 @@ class _ParticipantRowData {
   const _ParticipantRowData({
     required this.identity,
     required this.userId,
+    required this.isRealtimeBot,
     required this.displayName,
     required this.avatarUrl,
     required this.role,
