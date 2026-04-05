@@ -9,8 +9,12 @@ Current usage:
   - Generated from the source project in [`flutter_dashboard/`](../flutter_dashboard)
 
 Do not edit files under `artifacts/flutter_dashboard_web/` manually.
-Regenerate them with:
+Regenerate them from the Flutter source project with:
 
 ```bash
-./scripts/build_flutter_dashboard.sh
+cd flutter_dashboard
+flutter pub get
+flutter build web
 ```
+
+Then copy the contents of `flutter_dashboard/build/web/` into `artifacts/flutter_dashboard_web/`.

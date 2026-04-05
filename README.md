@@ -16,7 +16,7 @@
   - Flutter Dashboard 源码
 - `artifacts/flutter_dashboard_web/`
   - Flutter Web 构建产物，供 Django 作为静态文件挂载
-  - 不应手工编辑，使用 `./scripts/build_flutter_dashboard.sh` 生成
+  - 不应手工编辑，应由 Flutter Web 构建结果同步过来
 - `tools/`
   - 本地运行依赖和第三方工具，不纳入源码提交流程
 
@@ -57,8 +57,12 @@ python manage.py runserver 0.0.0.0:8000
 如果需要刷新 Flutter Dashboard 静态产物：
 
 ```bash
-./scripts/build_flutter_dashboard.sh
+cd flutter_dashboard
+flutter pub get
+flutter build web
 ```
+
+然后将 `flutter_dashboard/build/web/` 的内容同步到 `artifacts/flutter_dashboard_web/`。
 
 ## 环境变量
 
