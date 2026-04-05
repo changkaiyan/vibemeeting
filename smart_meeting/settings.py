@@ -7,7 +7,13 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-FLUTTER_DASHBOARD_BUILD_DIR = BASE_DIR / "artifacts" / "flutter_dashboard_web"
+_ARTIFACT_FLUTTER_DASHBOARD_BUILD_DIR = BASE_DIR / "artifacts" / "flutter_dashboard_web"
+_APP_STATIC_FLUTTER_DASHBOARD_BUILD_DIR = BASE_DIR / "app" / "static" / "flutter_dashboard"
+FLUTTER_DASHBOARD_BUILD_DIR = (
+    _ARTIFACT_FLUTTER_DASHBOARD_BUILD_DIR
+    if _ARTIFACT_FLUTTER_DASHBOARD_BUILD_DIR.exists()
+    else _APP_STATIC_FLUTTER_DASHBOARD_BUILD_DIR
+)
 
 
 def _csv_env(name: str, default: str = "") -> list[str]:
@@ -75,10 +81,12 @@ USE_I18N = True
 USE_TZ = False
 
 STATIC_URL = "/static/"
-STATICFILES_DIRS = [
-    BASE_DIR / "app" / "static",
-    ("flutter_dashboard", FLUTTER_DASHBOARD_BUILD_DIR),
-]
+STATICFILES_DIRS = [BASE_DIR / "app" / "static"]
+if (
+    FLUTTER_DASHBOARD_BUILD_DIR.exists()
+    and FLUTTER_DASHBOARD_BUILD_DIR != _APP_STATIC_FLUTTER_DASHBOARD_BUILD_DIR
+):
+    STATICFILES_DIRS.append(("flutter_dashboard", FLUTTER_DASHBOARD_BUILD_DIR))
 STATIC_ROOT = BASE_DIR / "staticfiles"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
