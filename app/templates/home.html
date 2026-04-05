@@ -12,8 +12,18 @@
       <h1>智能会议平台</h1>
       <p>稳定的视频会议体验，支持组织协作、权限管理和会议审计。</p>
       <div class="hero-actions">
+        {% if local_login_enabled %}
         <a class="auth-btn primary" href="/accounts/login">登录</a>
+        {% endif %}
+        {% if local_register_enabled %}
         <a class="auth-btn" href="/accounts/register">注册</a>
+        {% endif %}
+        {% if techcloud_oauth_enabled %}
+        <a class="auth-btn" href="/auth/techcloud/login">科技云登录</a>
+        {% endif %}
+        {% if not local_login_enabled and not local_register_enabled and not techcloud_oauth_enabled %}
+        <span class="hint">当前未开放登录入口，请联系系统管理员</span>
+        {% endif %}
       </div>
     </section>
   </main>

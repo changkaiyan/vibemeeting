@@ -1,7 +1,6 @@
 from django.contrib.auth import views as auth_views
 from django.urls import path
 
-from conference.forms import MeetingAuthenticationForm
 from conference import views
 
 urlpatterns = [
@@ -16,23 +15,23 @@ urlpatterns = [
     path("m/<str:share_code>/", views.meeting_room_share_view),
     path(
         "accounts/login",
-        auth_views.LoginView.as_view(
-            template_name="registration/login.html",
-            authentication_form=MeetingAuthenticationForm,
-            redirect_authenticated_user=True,
-        ),
+        views.ControlledLoginView.as_view(),
     ),
     path("accounts/logout", auth_views.LogoutView.as_view(next_page="/")),
     path("accounts/register", views.register_page_view),
+    path("auth/techcloud/login", views.techcloud_oauth_start),
+    path("callback", views.techcloud_oauth_callback),
     path("auth/jwt", views.session_jwt),
     path("auth/logout", views.session_logout),
     path("api/livekit/webhook", views.livekit_webhook),
     path("api/profile", views.my_profile),
     path("api/billing/me", views.billing_me),
     path("api/billing/overview", views.billing_overview),
+    path("api/billing/users/export", views.billing_users_export),
     path("api/billing/plans", views.billing_plans),
     path("api/billing/plans/<int:plan_id>", views.billing_plan_detail),
     path("api/billing/users/<int:user_id>/plan", views.billing_user_plan_assign),
+    path("api/system/auth-options", views.system_auth_options),
     path("api/system/recording-storage", views.recording_storage_config),
     path("api/recordings", views.recordings),
     path("api/recordings/<int:recording_id>", views.recording_delete),

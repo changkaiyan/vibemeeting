@@ -215,6 +215,29 @@ class RecordingStorageConfig(models.Model):
         return f"recording_storage:{root}"
 
 
+class SystemAuthConfig(models.Model):
+    allow_techcloud_oauth_login = models.BooleanField(default=True)
+    allow_local_register = models.BooleanField(default=True)
+    allow_local_login = models.BooleanField(default=True)
+    updated_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="updated_system_auth_configs",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self) -> str:
+        return (
+            f"auth_config:"
+            f"techcloud={int(self.allow_techcloud_oauth_login)},"
+            f"register={int(self.allow_local_register)},"
+            f"login={int(self.allow_local_login)}"
+        )
+
+
 class MeetingRecording(models.Model):
     meeting = models.ForeignKey(
         Meeting,

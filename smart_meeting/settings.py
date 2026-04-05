@@ -110,3 +110,17 @@ LIVEKIT_API_KEY = os.getenv("LIVEKIT_API_KEY", "devkey")
 LIVEKIT_API_SECRET = os.getenv("LIVEKIT_API_SECRET", "secret")
 LIVEKIT_MEET_URL = os.getenv("LIVEKIT_MEET_URL", "https://meet.livekit.io")
 LIVEKIT_EGRESS_OUTPUT_ROOT = os.getenv("LIVEKIT_EGRESS_OUTPUT_ROOT", "").strip()
+
+TECHCLOUD_OAUTH_CLIENT_ID = os.getenv("TECHCLOUD_OAUTH_CLIENT_ID", "").strip()
+TECHCLOUD_OAUTH_CLIENT_SECRET = os.getenv("TECHCLOUD_OAUTH_CLIENT_SECRET", "").strip()
+TECHCLOUD_OAUTH_REDIRECT_URI = os.getenv("TECHCLOUD_OAUTH_REDIRECT_URI", "").strip()
+TECHCLOUD_OAUTH_AUTHORIZE_URL = os.getenv(
+    "TECHCLOUD_OAUTH_AUTHORIZE_URL",
+    "https://passport.escience.cn/oauth2/authorize",
+).strip()
+TECHCLOUD_OAUTH_TOKEN_URL = os.getenv(
+    "TECHCLOUD_OAUTH_TOKEN_URL",
+    "https://passport.escience.cn/oauth2/token",
+).strip()
+TECHCLOUD_OAUTH_SCOPE = os.getenv("TECHCLOUD_OAUTH_SCOPE", "").strip()
+TECHCLOUD_OAUTH_THEME = os.getenv("TECHCLOUD_OAUTH_THEME", "full").strip() or "full"

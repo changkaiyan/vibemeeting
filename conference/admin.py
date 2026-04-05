@@ -14,6 +14,7 @@ from conference.models import (
     Organization,
     OrganizationMember,
     RecordingStorageConfig,
+    SystemAuthConfig,
     UserBillingProfile,
     UserProfile,
 )
@@ -142,6 +143,23 @@ class MeetingMessageAdmin(admin.ModelAdmin):
 class RecordingStorageConfigAdmin(admin.ModelAdmin):
     list_display = ("id", "storage_root", "updated_by", "updated_at")
     search_fields = ("storage_root", "updated_by__username")
+
+
+@admin.register(SystemAuthConfig)
+class SystemAuthConfigAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "allow_techcloud_oauth_login",
+        "allow_local_register",
+        "allow_local_login",
+        "updated_by",
+        "updated_at",
+    )
+    list_filter = (
+        "allow_techcloud_oauth_login",
+        "allow_local_register",
+        "allow_local_login",
+    )
 
 
 @admin.register(MeetingRecording)

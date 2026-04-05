@@ -11,6 +11,12 @@
     <section class="auth-card">
       <h1>登录账号</h1>
       <p class="hint">使用 Django 原生认证系统</p>
+      {% if request.GET.oauth_error %}
+      <ul class="errorlist">
+        <li>{{ request.GET.oauth_error }}</li>
+      </ul>
+      {% endif %}
+      {% if local_login_enabled %}
       <form method="post" class="auth-form">
         {% csrf_token %}
         {{ form.non_field_errors }}
@@ -22,7 +28,18 @@
         {{ form.password.errors }}
         <button type="submit" class="auth-btn primary">登录</button>
       </form>
+      {% else %}
+      <p class="hint">管理员已关闭用户名密码登录</p>
+      {% endif %}
+      {% if techcloud_oauth_enabled %}
+      <div class="auth-divider"><span>或</span></div>
+      <a class="auth-btn auth-btn-oauth" href="/auth/techcloud/login{% if request.GET.next %}?next={{ request.GET.next|urlencode }}{% endif %}">
+        使用中国科技云通行证登录
+      </a>
+      {% endif %}
+      {% if local_register_enabled %}
       <p class="hint">还没有账号？<a href="/accounts/register">立即注册</a></p>
+      {% endif %}
     </section>
   </main>
 </body>

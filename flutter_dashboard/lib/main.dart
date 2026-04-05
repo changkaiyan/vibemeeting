@@ -3626,6 +3626,73 @@ class BillingUserItem {
   }
 }
 
+class BillingAuthOptionsItem {
+  BillingAuthOptionsItem({
+    required this.allowTechcloudOauthLogin,
+    required this.allowLocalRegister,
+    required this.allowLocalLogin,
+    required this.techcloudOauthConfigured,
+    required this.effectiveTechcloudOauthLogin,
+    required this.updatedByUsername,
+    required this.updatedAt,
+  });
+
+  final bool allowTechcloudOauthLogin;
+  final bool allowLocalRegister;
+  final bool allowLocalLogin;
+  final bool techcloudOauthConfigured;
+  final bool effectiveTechcloudOauthLogin;
+  final String updatedByUsername;
+  final String updatedAt;
+
+  BillingAuthOptionsItem copyWith({
+    bool? allowTechcloudOauthLogin,
+    bool? allowLocalRegister,
+    bool? allowLocalLogin,
+    bool? techcloudOauthConfigured,
+    bool? effectiveTechcloudOauthLogin,
+    String? updatedByUsername,
+    String? updatedAt,
+  }) {
+    return BillingAuthOptionsItem(
+      allowTechcloudOauthLogin:
+          allowTechcloudOauthLogin ?? this.allowTechcloudOauthLogin,
+      allowLocalRegister: allowLocalRegister ?? this.allowLocalRegister,
+      allowLocalLogin: allowLocalLogin ?? this.allowLocalLogin,
+      techcloudOauthConfigured:
+          techcloudOauthConfigured ?? this.techcloudOauthConfigured,
+      effectiveTechcloudOauthLogin:
+          effectiveTechcloudOauthLogin ?? this.effectiveTechcloudOauthLogin,
+      updatedByUsername: updatedByUsername ?? this.updatedByUsername,
+      updatedAt: updatedAt ?? this.updatedAt,
+    );
+  }
+
+  Map<String, dynamic> toUpdatePayload() {
+    return <String, dynamic>{
+      'allow_techcloud_oauth_login': allowTechcloudOauthLogin,
+      'allow_local_register': allowLocalRegister,
+      'allow_local_login': allowLocalLogin,
+    };
+  }
+
+  factory BillingAuthOptionsItem.fromJson(Map<String, dynamic> json) {
+    return BillingAuthOptionsItem(
+      allowTechcloudOauthLogin:
+          MeetingItem._asBool(json['allow_techcloud_oauth_login'], true),
+      allowLocalRegister:
+          MeetingItem._asBool(json['allow_local_register'], true),
+      allowLocalLogin: MeetingItem._asBool(json['allow_local_login'], true),
+      techcloudOauthConfigured:
+          MeetingItem._asBool(json['techcloud_oauth_configured'], false),
+      effectiveTechcloudOauthLogin:
+          MeetingItem._asBool(json['effective_techcloud_oauth_login'], false),
+      updatedByUsername: (json['updated_by_username'] ?? '').toString(),
+      updatedAt: (json['updated_at'] ?? '').toString(),
+    );
+  }
+}
+
 class BillingAdminPage extends StatefulWidget {
   const BillingAdminPage({super.key, this.preferMobileLayout = false});
 
@@ -3642,6 +3709,9 @@ class _BillingAdminPageState extends State<BillingAdminPage> {
   bool _statusIsError = false;
   List<BillingPlanItem> _plans = const [];
   List<BillingUserItem> _users = const [];
+  BillingAuthOptionsItem? _authOptions;
+  bool _savingAuthOptions = false;
+  bool _exportingUsers = false;
 
   @override
   void initState() {
@@ -3752,8 +3822,10 @@ class _BillingAdminPageState extends State<BillingAdminPage> {
       final data = await _jsonOrThrow(res) as Map<String, dynamic>;
       final plansRaw = data['plans'];
       final usersRaw = data['users'];
+      final authOptionsRaw = data['auth_options'];
       final plans = <BillingPlanItem>[];
       final users = <BillingUserItem>[];
+      BillingAuthOptionsItem? authOptions;
       if (plansRaw is List) {
         for (final row in plansRaw) {
           if (row is Map<String, dynamic>) {
@@ -3768,16 +3840,105 @@ class _BillingAdminPageState extends State<BillingAdminPage> {
           }
         }
       }
+      if (authOptionsRaw is Map<String, dynamic>) {
+        authOptions = BillingAuthOptionsItem.fromJson(authOptionsRaw);
+      }
+      authOptions ??= _authOptions ??
+          BillingAuthOptionsItem(
+            allowTechcloudOauthLogin: true,
+            allowLocalRegister: true,
+            allowLocalLogin: true,
+            techcloudOauthConfigured: false,
+            effectiveTechcloudOauthLogin: false,
+            updatedByUsername: '',
+            updatedAt: '',
+          );
       if (!mounted) return;
       setState(() {
         _plans = plans;
         _users = users;
+        _authOptions = authOptions;
       });
       _setStatus('计费数据已刷新');
     } catch (e) {
       _setStatus('加载计费数据失败：${_friendlyError(e)}', isError: true);
     } finally {
       if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  String _fileNameFromContentDisposition(http.Response response, String fallback) {
+    final header = response.headers['content-disposition'] ?? '';
+    final match = RegExp(r'filename="?([^"]+)"?').firstMatch(header);
+    if (match == null) return fallback;
+    final value = (match.group(1) ?? '').trim();
+    if (value.isEmpty) return fallback;
+    return value;
+  }
+
+  String _formatIsoDateTime(String raw) {
+    final text = raw.trim();
+    if (text.isEmpty) return '-';
+    final parsed = DateTime.tryParse(text);
+    if (parsed == null) return text;
+    final local = parsed.toLocal();
+    final two = (int value) => value.toString().padLeft(2, '0');
+    return '${local.year}-${two(local.month)}-${two(local.day)} '
+        '${two(local.hour)}:${two(local.minute)}:${two(local.second)}';
+  }
+
+  Future<void> _saveAuthOptions(BillingAuthOptionsItem next) async {
+    if (_savingAuthOptions) return;
+    if (mounted) setState(() => _savingAuthOptions = true);
+    try {
+      final res = await _request(
+        'PATCH',
+        '/api/system/auth-options',
+        body: next.toUpdatePayload(),
+      );
+      final data = await _jsonOrThrow(res) as Map<String, dynamic>;
+      final updated = BillingAuthOptionsItem.fromJson(data);
+      if (!mounted) return;
+      setState(() {
+        _authOptions = updated;
+      });
+      _setStatus('登录选项已更新');
+    } catch (e) {
+      _setStatus('更新登录选项失败：${_friendlyError(e)}', isError: true);
+    } finally {
+      if (mounted) setState(() => _savingAuthOptions = false);
+    }
+  }
+
+  Future<void> _exportUsersCsv() async {
+    if (_exportingUsers) return;
+    if (mounted) setState(() => _exportingUsers = true);
+    try {
+      final res = await _request('GET', '/api/billing/users/export');
+      if (res.statusCode >= 400) {
+        await _jsonOrThrow(res);
+      }
+      final fileName = _fileNameFromContentDisposition(
+        res,
+        'billing-users-export.csv',
+      );
+      final blob = html.Blob(
+        [res.bodyBytes],
+        'text/csv;charset=utf-8',
+      );
+      final blobUrl = html.Url.createObjectUrlFromBlob(blob);
+      final anchor = html.AnchorElement(href: blobUrl)
+        ..download = fileName
+        ..style.display = 'none';
+      html.document.body?.append(anchor);
+      anchor.click();
+      anchor.remove();
+      html.Url.revokeObjectUrl(blobUrl);
+      _setStatus('用户信息已导出：$fileName');
+    } catch (e) {
+      _setStatus('导出用户信息失败：${_friendlyError(e)}', isError: true);
+    } finally {
+      if (mounted) setState(() => _exportingUsers = false);
     }
   }
 
@@ -4437,6 +4598,133 @@ class _BillingAdminPageState extends State<BillingAdminPage> {
     );
   }
 
+  Widget _buildAuthOptionSwitch({
+    required String title,
+    required String subtitle,
+    required bool value,
+    required bool enabled,
+    required ValueChanged<bool> onChanged,
+  }) {
+    return SwitchListTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 0),
+      title: Text(
+        title,
+        style: const TextStyle(
+          fontWeight: FontWeight.w700,
+          color: Color(0xFF101828),
+        ),
+      ),
+      subtitle: Text(
+        subtitle,
+        style: const TextStyle(color: Color(0xFF667085)),
+      ),
+      value: value,
+      onChanged: enabled ? onChanged : null,
+    );
+  }
+
+  Widget _buildAuthOptionsPanel() {
+    final options = _authOptions;
+    if (options == null) {
+      return Card(
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Row(
+            children: const [
+              SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+              SizedBox(width: 10),
+              Expanded(child: Text('正在加载登录选项...')),
+            ],
+          ),
+        ),
+      );
+    }
+    final canSave = !_savingAuthOptions;
+    final techcloudSubtitle = options.techcloudOauthConfigured
+        ? '控制中国科技云 OAuth 登录入口。'
+        : '科技云 OAuth 未配置 client_id/client_secret/redirect_uri。';
+    final updatedByText = options.updatedByUsername.trim().isEmpty
+        ? '系统默认'
+        : options.updatedByUsername.trim();
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Expanded(
+                  child: Text(
+                    '登录选项',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+                  ),
+                ),
+                OutlinedButton.icon(
+                  onPressed: _exportingUsers ? null : _exportUsersCsv,
+                  icon: _exportingUsers
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.download_outlined, size: 18),
+                  label: const Text('导出用户信息'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            _buildAuthOptionSwitch(
+              title: '允许科技云用户登录',
+              subtitle: techcloudSubtitle,
+              value: options.allowTechcloudOauthLogin,
+              enabled: canSave && options.techcloudOauthConfigured,
+              onChanged: (value) {
+                _saveAuthOptions(
+                  options.copyWith(allowTechcloudOauthLogin: value),
+                );
+              },
+            ),
+            _buildAuthOptionSwitch(
+              title: '允许本地注册',
+              subtitle: '控制 /accounts/register 与 /api/auth/register。',
+              value: options.allowLocalRegister,
+              enabled: canSave,
+              onChanged: (value) {
+                _saveAuthOptions(
+                  options.copyWith(allowLocalRegister: value),
+                );
+              },
+            ),
+            _buildAuthOptionSwitch(
+              title: '允许本地用户名密码登录',
+              subtitle: '控制 /accounts/login 与 /api/auth/login。',
+              value: options.allowLocalLogin,
+              enabled: canSave,
+              onChanged: (value) {
+                _saveAuthOptions(
+                  options.copyWith(allowLocalLogin: value),
+                );
+              },
+            ),
+            const SizedBox(height: 6),
+            Text(
+              '最近更新：$updatedByText · ${_formatIsoDateTime(options.updatedAt)}',
+              style: const TextStyle(
+                color: Color(0xFF667085),
+                fontSize: 12.5,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildPlansPanel() {
     return Card(
       child: Padding(
@@ -4633,44 +4921,60 @@ class _BillingAdminPageState extends State<BillingAdminPage> {
   }
 
   Widget _buildDesktopBody() {
-    return Row(
+    return Column(
       children: [
-        Expanded(flex: 4, child: _buildPlansPanel()),
-        const SizedBox(width: 12),
-        Expanded(flex: 6, child: _buildUsersPanel()),
+        _buildAuthOptionsPanel(),
+        const SizedBox(height: 10),
+        Expanded(
+          child: Row(
+            children: [
+              Expanded(flex: 4, child: _buildPlansPanel()),
+              const SizedBox(width: 12),
+              Expanded(flex: 6, child: _buildUsersPanel()),
+            ],
+          ),
+        ),
       ],
     );
   }
 
   Widget _buildMobileBody() {
-    return DefaultTabController(
-      length: 2,
-      child: Column(
-        children: [
-          Container(
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: const Color(0xFFDDE6FF)),
-            ),
-            child: const TabBar(
-              tabs: [
-                Tab(text: '套餐', icon: Icon(Icons.sell_outlined)),
-                Tab(text: '用户', icon: Icon(Icons.people_outline)),
-              ],
-            ),
-          ),
-          const SizedBox(height: 8),
-          Expanded(
-            child: TabBarView(
+    return Column(
+      children: [
+        _buildAuthOptionsPanel(),
+        const SizedBox(height: 8),
+        Expanded(
+          child: DefaultTabController(
+            length: 2,
+            child: Column(
               children: [
-                _buildPlansPanel(),
-                _buildUsersPanel(),
+                Container(
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: const Color(0xFFDDE6FF)),
+                  ),
+                  child: const TabBar(
+                    tabs: [
+                      Tab(text: '套餐', icon: Icon(Icons.sell_outlined)),
+                      Tab(text: '用户', icon: Icon(Icons.people_outline)),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Expanded(
+                  child: TabBarView(
+                    children: [
+                      _buildPlansPanel(),
+                      _buildUsersPanel(),
+                    ],
+                  ),
+                ),
               ],
             ),
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 

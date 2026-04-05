@@ -3,13 +3,17 @@ import os
 import re
 import threading
 import time
+import csv
 from datetime import timedelta, timezone as dt_timezone
-from urllib.parse import urlsplit, urlunsplit
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode, urlsplit, urlunsplit
+from urllib.request import Request, urlopen
 from typing import Iterable
 from uuid import uuid4
 
 from django.conf import settings
 from django.contrib.auth import authenticate, login as auth_login, logout as auth_logout
+from django.contrib.auth import views as auth_views
 from django.contrib.auth.models import User
 from django.db import close_old_connections, transaction
 from django.db.models import Max, Q, Sum
@@ -31,7 +35,7 @@ from livekit import api as lk_api
 from livekit.protocol import egress as lk_egress
 from livekit.api.twirp_client import TwirpError
 
-from conference.forms import MeetingRegisterForm
+from conference.forms import MeetingAuthenticationForm, MeetingRegisterForm
 from conference.meeting_refs import ensure_meeting_ref, meeting_from_ref
 from conference.models import (
     AuditLog,
@@ -47,6 +51,7 @@ from conference.models import (
     MeetingOrganization,
     MeetingRole,
     RecordingStorageConfig,
+    SystemAuthConfig,
     UserBillingProfile,
     Organization,
     OrganizationMember,
@@ -76,6 +81,7 @@ from conference.serializers import (
     MeetingRoleUpdateSerializer,
     RecordingStorageConfigSerializer,
     RecordingStorageConfigUpdateSerializer,
+    SystemAuthConfigUpdateSerializer,
     MeetingVideoControlSerializer,
     MeetingWaitingRoomEntrySerializer,
     MeetingSerializer,
@@ -122,6 +128,8 @@ _OWNER_ROOM_LIMIT_TIMERS: dict[int, threading.Timer] = {}
 _OWNER_ROOM_LIMIT_TIMERS_LOCK = threading.Lock()
 _MEETING_ROOM_LIMIT_TIMERS: dict[int, threading.Timer] = {}
 _MEETING_ROOM_LIMIT_TIMERS_LOCK = threading.Lock()
+_TECHCLOUD_OAUTH_STATE_KEY = "techcloud_oauth_state"
+_TECHCLOUD_OAUTH_NEXT_KEY = "techcloud_oauth_next"
 
 
 def _host_without_port(host: str) -> str:
@@ -207,6 +215,256 @@ def _profile_for_user(user: User) -> UserProfile:
 def _billing_profile_for_user(user: User) -> UserBillingProfile:
     profile, _ = UserBillingProfile.objects.get_or_create(user=user)
     return profile
+
+
+def _safe_next_path(raw_target: str) -> str:
+    target = (raw_target or "").strip()
+    if not target or not target.startswith("/"):
+        return ""
+    if target.startswith("//"):
+        return ""
+    return target
+
+
+def _ensure_default_workspace_for_user(user: User, *, seed: str | None = None) -> None:
+    if OrganizationMember.objects.filter(user=user, is_org_admin=True).exists():
+        return
+
+    normalized_seed = re.sub(r"[^0-9A-Za-z._-]+", "-", (seed or user.username or "user").strip()).strip("-_.")
+    if not normalized_seed:
+        normalized_seed = f"user-{user.id}"
+    base_org_name = f"{normalized_seed[:88]}-workspace"
+    if len(base_org_name) > 100:
+        base_org_name = base_org_name[:100]
+
+    org_name = base_org_name
+    suffix = 1
+    while Organization.objects.filter(name=org_name).exists():
+        suffix += 1
+        suffix_part = f"-{suffix}"
+        org_name = f"{base_org_name[: max(1, 100 - len(suffix_part))]}{suffix_part}"
+    org = Organization.objects.create(name=org_name, owner_user=user)
+    OrganizationMember.objects.create(organization=org, user=user, is_org_admin=True)
+
+
+def _techcloud_oauth_configured() -> bool:
+    client_id = (getattr(settings, "TECHCLOUD_OAUTH_CLIENT_ID", "") or "").strip()
+    client_secret = (getattr(settings, "TECHCLOUD_OAUTH_CLIENT_SECRET", "") or "").strip()
+    redirect_uri = (getattr(settings, "TECHCLOUD_OAUTH_REDIRECT_URI", "") or "").strip()
+    authorize_url = (getattr(settings, "TECHCLOUD_OAUTH_AUTHORIZE_URL", "") or "").strip()
+    token_url = (getattr(settings, "TECHCLOUD_OAUTH_TOKEN_URL", "") or "").strip()
+    return bool(client_id and client_secret and redirect_uri and authorize_url and token_url)
+
+
+def _system_auth_config() -> SystemAuthConfig:
+    config = SystemAuthConfig.objects.order_by("id").first()
+    if config:
+        return config
+    return SystemAuthConfig.objects.create()
+
+
+def _system_auth_options_payload(*, config: SystemAuthConfig | None = None) -> dict:
+    config = config or _system_auth_config()
+    techcloud_configured = _techcloud_oauth_configured()
+    return {
+        "allow_techcloud_oauth_login": bool(config.allow_techcloud_oauth_login),
+        "allow_local_register": bool(config.allow_local_register),
+        "allow_local_login": bool(config.allow_local_login),
+        "techcloud_oauth_configured": bool(techcloud_configured),
+        "effective_techcloud_oauth_login": bool(config.allow_techcloud_oauth_login and techcloud_configured),
+        "updated_by_username": config.updated_by.username if config.updated_by_id else "",
+        "updated_at": config.updated_at,
+    }
+
+
+def _effective_techcloud_oauth_enabled(*, options: dict | None = None) -> bool:
+    options = options or _system_auth_options_payload()
+    return bool(options.get("effective_techcloud_oauth_login"))
+
+
+def _local_register_enabled(*, options: dict | None = None) -> bool:
+    options = options or _system_auth_options_payload()
+    return bool(options.get("allow_local_register"))
+
+
+def _local_login_enabled(*, options: dict | None = None) -> bool:
+    options = options or _system_auth_options_payload()
+    return bool(options.get("allow_local_login"))
+
+
+class ControlledLoginView(auth_views.LoginView):
+    template_name = "registration/login.html"
+    authentication_form = MeetingAuthenticationForm
+    redirect_authenticated_user = True
+
+    def _auth_context(self) -> dict:
+        options = _system_auth_options_payload()
+        return {
+            "techcloud_oauth_enabled": _effective_techcloud_oauth_enabled(options=options),
+            "local_register_enabled": _local_register_enabled(options=options),
+            "local_login_enabled": _local_login_enabled(options=options),
+            "techcloud_oauth_configured": bool(options.get("techcloud_oauth_configured")),
+        }
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context.update(self._auth_context())
+        return context
+
+    def post(self, request, *args, **kwargs):
+        options = _system_auth_options_payload()
+        if not _local_login_enabled(options=options):
+            form = self.get_form()
+            form.add_error(None, "管理员已关闭用户名密码登录")
+            context = self.get_context_data(form=form)
+            context.update(self._auth_context())
+            return self.render_to_response(context)
+        return super().post(request, *args, **kwargs)
+
+
+def _techcloud_authorize_url(state: str) -> str:
+    params = {
+        "response_type": "code",
+        "redirect_uri": settings.TECHCLOUD_OAUTH_REDIRECT_URI,
+        "client_id": settings.TECHCLOUD_OAUTH_CLIENT_ID,
+        "theme": settings.TECHCLOUD_OAUTH_THEME,
+        "state": state,
+    }
+    scope = (getattr(settings, "TECHCLOUD_OAUTH_SCOPE", "") or "").strip()
+    if scope:
+        params["scope"] = scope
+    return f"{settings.TECHCLOUD_OAUTH_AUTHORIZE_URL}?{urlencode(params)}"
+
+
+def _techcloud_login_error_redirect(message: str):
+    return redirect(f"/accounts/login?{urlencode({'oauth_error': message})}")
+
+
+def _techcloud_exchange_code_for_token(code: str) -> dict:
+    payload = urlencode(
+        {
+            "client_id": settings.TECHCLOUD_OAUTH_CLIENT_ID,
+            "client_secret": settings.TECHCLOUD_OAUTH_CLIENT_SECRET,
+            "grant_type": "authorization_code",
+            "redirect_uri": settings.TECHCLOUD_OAUTH_REDIRECT_URI,
+            "code": code,
+        }
+    ).encode("utf-8")
+    request = Request(
+        settings.TECHCLOUD_OAUTH_TOKEN_URL,
+        data=payload,
+        method="POST",
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json",
+        },
+    )
+
+    raw_response = ""
+    try:
+        with urlopen(request, timeout=10) as response:
+            raw_response = response.read().decode("utf-8", errors="replace")
+    except HTTPError as exc:
+        raw_response = exc.read().decode("utf-8", errors="replace")
+        message = "科技云登录失败，请稍后重试"
+        if raw_response:
+            try:
+                error_payload = json.loads(raw_response)
+            except json.JSONDecodeError:
+                error_payload = {}
+            description = (error_payload.get("error_description") or error_payload.get("error") or "").strip()
+            if description:
+                message = f"科技云登录失败：{description}"
+        raise ValueError(message) from exc
+    except URLError as exc:
+        raise ValueError("无法连接科技云通行证服务") from exc
+
+    try:
+        token_payload = json.loads(raw_response)
+    except json.JSONDecodeError as exc:
+        raise ValueError("科技云通行证返回了无效响应") from exc
+
+    error_code = (token_payload.get("error") or "").strip()
+    if error_code:
+        description = (token_payload.get("error_description") or error_code).strip()
+        raise ValueError(f"科技云登录失败：{description}")
+    return token_payload
+
+
+def _techcloud_user_info_from_token_payload(token_payload: dict) -> dict:
+    user_info = token_payload.get("userInfo")
+    if user_info is None:
+        user_info = token_payload.get("userinfo")
+    if isinstance(user_info, str):
+        try:
+            user_info = json.loads(user_info)
+        except json.JSONDecodeError as exc:
+            raise ValueError("科技云用户信息解析失败") from exc
+    if not isinstance(user_info, dict):
+        raise ValueError("科技云返回了不完整的用户信息")
+    return user_info
+
+
+def _normalized_email_candidate(value: str) -> str:
+    candidate = str(value or "").strip().lower()
+    if "@" not in candidate or len(candidate) > 254:
+        return ""
+    return candidate
+
+
+def _normalized_techcloud_username(raw: str) -> str:
+    normalized = re.sub(r"[^0-9A-Za-z._-]+", "_", str(raw or "").strip().lower()).strip("._-")
+    if not normalized:
+        normalized = uuid4().hex[:24]
+    return normalized[:150]
+
+
+def _upsert_techcloud_user(user_info: dict) -> tuple[User, bool]:
+    umt_id = (str(user_info.get("umtId") or "")).strip()
+    cstnet_id = _normalized_email_candidate(user_info.get("cstnetId"))
+    security_email = _normalized_email_candidate(user_info.get("securityEmail"))
+    preferred_email = cstnet_id or security_email
+    truename = (str(user_info.get("truename") or "")).strip()
+
+    if umt_id:
+        username = _normalized_techcloud_username(f"escience_{umt_id}")
+    elif preferred_email:
+        username = _normalized_techcloud_username(f"escience_{preferred_email}")
+    else:
+        username = _normalized_techcloud_username("escience_user")
+
+    user = User.objects.filter(username=username).first()
+    if user is None and preferred_email:
+        user = User.objects.filter(email__iexact=preferred_email).first()
+
+    created = False
+    if user is None:
+        user = User.objects.create_user(
+            username=username,
+            email=preferred_email,
+            password=None,
+        )
+        created = True
+
+    update_fields: list[str] = []
+    if preferred_email and user.email.lower() != preferred_email:
+        user.email = preferred_email
+        update_fields.append("email")
+    if truename and user.first_name != truename:
+        user.first_name = truename[:150]
+        update_fields.append("first_name")
+    if update_fields:
+        user.save(update_fields=update_fields)
+
+    profile = _profile_for_user(user)
+    if truename:
+        display_name = truename[:80]
+        if not profile.default_display_name or profile.default_display_name == user.username:
+            profile.default_display_name = display_name
+            profile.save(update_fields=["default_display_name", "updated_at"])
+    _billing_profile_for_user(user)
+    _ensure_default_workspace_for_user(user, seed=preferred_email or truename or user.username)
+    return user, created
 
 
 def _normalized_limit_value(raw_value) -> int | None:
@@ -1470,7 +1728,16 @@ def _meeting_by_share_code(share_code: str):
 def home_view(request):
     if request.user.is_authenticated:
         return redirect("/dashboard")
-    return render(request, "home.html")
+    options = _system_auth_options_payload()
+    return render(
+        request,
+        "home.html",
+        {
+            "local_login_enabled": _local_login_enabled(options=options),
+            "local_register_enabled": _local_register_enabled(options=options),
+            "techcloud_oauth_enabled": _effective_techcloud_oauth_enabled(options=options),
+        },
+    )
 
 
 @login_required(login_url="/accounts/login")
@@ -1552,6 +1819,19 @@ def meeting_room_share_view(request, share_code: str):
 def register_page_view(request):
     if request.user.is_authenticated:
         return redirect("/dashboard")
+    options = _system_auth_options_payload()
+    if not _local_register_enabled(options=options):
+        return render(
+            request,
+            "registration/register.html",
+            {
+                "form": MeetingRegisterForm(),
+                "register_disabled": True,
+                "register_disabled_reason": "管理员已关闭本地注册",
+                "local_login_enabled": _local_login_enabled(options=options),
+            },
+            status=403,
+        )
 
     if request.method == "POST":
         form = MeetingRegisterForm(request.POST)
@@ -1560,21 +1840,21 @@ def register_page_view(request):
             email = form.cleaned_data["email"]
             if User.objects.filter(Q(username=username) | Q(email=email)).exists():
                 form.add_error(None, "用户名或邮箱已存在")
-                return render(request, "registration/register.html", {"form": form})
+                return render(
+                    request,
+                    "registration/register.html",
+                    {
+                        "form": form,
+                        "register_disabled": False,
+                        "local_login_enabled": _local_login_enabled(options=options),
+                    },
+                )
             user = form.save(commit=False)
             user.email = email
             user.save()
             _profile_for_user(user)
             _billing_profile_for_user(user)
-
-            base_org_name = f"{username}-workspace"
-            org_name = base_org_name
-            suffix = 1
-            while Organization.objects.filter(name=org_name).exists():
-                suffix += 1
-                org_name = f"{base_org_name}-{suffix}"
-            org = Organization.objects.create(name=org_name, owner_user=user)
-            OrganizationMember.objects.create(organization=org, user=user, is_org_admin=True)
+            _ensure_default_workspace_for_user(user, seed=username)
 
             log_audit(
                 user=user,
@@ -1588,7 +1868,81 @@ def register_page_view(request):
             return redirect("/dashboard")
     else:
         form = MeetingRegisterForm()
-    return render(request, "registration/register.html", {"form": form})
+    return render(
+        request,
+        "registration/register.html",
+        {
+            "form": form,
+            "register_disabled": False,
+            "local_login_enabled": _local_login_enabled(options=options),
+        },
+    )
+
+
+def techcloud_oauth_start(request):
+    if request.user.is_authenticated:
+        return redirect("/dashboard")
+    options = _system_auth_options_payload()
+    if not _effective_techcloud_oauth_enabled(options=options):
+        if not options.get("techcloud_oauth_configured"):
+            return _techcloud_login_error_redirect("科技云登录未配置，请联系管理员")
+        return _techcloud_login_error_redirect("管理员已关闭科技云登录")
+
+    next_path = _safe_next_path(request.GET.get("next", ""))
+    if next_path:
+        request.session[_TECHCLOUD_OAUTH_NEXT_KEY] = next_path
+    else:
+        request.session.pop(_TECHCLOUD_OAUTH_NEXT_KEY, None)
+
+    state = uuid4().hex
+    request.session[_TECHCLOUD_OAUTH_STATE_KEY] = state
+    return redirect(_techcloud_authorize_url(state))
+
+
+def techcloud_oauth_callback(request):
+    if request.user.is_authenticated:
+        return redirect("/dashboard")
+    options = _system_auth_options_payload()
+    if not _effective_techcloud_oauth_enabled(options=options):
+        if not options.get("techcloud_oauth_configured"):
+            return _techcloud_login_error_redirect("科技云登录未配置，请联系管理员")
+        return _techcloud_login_error_redirect("管理员已关闭科技云登录")
+
+    oauth_error = (request.GET.get("error") or "").strip()
+    if oauth_error:
+        error_description = (request.GET.get("error_description") or oauth_error).strip()
+        return _techcloud_login_error_redirect(f"科技云登录失败：{error_description}")
+
+    code = (request.GET.get("code") or "").strip()
+    if not code:
+        return _techcloud_login_error_redirect("科技云回调缺少授权码")
+
+    expected_state = (request.session.pop(_TECHCLOUD_OAUTH_STATE_KEY, "") or "").strip()
+    state = (request.GET.get("state") or "").strip()
+    if not expected_state or expected_state != state:
+        return _techcloud_login_error_redirect("科技云登录状态校验失败，请重试")
+
+    try:
+        token_payload = _techcloud_exchange_code_for_token(code)
+        user_info = _techcloud_user_info_from_token_payload(token_payload)
+        user, _created = _upsert_techcloud_user(user_info)
+    except ValueError as exc:
+        return _techcloud_login_error_redirect(str(exc))
+
+    auth_login(request, user)
+    log_audit(
+        user=user,
+        action="auth.login_techcloud",
+        resource_type="user",
+        resource_id=user.id,
+        detail=f"umtId={user_info.get('umtId', '')}, cstnetId={user_info.get('cstnetId', '')}",
+        ip_address=client_ip(request),
+    )
+
+    next_path = _safe_next_path(request.session.pop(_TECHCLOUD_OAUTH_NEXT_KEY, ""))
+    if next_path:
+        return redirect(next_path)
+    return redirect("/dashboard")
 
 
 @login_required(login_url="/accounts/login")
@@ -1780,8 +2134,140 @@ def billing_overview(request):
         {
             "plans": BillingPlanSerializer(plans, many=True).data,
             "users": users_payload,
+            "auth_options": _system_auth_options_payload(),
         }
     )
+
+
+@api_view(["GET", "PATCH"])
+@permission_classes([IsAuthenticated])
+def system_auth_options(request):
+    if not request.user.is_superuser:
+        return Response({"detail": "Only super admin can manage auth options"}, status=status.HTTP_403_FORBIDDEN)
+
+    config = _system_auth_config()
+    if request.method == "GET":
+        return Response(_system_auth_options_payload(config=config))
+
+    serializer = SystemAuthConfigUpdateSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    payload = serializer.validated_data
+
+    updated_fields: list[str] = []
+    for field in ("allow_techcloud_oauth_login", "allow_local_register", "allow_local_login"):
+        if field not in payload:
+            continue
+        next_value = bool(payload[field])
+        if getattr(config, field) == next_value:
+            continue
+        setattr(config, field, next_value)
+        updated_fields.append(field)
+    config.updated_by = request.user
+    updated_fields.append("updated_by")
+
+    if updated_fields:
+        updated_fields.append("updated_at")
+        config.save(update_fields=updated_fields)
+        log_audit(
+            user=request.user,
+            action="system.auth_options_update",
+            resource_type="system_auth_config",
+            resource_id=config.id,
+            detail=json.dumps(
+                {
+                    "allow_techcloud_oauth_login": config.allow_techcloud_oauth_login,
+                    "allow_local_register": config.allow_local_register,
+                    "allow_local_login": config.allow_local_login,
+                },
+                ensure_ascii=False,
+            ),
+            ip_address=client_ip(request),
+        )
+
+    return Response(_system_auth_options_payload(config=config))
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def billing_users_export(request):
+    if not request.user.is_superuser:
+        return Response({"detail": "Only super admin can export users"}, status=status.HTTP_403_FORBIDDEN)
+
+    now = timezone.now()
+    users = User.objects.all().order_by("date_joined", "id")
+
+    response = HttpResponse(content_type="text/csv; charset=utf-8")
+    stamp = now.strftime("%Y%m%d-%H%M%S")
+    response["Content-Disposition"] = f'attachment; filename="billing-users-{stamp}.csv"'
+    response.write("\ufeff")
+
+    writer = csv.writer(response)
+    writer.writerow(
+        [
+            "user_id",
+            "username",
+            "email",
+            "is_superuser",
+            "plan_name",
+            "active_room_count",
+            "room_peak_count",
+            "max_room_participants_used",
+            "meeting_count",
+            "cumulative_room_used_seconds",
+            "current_room_max_used_seconds",
+            "recording_storage_used_bytes",
+            "max_active_rooms",
+            "max_room_participants",
+            "max_meeting_count",
+            "max_room_used_seconds",
+            "max_current_room_used_seconds",
+            "max_recording_storage_bytes",
+            "exceeded_keys",
+            "date_joined",
+            "last_login",
+            "billing_updated_at",
+        ]
+    )
+
+    for user in users:
+        payload = _billing_user_payload(user, now=now)
+        usage = payload.get("usage", {})
+        limits = payload.get("limits", {})
+        writer.writerow(
+            [
+                payload.get("user_id", ""),
+                payload.get("username", ""),
+                payload.get("email", ""),
+                int(bool(payload.get("is_superuser"))),
+                payload.get("plan_name") or "",
+                usage.get("active_room_count", 0),
+                usage.get("room_peak_count", 0),
+                usage.get("max_room_participants_used", 0),
+                usage.get("meeting_count", 0),
+                usage.get("cumulative_room_used_seconds", 0),
+                usage.get("current_room_max_used_seconds", 0),
+                usage.get("recording_storage_used_bytes", 0),
+                limits.get("max_active_rooms", ""),
+                limits.get("max_room_participants", ""),
+                limits.get("max_meeting_count", ""),
+                limits.get("max_room_used_seconds", ""),
+                limits.get("max_current_room_used_seconds", ""),
+                limits.get("max_recording_storage_bytes", ""),
+                ",".join(payload.get("exceeded_keys", [])),
+                user.date_joined.isoformat() if user.date_joined else "",
+                user.last_login.isoformat() if user.last_login else "",
+                payload.get("updated_at").isoformat() if payload.get("updated_at") else "",
+            ]
+        )
+
+    log_audit(
+        user=request.user,
+        action="billing.users_export",
+        resource_type="user",
+        detail=f"rows={users.count()}",
+        ip_address=client_ip(request),
+    )
+    return response
 
 
 @api_view(["GET", "POST"])
@@ -2212,6 +2698,10 @@ def recording_download(request, recording_id: int):
 @authentication_classes([])
 @permission_classes([AllowAny])
 def register_api(request):
+    options = _system_auth_options_payload()
+    if not _local_register_enabled(options=options):
+        return Response({"detail": "Local registration is disabled by super admin"}, status=status.HTTP_403_FORBIDDEN)
+
     serializer = RegisterSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
     data = serializer.validated_data
@@ -2226,15 +2716,7 @@ def register_api(request):
     )
     _profile_for_user(user)
     _billing_profile_for_user(user)
-
-    base_org_name = f"{data['username']}-workspace"
-    org_name = base_org_name
-    suffix = 1
-    while Organization.objects.filter(name=org_name).exists():
-        suffix += 1
-        org_name = f"{base_org_name}-{suffix}"
-    org = Organization.objects.create(name=org_name, owner_user=user)
-    OrganizationMember.objects.create(organization=org, user=user, is_org_admin=True)
+    _ensure_default_workspace_for_user(user, seed=data["username"])
 
     log_audit(
         user=user,
@@ -2251,6 +2733,10 @@ def register_api(request):
 @authentication_classes([])
 @permission_classes([AllowAny])
 def login_api(request):
+    options = _system_auth_options_payload()
+    if not _local_login_enabled(options=options):
+        return Response({"detail": "Local username/password login is disabled by super admin"}, status=status.HTTP_403_FORBIDDEN)
+
     username = request.data.get("username") or request.POST.get("username")
     password = request.data.get("password") or request.POST.get("password")
     if not username or not password:

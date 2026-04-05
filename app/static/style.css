@@ -529,6 +529,31 @@ pre {
   border-color: #155eef;
 }
 
+.auth-btn-oauth {
+  width: 100%;
+  margin-top: 2px;
+}
+
+.auth-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0;
+  color: #667085;
+}
+
+.auth-divider::before,
+.auth-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: #d0d5dd;
+}
+
+.auth-divider span {
+  font-size: 12px;
+}
+
 .auth-topbar {
   display: flex;
   justify-content: space-between;

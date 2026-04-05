@@ -7,6 +7,8 @@
 - 首页：`/`
 - 登录：`/accounts/login`
 - 注册：`/accounts/register`
+- 科技云 OAuth 发起：`/auth/techcloud/login`
+- 科技云 OAuth 回调：`/callback`
 - 会议控制台：`/dashboard`
 - Django 管理后台：`/admin`
 
@@ -21,6 +23,8 @@
 - 审计日志
 - 组织维度隔离
 - LiveKit 房间与参会 Token 签发
+- 超级管理员可配置登录策略（科技云 OAuth、本地注册、本地用户名密码登录）
+- 超级管理员可导出用户信息与用量报表（CSV）
 
 ## 快速启动（Windows PowerShell）
 
@@ -54,11 +58,41 @@ Copy-Item .env.example .env
 - `LIVEKIT_PUBLIC_URL`：前端可访问的 LiveKit 地址（HTTPS 页面需 `wss://`）
 - `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET`：LiveKit 服务端鉴权
 - `LIVEKIT_MEET_URL`：打开 LiveKit Meet 的地址（默认官方托管）
+- `TECHCLOUD_OAUTH_CLIENT_ID`：中国科技云通行证应用 `client_id`
+- `TECHCLOUD_OAUTH_CLIENT_SECRET`：中国科技云通行证应用 `client_secret`
+- `TECHCLOUD_OAUTH_REDIRECT_URI`：OAuth 回调地址（建议与应用平台登记一致）
+- `TECHCLOUD_OAUTH_AUTHORIZE_URL`：授权地址（默认 `https://passport.escience.cn/oauth2/authorize`）
+- `TECHCLOUD_OAUTH_TOKEN_URL`：换取 Token 地址（默认 `https://passport.escience.cn/oauth2/token`）
+- `TECHCLOUD_OAUTH_THEME`：登录页风格（默认 `full`，可选 `simple` / `embed`）
+- `TECHCLOUD_OAUTH_SCOPE`：可选，按通行证平台要求填写
 
 说明：
 
 - `.env` 已被 `.gitignore` 忽略，不应提交到仓库。
 - 仅提交 `.env.example` 作为变量模板。
+
+## 科技云 OAuth 登录说明
+
+项目已支持中国科技云通行证 OAuth 2.0 授权码模式：
+
+1. 用户在 `/accounts/login` 点击“使用中国科技云通行证登录”。
+2. 系统跳转到 `https://passport.escience.cn/oauth2/authorize`。
+3. 通行证登录成功后回调到应用 `TECHCLOUD_OAUTH_REDIRECT_URI`（例如 `https://meeting.chipgpt.chat/callback`）。
+4. 后端使用 `code` 调用 `https://passport.escience.cn/oauth2/token` 换取 token 与 `userInfo`。
+5. 系统自动创建或更新本地用户并完成登录。
+
+注意事项：
+
+- `TECHCLOUD_OAUTH_REDIRECT_URI` 必须与通行证应用管理后台登记值完全一致，否则会出现 `redirect_uri_mismatch`。
+- 生产环境请务必配置 `TECHCLOUD_OAUTH_CLIENT_ID` 与 `TECHCLOUD_OAUTH_CLIENT_SECRET`，未配置时登录页不会显示科技云登录按钮。
+
+## 超级管理员登录策略与导出
+
+- 超级管理员可在计费管理界面（`/billing`）配置：
+  - 是否允许科技云 OAuth 登录
+  - 是否允许本地注册（`/accounts/register`、`/api/auth/register`）
+  - 是否允许本地用户名密码登录（`/accounts/login`、`/api/auth/login`）
+- 超级管理员可在计费管理界面导出用户信息 CSV（包含邮箱、套餐、用量和限制信息）。
 
 ## HTTPS 本地联调
 
@@ -68,6 +102,7 @@ Copy-Item .env.example .env
 
 - `POST /api/auth/register`
 - `POST /api/auth/login`
+- `GET|PATCH /api/system/auth-options`
 - `GET|POST /api/meetings`
 - `GET|PATCH|DELETE /api/meetings/{meeting_id}`
 - `POST /api/meetings/join`
@@ -80,3 +115,4 @@ Copy-Item .env.example .env
 - `GET /api/orgs/my`
 - `GET|POST /api/orgs/{org_id}/members`
 - `GET /api/audit/logs`
+- `GET /api/billing/users/export`

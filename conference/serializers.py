@@ -19,6 +19,7 @@ from conference.models import (
     Organization,
     OrganizationMember,
     RecordingStorageConfig,
+    SystemAuthConfig,
     UserBillingProfile,
     UserProfile,
     WaitingRoomStatus,
@@ -547,6 +548,31 @@ class RecordingStorageConfigSerializer(serializers.ModelSerializer):
 
 class RecordingStorageConfigUpdateSerializer(serializers.Serializer):
     storage_root = serializers.CharField(min_length=1, max_length=500)
+
+
+class SystemAuthConfigSerializer(serializers.ModelSerializer):
+    updated_by_username = serializers.CharField(source="updated_by.username", allow_null=True)
+
+    class Meta:
+        model = SystemAuthConfig
+        fields = (
+            "allow_techcloud_oauth_login",
+            "allow_local_register",
+            "allow_local_login",
+            "updated_by_username",
+            "updated_at",
+        )
+
+
+class SystemAuthConfigUpdateSerializer(serializers.Serializer):
+    allow_techcloud_oauth_login = serializers.BooleanField(required=False)
+    allow_local_register = serializers.BooleanField(required=False)
+    allow_local_login = serializers.BooleanField(required=False)
+
+    def validate(self, attrs):
+        if not attrs:
+            raise serializers.ValidationError("At least one option is required")
+        return attrs
 
 
 class MeetingRecordingSerializer(serializers.ModelSerializer):
