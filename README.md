@@ -2,6 +2,24 @@
 
 基于 Django + DRF 的在线会议系统，支持会议管理、权限控制、聊天与 LiveKit 入会能力。
 
+## 代码与产物目录
+
+- `conference/`
+  - 后端核心业务代码
+- `smart_meeting/`
+  - Django 项目配置与入口
+- `app/templates/`
+  - Django 模板
+- `app/static/`
+  - 手写静态资源
+- `flutter_dashboard/`
+  - Flutter Dashboard 源码
+- `artifacts/flutter_dashboard_web/`
+  - Flutter Web 构建产物，供 Django 作为静态文件挂载
+  - 不应手工编辑，使用 `./scripts/build_flutter_dashboard.sh` 生成
+- `tools/`
+  - 本地运行依赖和第三方工具，不纳入源码提交流程
+
 ## 页面入口
 
 - 首页：`/`
@@ -35,6 +53,12 @@ python manage.py runserver 0.0.0.0:8000
 ```
 
 启动后访问 `http://127.0.0.1:8000`。
+
+如果需要刷新 Flutter Dashboard 静态产物：
+
+```bash
+./scripts/build_flutter_dashboard.sh
+```
 
 ## 环境变量
 

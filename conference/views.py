@@ -841,7 +841,7 @@ def _sync_room_session_state_with_online_count(
 
 
 def _flutter_cache_bust() -> int:
-    js_path = Path(settings.BASE_DIR) / "app" / "static" / "flutter_dashboard" / "main.dart.js"
+    js_path = settings.FLUTTER_DASHBOARD_BUILD_DIR / "main.dart.js"
     try:
         return int(os.path.getmtime(js_path))
     except OSError:
@@ -1478,7 +1478,7 @@ def home_view(request):
 
 @login_required(login_url="/accounts/login")
 def dashboard_view(request):
-    flutter_index = Path(settings.BASE_DIR) / "app" / "static" / "flutter_dashboard" / "index.html"
+    flutter_index = settings.FLUTTER_DASHBOARD_BUILD_DIR / "index.html"
     if flutter_index.exists():
         return render(
             request,
@@ -1492,7 +1492,7 @@ def dashboard_view(request):
 def billing_dashboard_view(request):
     if not request.user.is_superuser:
         return redirect("/dashboard")
-    flutter_index = Path(settings.BASE_DIR) / "app" / "static" / "flutter_dashboard" / "index.html"
+    flutter_index = settings.FLUTTER_DASHBOARD_BUILD_DIR / "index.html"
     if flutter_index.exists():
         return render(
             request,

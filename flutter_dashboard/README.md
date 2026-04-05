@@ -22,11 +22,16 @@ flutter run -d chrome
 
 ## 与 Django 集成（可选）
 
-如果要将 Flutter 构建产物接入 Django：
+如果要将 Flutter 构建产物接入 Django，请在仓库根目录执行：
 
 ```bash
-flutter build web
+./scripts/build_flutter_dashboard.sh
 ```
 
-然后将 `build/web` 内容部署到 Django 静态资源目录并配置路由。
+脚本会把 `build/web` 同步到 `artifacts/flutter_dashboard_web/`。
 
+注意：
+
+- `flutter_dashboard/` 是源码目录
+- `artifacts/flutter_dashboard_web/` 是生成产物目录
+- 不要手改 `artifacts/flutter_dashboard_web/` 下的文件
