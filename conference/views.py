@@ -36,6 +36,7 @@ from livekit.protocol import egress as lk_egress
 from livekit.api.twirp_client import TwirpError
 
 from conference.forms import MeetingAuthenticationForm, MeetingRegisterForm
+from conference.meeting_resolver import MeetingLookup
 from conference.meeting_refs import ensure_meeting_ref, meeting_from_ref
 from conference.models import (
     AuditLog,
@@ -617,6 +618,8 @@ def _billing_limit_message_for_action(
     projected_meeting_count: int | None = None,
 ) -> str | None:
     limits = _billing_limits_for_user(user)
+    if all(value is None for value in limits.values()):
+        return None
     usage = _billing_usage_snapshot(user)
     checks = [
         (
@@ -1096,7 +1099,7 @@ def _sync_room_session_state_with_online_count(
 
 
 def _flutter_cache_bust() -> int:
-    js_path = Path(settings.BASE_DIR) / "app" / "static" / "flutter_dashboard" / "main.dart.js"
+    js_path = settings.FLUTTER_DASHBOARD_BUILD_DIR / "main.dart.js"
     try:
         return int(os.path.getmtime(js_path))
     except OSError:
@@ -1742,7 +1745,7 @@ def home_view(request):
 
 @login_required(login_url="/accounts/login")
 def dashboard_view(request):
-    flutter_index = Path(settings.BASE_DIR) / "app" / "static" / "flutter_dashboard" / "index.html"
+    flutter_index = settings.FLUTTER_DASHBOARD_BUILD_DIR / "index.html"
     if flutter_index.exists():
         return render(
             request,
@@ -1761,7 +1764,7 @@ def dashboard_view(request):
 def billing_dashboard_view(request):
     if not request.user.is_superuser:
         return redirect("/dashboard")
-    flutter_index = Path(settings.BASE_DIR) / "app" / "static" / "flutter_dashboard" / "index.html"
+    flutter_index = settings.FLUTTER_DASHBOARD_BUILD_DIR / "index.html"
     if flutter_index.exists():
         return render(
             request,
@@ -2786,19 +2789,90 @@ def login_api(request):
     return Response({"access_token": access_token, "token_type": "bearer"})
 
 
-def _meeting_for_user_or_403(user, meeting_id: int):
-    meeting = Meeting.objects.filter(id=meeting_id).first()
-    if not meeting:
-        return None, Response({"detail": "Meeting not found"}, status=status.HTTP_404_NOT_FOUND)
-    if not has_meeting_access(user, meeting):
-        return None, Response({"detail": "No permission to access this meeting"}, status=status.HTTP_403_FORBIDDEN)
+def _refresh_meeting_runtime_state(meeting) -> None:
     if meeting.room_session_started_at is not None:
         _enforce_owner_room_used_limit_if_needed(meeting.owner)
         _enforce_meeting_current_room_used_limit_if_needed(meeting)
         _schedule_owner_room_limit_timer(meeting.owner_id)
         _schedule_meeting_room_limit_timer(meeting.id)
         meeting.refresh_from_db()
-    return meeting, None
+
+
+def _resolve_user_meeting(user, lookup: MeetingLookup, *, allow_waiting_room: bool = False):
+    meeting = lookup.resolve(user)
+    if not meeting:
+        return None, Response({"detail": "Meeting not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    _refresh_meeting_runtime_state(meeting)
+
+    if has_meeting_access(user, meeting):
+        return meeting, None
+    if allow_waiting_room and _has_waiting_room_access(user, meeting):
+        return meeting, None
+
+    if lookup.hidden_forbidden:
+        return None, Response({"detail": "Meeting not found"}, status=status.HTTP_404_NOT_FOUND)
+    return None, Response({"detail": "No permission to access this meeting"}, status=status.HTTP_403_FORBIDDEN)
+
+
+def _resolve_user_meeting_with_membership(
+    user,
+    lookup: MeetingLookup,
+    *,
+    allow_waiting_room: bool = False,
+):
+    meeting = lookup.resolve(user)
+    if not meeting:
+        return None, None, Response({"detail": "Meeting not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    _refresh_meeting_runtime_state(meeting)
+
+    membership = None
+    if not user.is_superuser and meeting.owner_id != user.id:
+        membership = MeetingMember.objects.filter(meeting=meeting, user=user).first()
+        if membership is not None:
+            return meeting, membership, None
+    else:
+        return meeting, membership, None
+
+    if allow_waiting_room and _has_waiting_room_access(user, meeting):
+        return meeting, membership, None
+
+    if lookup.hidden_forbidden:
+        return None, None, Response({"detail": "Meeting not found"}, status=status.HTTP_404_NOT_FOUND)
+    return None, None, Response({"detail": "No permission to access this meeting"}, status=status.HTTP_403_FORBIDDEN)
+
+
+def _meeting_for_user_or_403(user, meeting_id: int):
+    return _resolve_user_meeting(
+        user,
+        MeetingLookup(meeting_id=meeting_id),
+    )
+
+
+def _meeting_endpoint(
+    request,
+    *,
+    lookup: MeetingLookup,
+    impl,
+    allow_waiting_room: bool = False,
+):
+    meeting, error = _resolve_user_meeting(
+        request.user,
+        lookup,
+        allow_waiting_room=allow_waiting_room,
+    )
+    if error:
+        return error
+    return impl(request, meeting)
+
+
+def _meeting_endpoint_by_id(request, meeting_id: int, impl):
+    return _meeting_endpoint(
+        request,
+        lookup=MeetingLookup(meeting_id=meeting_id),
+        impl=impl,
+    )
 
 
 def _has_waiting_room_access(user, meeting) -> bool:
@@ -2812,20 +2886,11 @@ def _has_waiting_room_access(user, meeting) -> bool:
 
 
 def _meeting_for_user_ref_or_404(user, meeting_ref: str, *, allow_waiting_room: bool = False):
-    meeting = meeting_from_ref(user, meeting_ref)
-    if not meeting:
-        return None, Response({"detail": "Meeting not found"}, status=status.HTTP_404_NOT_FOUND)
-    if meeting.room_session_started_at is not None:
-        _enforce_owner_room_used_limit_if_needed(meeting.owner)
-        _enforce_meeting_current_room_used_limit_if_needed(meeting)
-        _schedule_owner_room_limit_timer(meeting.owner_id)
-        _schedule_meeting_room_limit_timer(meeting.id)
-        meeting.refresh_from_db()
-    if has_meeting_access(user, meeting):
-        return meeting, None
-    if allow_waiting_room and _has_waiting_room_access(user, meeting):
-        return meeting, None
-    return None, Response({"detail": "Meeting not found"}, status=status.HTTP_404_NOT_FOUND)
+    return _resolve_user_meeting(
+        user,
+        MeetingLookup(meeting_ref=meeting_ref, hidden_forbidden=True),
+        allow_waiting_room=allow_waiting_room,
+    )
 
 
 def _can_edit_meeting(user, meeting) -> bool:
@@ -3737,13 +3802,10 @@ def meetings(request):
 @api_view(["GET", "PATCH", "DELETE"])
 @permission_classes([IsAuthenticated])
 def meeting_detail(request, meeting_id: int):
-    meeting, error = _meeting_for_user_or_403(request.user, meeting_id)
-    if error:
-        return error
-    return _meeting_detail_impl(request, meeting, meeting_id)
+    return _meeting_endpoint_by_id(request, meeting_id, _meeting_detail_impl)
 
 
-def _meeting_detail_impl(request, meeting, resource_id_for_log: int):
+def _meeting_detail_impl(request, meeting):
     if request.method == "GET":
         return Response(MeetingSerializer(meeting, context={"request": request}).data)
 
@@ -3816,7 +3878,7 @@ def _meeting_detail_impl(request, meeting, resource_id_for_log: int):
         user=request.user,
         action="meeting.delete",
         resource_type="meeting",
-        resource_id=resource_id_for_log,
+        resource_id=meeting.id,
         detail=f"room={room_name}",
         ip_address=client_ip(request),
     )
@@ -3826,14 +3888,15 @@ def _meeting_detail_impl(request, meeting, resource_id_for_log: int):
 @api_view(["GET", "PATCH", "DELETE"])
 @permission_classes([IsAuthenticated])
 def meeting_detail_ref(request, meeting_ref: str):
-    meeting, error = _meeting_for_user_ref_or_404(
-        request.user,
-        meeting_ref,
+    return _meeting_endpoint(
+        request,
+        lookup=MeetingLookup(
+            meeting_ref=meeting_ref,
+            hidden_forbidden=True,
+        ),
+        impl=_meeting_detail_impl,
         allow_waiting_room=request.method == "GET",
     )
-    if error:
-        return error
-    return _meeting_detail_impl(request, meeting, meeting.id)
 
 
 @api_view(["GET"])
@@ -3935,13 +3998,29 @@ def join_meeting(request):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def meeting_join_token(request, meeting_id: int):
-    meeting, error = _meeting_for_user_or_403(request.user, meeting_id)
+    return _meeting_join_token(
+        request,
+        lookup=MeetingLookup(meeting_id=meeting_id),
+    )
+
+
+def _meeting_join_token(
+    request,
+    *,
+    lookup: MeetingLookup,
+    allow_waiting_room: bool = False,
+):
+    meeting, membership, error = _resolve_user_meeting_with_membership(
+        request.user,
+        lookup,
+        allow_waiting_room=allow_waiting_room,
+    )
     if error:
         return error
-    return _meeting_join_token_impl(request, meeting)
+    return _meeting_join_token_impl(request, meeting, membership=membership)
 
 
-def _meeting_join_token_impl(request, meeting):
+def _meeting_join_token_impl(request, meeting, *, membership=None):
     requested_display_name = (request.data.get("display_name") or "").strip()
     if requested_display_name and len(requested_display_name) > 80:
         return Response({"detail": "display_name exceeds max length 80"}, status=status.HTTP_400_BAD_REQUEST)
@@ -3950,7 +4029,8 @@ def _meeting_join_token_impl(request, meeting):
     if _is_blocked_member(meeting, request.user):
         return Response({"detail": _REMOVED_AND_BLOCKED_DETAIL}, status=status.HTTP_403_FORBIDDEN)
 
-    membership = MeetingMember.objects.filter(meeting=meeting, user=request.user).first()
+    if membership is None:
+        membership = MeetingMember.objects.filter(meeting=meeting, user=request.user).first()
     waiting_gate_response = _waiting_room_gate_response(
         meeting,
         request.user,
@@ -4075,14 +4155,14 @@ def _meeting_join_token_impl(request, meeting):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def meeting_join_token_ref(request, meeting_ref: str):
-    meeting, error = _meeting_for_user_ref_or_404(
-        request.user,
-        meeting_ref,
+    return _meeting_join_token(
+        request,
+        lookup=MeetingLookup(
+            meeting_ref=meeting_ref,
+            hidden_forbidden=True,
+        ),
         allow_waiting_room=True,
     )
-    if error:
-        return error
-    return _meeting_join_token_impl(request, meeting)
 
 
 @api_view(["GET"])
@@ -4278,10 +4358,7 @@ def public_meeting_join_token(request, share_code: str):
 @api_view(["PATCH"])
 @permission_classes([IsAuthenticated])
 def my_meeting_display_name(request, meeting_id: int):
-    meeting, error = _meeting_for_user_or_403(request.user, meeting_id)
-    if error:
-        return error
-    return _my_meeting_display_name_impl(request, meeting)
+    return _meeting_endpoint_by_id(request, meeting_id, _my_meeting_display_name_impl)
 
 
 def _my_meeting_display_name_impl(request, meeting):
@@ -4345,19 +4422,20 @@ def _my_meeting_display_name_impl(request, meeting):
 @api_view(["PATCH"])
 @permission_classes([IsAuthenticated])
 def my_meeting_display_name_ref(request, meeting_ref: str):
-    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
-    if error:
-        return error
-    return _my_meeting_display_name_impl(request, meeting)
+    return _meeting_endpoint(
+        request,
+        lookup=MeetingLookup(
+            meeting_ref=meeting_ref,
+            hidden_forbidden=True,
+        ),
+        impl=_my_meeting_display_name_impl,
+    )
 
 
 @api_view(["GET", "POST"])
 @permission_classes([IsAuthenticated])
 def meeting_members(request, meeting_id: int):
-    meeting, error = _meeting_for_user_or_403(request.user, meeting_id)
-    if error:
-        return error
-    return _meeting_members_impl(request, meeting)
+    return _meeting_endpoint_by_id(request, meeting_id, _meeting_members_impl)
 
 
 def _meeting_members_impl(request, meeting):
@@ -4414,38 +4492,36 @@ def _meeting_members_impl(request, meeting):
 @api_view(["GET", "POST"])
 @permission_classes([IsAuthenticated])
 def meeting_members_ref(request, meeting_ref: str):
-    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
-    if error:
-        return error
-    return _meeting_members_impl(request, meeting)
+    return _meeting_endpoint(
+        request,
+        lookup=MeetingLookup(
+            meeting_ref=meeting_ref,
+            hidden_forbidden=True,
+        ),
+        impl=_meeting_members_impl,
+    )
 
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def meeting_raise_hand(request, meeting_id: int):
-    meeting, error = _meeting_for_user_or_403(request.user, meeting_id)
-    if error:
-        return error
-    return _meeting_raise_hand_impl(request, meeting, meeting_id)
+    return _meeting_endpoint_by_id(request, meeting_id, _meeting_raise_hand_impl)
 
 
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def meeting_raise_hand_ref(request, meeting_ref: str):
-    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
-    if error:
-        return error
-    return _meeting_raise_hand_impl(request, meeting, meeting.id)
+    return _meeting_endpoint(
+        request,
+        lookup=MeetingLookup(
+            meeting_ref=meeting_ref,
+            hidden_forbidden=True,
+        ),
+        impl=_meeting_raise_hand_impl,
+    )
 
 
-def _meeting_member_control(request, meeting_id: int, target_user_id: int, action: str):
-    meeting, error = _meeting_for_user_or_403(request.user, meeting_id)
-    if error:
-        return error
-    return _meeting_member_control_impl(request, meeting, target_user_id, action, meeting_id)
-
-
-def _meeting_raise_hand_impl(request, meeting, resource_id_for_log: int):
+def _meeting_raise_hand_impl(request, meeting):
     membership = MeetingMember.objects.filter(meeting=meeting, user=request.user).select_related("user").first()
     if not membership:
         return Response({"detail": "Join meeting first before raising hand"}, status=status.HTTP_403_FORBIDDEN)
@@ -4483,1361 +4559,11 @@ def _meeting_raise_hand_impl(request, meeting, resource_id_for_log: int):
         user=request.user,
         action="meeting.raise_hand",
         resource_type="meeting",
-        resource_id=resource_id_for_log,
+        resource_id=meeting.id,
         detail=f"request={request_type}",
         ip_address=client_ip(request),
     )
     return Response(MeetingMemberSerializer(membership, context={"meeting": meeting}).data)
-
-
-def _meeting_member_control_impl(request, meeting, target_user_id: int, action: str, resource_id_for_log: int):
-    actor_membership = meeting_membership(meeting.id, request.user.id)
-    target = MeetingMember.objects.filter(meeting=meeting, user_id=target_user_id).select_related("user").first()
-    if not target:
-        return Response({"detail": "Member not found"}, status=status.HTTP_404_NOT_FOUND)
-
-    if action == "role":
-        if not can_change_roles(request.user, actor_membership):
-            return Response({"detail": "Only host/cohost can change role"}, status=status.HTTP_403_FORBIDDEN)
-        serializer = MeetingRoleUpdateSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        next_role = serializer.validated_data["role"]
-        if next_role == MeetingRole.HOST and not request.user.is_superuser:
-            return Response({"detail": "Only admin can assign host role"}, status=status.HTTP_403_FORBIDDEN)
-        if target.role == MeetingRole.HOST and next_role != MeetingRole.HOST and not request.user.is_superuser:
-            return Response({"detail": "Host role cannot be changed by non-admin"}, status=status.HTTP_403_FORBIDDEN)
-        if target.user_id == request.user.id and not request.user.is_superuser:
-            return Response({"detail": "Cannot change your own role"}, status=status.HTTP_400_BAD_REQUEST)
-        if target.role != next_role:
-            target.role = next_role
-            target.save(update_fields=["role"])
-            try:
-                _sync_livekit_permissions_for_member(meeting, target)
-            except Exception:
-                pass
-        log_audit(
-            user=request.user,
-            action="meeting.member_role_update",
-            resource_type="meeting",
-            resource_id=resource_id_for_log,
-            detail=f"target_user_id={target_user_id}, role={target.role}",
-            ip_address=client_ip(request),
-        )
-        return Response(MeetingMemberSerializer(target, context={"meeting": meeting}).data)
-
-    if action == "mute":
-        if not can_moderate(request.user, actor_membership):
-            return Response({"detail": "Only host/cohost can mute members"}, status=status.HTTP_403_FORBIDDEN)
-        if target.role == MeetingRole.HOST and not request.user.is_superuser:
-            return Response({"detail": "Host cannot be muted by non-admin"}, status=status.HTTP_403_FORBIDDEN)
-        serializer = MeetingMuteSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        next_muted = serializer.validated_data["muted"]
-        if not next_muted and not _member_can_self_unmute(meeting, target):
-            return Response(
-                {"detail": "Member has no microphone permission. Allow mic first."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        target.muted_by_host = next_muted
-        update_fields = ["muted_by_host"]
-        if not next_muted and target.mic_request_pending:
-            target.mic_request_pending = False
-            update_fields.append("mic_request_pending")
-        target.save(update_fields=update_fields)
-        try:
-            _sync_livekit_permissions_for_member(
-                meeting,
-                target,
-                force_unmute_microphone=not target.muted_by_host,
-            )
-            if not next_muted:
-                _request_participant_device_open(
-                    meeting,
-                    _stable_participant_identity(target.user),
-                    open_microphone=True,
-                )
-        except Exception:
-            pass
-        log_audit(
-            user=request.user,
-            action="meeting.member_mute",
-            resource_type="meeting",
-            resource_id=resource_id_for_log,
-            detail=f"target_user_id={target_user_id}, muted={target.muted_by_host}",
-            ip_address=client_ip(request),
-        )
-        return Response(MeetingMemberSerializer(target, context={"meeting": meeting}).data)
-
-    if action == "video":
-        if not can_moderate(request.user, actor_membership):
-            return Response({"detail": "Only host/cohost can control member video"}, status=status.HTTP_403_FORBIDDEN)
-        if target.role == MeetingRole.HOST and not request.user.is_superuser:
-            return Response({"detail": "Host video cannot be controlled by non-admin"}, status=status.HTTP_403_FORBIDDEN)
-        serializer = MeetingVideoControlSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        disabled = serializer.validated_data["disabled"]
-        if not disabled and not _member_can_video(meeting, target):
-            return Response(
-                {"detail": "Member has no camera permission. Allow video first."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        target.video_blocked_by_host = disabled
-        update_fields = ["video_blocked_by_host"]
-        if not disabled and target.video_request_pending:
-            target.video_request_pending = False
-            update_fields.append("video_request_pending")
-        target.save(update_fields=update_fields)
-        try:
-            _sync_livekit_permissions_for_member(
-                meeting,
-                target,
-                force_unmute_camera=not disabled,
-            )
-            if not disabled:
-                _request_participant_device_open(
-                    meeting,
-                    _stable_participant_identity(target.user),
-                    open_camera=True,
-                )
-        except Exception:
-            pass
-        log_audit(
-            user=request.user,
-            action="meeting.member_video_control",
-            resource_type="meeting",
-            resource_id=resource_id_for_log,
-            detail=f"target_user_id={target_user_id}, disabled={disabled}",
-            ip_address=client_ip(request),
-        )
-        return Response(MeetingMemberSerializer(target, context={"meeting": meeting}).data)
-
-    if action in {"mic_permission", "video_permission", "chat_permission", "screen_share_permission"}:
-        if not can_moderate(request.user, actor_membership):
-            return Response(
-                {"detail": "Only host/cohost can update member permissions"},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-        if target.role == MeetingRole.HOST and not request.user.is_superuser:
-            return Response(
-                {"detail": "Host member permission cannot be changed by non-admin"},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-        serializer = MeetingPermissionControlSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        allowed = serializer.validated_data["allowed"]
-
-        update_fields: list[str] = []
-        action_name = ""
-        if action == "mic_permission":
-            target.allow_self_unmute_override = allowed
-            update_fields.append("allow_self_unmute_override")
-            if not allowed and not target.muted_by_host:
-                target.muted_by_host = True
-                update_fields.append("muted_by_host")
-            if allowed and target.mic_request_pending:
-                target.mic_request_pending = False
-                update_fields.append("mic_request_pending")
-            action_name = "meeting.member_mic_permission"
-        elif action == "video_permission":
-            target.allow_member_video_override = allowed
-            update_fields.append("allow_member_video_override")
-            if not allowed and not target.video_blocked_by_host:
-                target.video_blocked_by_host = True
-                update_fields.append("video_blocked_by_host")
-            if allowed and target.video_request_pending:
-                target.video_request_pending = False
-                update_fields.append("video_request_pending")
-            action_name = "meeting.member_video_permission"
-        elif action == "chat_permission":
-            target.allow_chat_override = allowed
-            update_fields.append("allow_chat_override")
-            action_name = "meeting.member_chat_permission"
-        else:
-            target.allow_screen_share_override = allowed
-            update_fields.append("allow_screen_share_override")
-            action_name = "meeting.member_screen_share_permission"
-
-        if update_fields:
-            target.save(update_fields=update_fields)
-
-        try:
-            _sync_livekit_permissions_for_member(meeting, target)
-            if action == "screen_share_permission" and not allowed:
-                identity = _stable_participant_identity(target.user)
-                livekit_service.mute_participant_track_sources(
-                    meeting.room_name,
-                    identity,
-                    track_sources=["screen_share", "screen_share_audio"],
-                    muted=True,
-                )
-        except Exception:
-            pass
-
-        log_audit(
-            user=request.user,
-            action=action_name,
-            resource_type="meeting",
-            resource_id=resource_id_for_log,
-            detail=f"target_user_id={target_user_id}, allowed={allowed}",
-            ip_address=client_ip(request),
-        )
-        return Response(MeetingMemberSerializer(target, context={"meeting": meeting}).data)
-
-    if action == "display_name":
-        if not can_moderate(request.user, actor_membership):
-            return Response({"detail": "Only host/cohost can rename members"}, status=status.HTTP_403_FORBIDDEN)
-        serializer = MeetingMemberDisplayNameControlSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        next_display_name = serializer.validated_data["display_name"].strip()
-        expected_display_name_version = serializer.validated_data.get(
-            "expected_display_name_version"
-        )
-        target, conflict = _update_member_display_name_consistently(
-            meeting,
-            target.id,
-            next_display_name=next_display_name,
-            expected_display_name_version=expected_display_name_version,
-        )
-        if conflict is not None:
-            return _display_name_conflict_response(
-                current_display_name=conflict.display_name,
-                current_display_name_version=conflict.display_name_version,
-            )
-        if target is None:
-            return Response({"detail": "Member not found"}, status=status.HTTP_404_NOT_FOUND)
-        try:
-            identity = _stable_participant_identity(target.user)
-            livekit_service.update_participant_name(
-                meeting.room_name,
-                identity,
-                name=next_display_name,
-            )
-        except Exception:
-            pass
-        log_audit(
-            user=request.user,
-            action="meeting.member_display_name_control",
-            resource_type="meeting",
-            resource_id=resource_id_for_log,
-            detail=f"target_user_id={target_user_id}, display_name={next_display_name}",
-            ip_address=client_ip(request),
-        )
-        return Response(MeetingMemberSerializer(target, context={"meeting": meeting}).data)
-
-    if action == "stop_share":
-        if not can_moderate(request.user, actor_membership):
-            return Response({"detail": "Only host/cohost can stop screen share"}, status=status.HTTP_403_FORBIDDEN)
-        identity = _stable_participant_identity(target.user)
-        try:
-            livekit_service.mute_participant_track_sources(
-                meeting.room_name,
-                identity,
-                track_sources=["screen_share", "screen_share_audio"],
-                muted=True,
-            )
-        except Exception:
-            pass
-        log_audit(
-            user=request.user,
-            action="meeting.member_stop_share",
-            resource_type="meeting",
-            resource_id=resource_id_for_log,
-            detail=f"target_user_id={target_user_id}",
-            ip_address=client_ip(request),
-        )
-        return Response(MeetingMemberSerializer(target, context={"meeting": meeting}).data)
-
-    if action == "remove":
-        if not can_moderate(request.user, actor_membership):
-            return Response({"detail": "Only host/cohost can remove members"}, status=status.HTTP_403_FORBIDDEN)
-        if target.role == MeetingRole.HOST and not request.user.is_superuser:
-            return Response({"detail": "Host cannot be removed by non-admin"}, status=status.HTTP_403_FORBIDDEN)
-        ban_after_remove = _bool_value(request.query_params.get("ban", "1"), default=True)
-        reason = (request.query_params.get("reason") or "").strip()[:200]
-        target_user = target.user
-        target_identity = _stable_participant_identity(target_user)
-        target.delete()
-        if ban_after_remove:
-            MeetingBlockedMember.objects.update_or_create(
-                meeting=meeting,
-                user=target_user,
-                defaults={
-                    "blocked_by": request.user,
-                    "reason": reason or "removed_by_moderator",
-                },
-            )
-            _mark_waiting_room_status(
-                meeting,
-                target_user,
-                WaitingRoomStatus.REJECTED,
-                reviewed_by=request.user,
-            )
-        try:
-            livekit_service.remove_participant(meeting.room_name, target_identity)
-        except Exception:
-            pass
-        log_audit(
-            user=request.user,
-            action="meeting.member_remove",
-            resource_type="meeting",
-            resource_id=resource_id_for_log,
-            detail=f"target_user_id={target_user_id}, banned={ban_after_remove}",
-            ip_address=client_ip(request),
-        )
-        return Response({"ok": True, "banned": ban_after_remove})
-
-    return Response({"detail": "Unsupported action"}, status=status.HTTP_400_BAD_REQUEST)
-
-
-def _meeting_participant_control(request, meeting_id: int, participant_identity: str, action: str):
-    meeting, error = _meeting_for_user_or_403(request.user, meeting_id)
-    if error:
-        return error
-    return _meeting_participant_control_impl(
-        request,
-        meeting,
-        participant_identity,
-        action,
-        meeting_id,
-    )
-
-
-def _meeting_participant_control_impl(
-    request,
-    meeting,
-    participant_identity: str,
-    action: str,
-    resource_id_for_log: int,
-):
-    actor_membership = meeting_membership(meeting.id, request.user.id)
-    if not can_moderate(request.user, actor_membership):
-        return Response(
-            {"detail": "Only host/cohost can manage participants"},
-            status=status.HTTP_403_FORBIDDEN,
-        )
-
-    identity = (participant_identity or "").strip()
-    if not identity:
-        return Response({"detail": "Participant identity is required"}, status=status.HTTP_400_BAD_REQUEST)
-    if _user_id_from_participant_identity(identity) is not None:
-        return Response(
-            {"detail": "Registered members should be managed by member id"},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
-    def _guest_permission_payload(publish_sources: Iterable[str], can_publish_data: bool):
-        source_set = set(publish_sources)
-        return {
-            "allow_self_unmute": "microphone" in source_set,
-            "allow_member_video": "camera" in source_set,
-            "allow_screen_share": "screen_share" in source_set or "screen_share_audio" in source_set,
-            "allow_chat": bool(can_publish_data),
-        }
-
-    if action == "detail":
-        livekit_name = _livekit_participant_name(meeting, identity).strip()
-        guest = _ensure_guest_participant_record(
-            meeting,
-            identity,
-            fallback_display_name=livekit_name,
-        )
-        return Response(
-            {
-                "ok": True,
-                "identity": identity,
-                "display_name": guest.display_name,
-                "display_name_version": guest.display_name_version,
-                "livekit_display_name": livekit_name,
-            }
-        )
-
-    if action == "mute":
-        serializer = MeetingMuteSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        muted = serializer.validated_data["muted"]
-        sources = _resolved_guest_publish_sources(meeting, identity)
-        effective_sources = _effective_guest_publish_sources(meeting, sources)
-        effective_source_set = set(effective_sources)
-        if not muted and "microphone" not in effective_source_set:
-            return Response(
-                {"detail": "Participant has no microphone permission. Allow mic first."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        can_publish_data = _resolved_guest_publish_data_allowed(meeting, identity)
-        try:
-            _sync_livekit_permissions_for_guest_participant(
-                meeting,
-                identity,
-                publish_sources=effective_sources,
-                can_publish_data=can_publish_data,
-                force_unmute_microphone=not muted,
-            )
-            if not muted:
-                _request_participant_device_open(
-                    meeting,
-                    identity,
-                    open_microphone=True,
-                )
-            if muted:
-                livekit_service.mute_participant_track_sources(
-                    meeting.room_name,
-                    identity,
-                    track_sources=["microphone"],
-                    muted=True,
-                )
-        except Exception:
-            pass
-        log_audit(
-            user=request.user,
-            action="meeting.participant_mute",
-            resource_type="meeting",
-            resource_id=resource_id_for_log,
-            detail=f"participant_identity={identity}, muted={muted}",
-            ip_address=client_ip(request),
-        )
-        return Response(
-            {
-                "ok": True,
-                "identity": identity,
-                "muted": muted,
-                **_guest_permission_payload(effective_sources, can_publish_data),
-            }
-        )
-
-    if action == "video":
-        serializer = MeetingVideoControlSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        disabled = serializer.validated_data["disabled"]
-        sources = _resolved_guest_publish_sources(meeting, identity)
-        effective_sources = _effective_guest_publish_sources(meeting, sources)
-        effective_source_set = set(effective_sources)
-        if not disabled and "camera" not in effective_source_set:
-            return Response(
-                {"detail": "Participant has no camera permission. Allow video first."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        can_publish_data = _resolved_guest_publish_data_allowed(meeting, identity)
-        try:
-            _sync_livekit_permissions_for_guest_participant(
-                meeting,
-                identity,
-                publish_sources=effective_sources,
-                can_publish_data=can_publish_data,
-                force_unmute_camera=not disabled,
-            )
-            if not disabled:
-                _request_participant_device_open(
-                    meeting,
-                    identity,
-                    open_camera=True,
-                )
-            if disabled:
-                livekit_service.mute_participant_track_sources(
-                    meeting.room_name,
-                    identity,
-                    track_sources=["camera"],
-                    muted=True,
-                )
-        except Exception:
-            pass
-        log_audit(
-            user=request.user,
-            action="meeting.participant_video_control",
-            resource_type="meeting",
-            resource_id=resource_id_for_log,
-            detail=f"participant_identity={identity}, disabled={disabled}",
-            ip_address=client_ip(request),
-        )
-        return Response(
-            {
-                "ok": True,
-                "identity": identity,
-                "disabled": disabled,
-                **_guest_permission_payload(effective_sources, can_publish_data),
-            }
-        )
-
-    if action in {"mic_permission", "video_permission", "chat_permission", "screen_share_permission"}:
-        if action == "chat_permission":
-            return Response(
-                {"detail": "Guest chat permission follows meeting-level controls and cannot be overridden per participant"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        serializer = MeetingPermissionControlSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        allowed = serializer.validated_data["allowed"]
-        sources = _resolved_guest_publish_sources(meeting, identity)
-        can_publish_data = _resolved_guest_publish_data_allowed(meeting, identity)
-
-        if action == "mic_permission":
-            if allowed:
-                sources.add("microphone")
-            else:
-                sources.discard("microphone")
-            audit_action = "meeting.participant_mic_permission"
-        elif action == "video_permission":
-            if allowed:
-                sources.add("camera")
-            else:
-                sources.discard("camera")
-            audit_action = "meeting.participant_video_permission"
-        elif action == "chat_permission":
-            can_publish_data = allowed
-            audit_action = "meeting.participant_chat_permission"
-        else:
-            if allowed:
-                sources.update({"screen_share", "screen_share_audio"})
-            else:
-                sources.discard("screen_share")
-                sources.discard("screen_share_audio")
-            audit_action = "meeting.participant_screen_share_permission"
-
-        effective_sources = _effective_guest_publish_sources(meeting, sources)
-        effective_can_publish_data = bool(can_publish_data and meeting.allow_chat)
-        try:
-            _sync_livekit_permissions_for_guest_participant(
-                meeting,
-                identity,
-                publish_sources=effective_sources,
-                can_publish_data=effective_can_publish_data,
-            )
-            if action == "screen_share_permission" and not allowed:
-                livekit_service.mute_participant_track_sources(
-                    meeting.room_name,
-                    identity,
-                    track_sources=["screen_share", "screen_share_audio"],
-                    muted=True,
-                )
-        except Exception:
-            pass
-        log_audit(
-            user=request.user,
-            action=audit_action,
-            resource_type="meeting",
-            resource_id=resource_id_for_log,
-            detail=f"participant_identity={identity}, allowed={allowed}",
-            ip_address=client_ip(request),
-        )
-        return Response(
-            {
-                "ok": True,
-                "identity": identity,
-                **_guest_permission_payload(effective_sources, effective_can_publish_data),
-            }
-        )
-
-    if action == "display_name":
-        serializer = MeetingMemberDisplayNameControlSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        next_display_name = serializer.validated_data["display_name"].strip()
-        expected_display_name_version = serializer.validated_data.get(
-            "expected_display_name_version"
-        )
-        guest, conflict = _update_guest_display_name_consistently(
-            meeting,
-            identity,
-            next_display_name=next_display_name,
-            expected_display_name_version=expected_display_name_version,
-        )
-        if conflict is not None:
-            return _display_name_conflict_response(
-                current_display_name=conflict.display_name,
-                current_display_name_version=conflict.display_name_version,
-            )
-        try:
-            livekit_service.update_participant_name(
-                meeting.room_name,
-                identity,
-                name=guest.display_name,
-            )
-        except Exception:
-            pass
-        log_audit(
-            user=request.user,
-            action="meeting.participant_display_name_control",
-            resource_type="meeting",
-            resource_id=resource_id_for_log,
-            detail=(
-                f"participant_identity={identity}, "
-                f"display_name={guest.display_name}, "
-                f"display_name_version={guest.display_name_version}"
-            ),
-            ip_address=client_ip(request),
-        )
-        return Response(
-            {
-                "ok": True,
-                "identity": identity,
-                "display_name": guest.display_name,
-                "display_name_version": guest.display_name_version,
-            }
-        )
-
-    if action == "stop_share":
-        try:
-            livekit_service.mute_participant_track_sources(
-                meeting.room_name,
-                identity,
-                track_sources=["screen_share", "screen_share_audio"],
-                muted=True,
-            )
-        except Exception:
-            pass
-        log_audit(
-            user=request.user,
-            action="meeting.participant_stop_share",
-            resource_type="meeting",
-            resource_id=resource_id_for_log,
-            detail=f"participant_identity={identity}",
-            ip_address=client_ip(request),
-        )
-        return Response({"ok": True, "identity": identity})
-
-    if action == "remove":
-        MeetingGuestParticipant.objects.filter(
-            meeting=meeting,
-            participant_identity=identity,
-        ).delete()
-        try:
-            livekit_service.remove_participant(meeting.room_name, identity)
-        except Exception:
-            pass
-        log_audit(
-            user=request.user,
-            action="meeting.participant_remove",
-            resource_type="meeting",
-            resource_id=resource_id_for_log,
-            detail=f"participant_identity={identity}",
-            ip_address=client_ip(request),
-        )
-        return Response({"ok": True, "identity": identity, "banned": False})
-
-    return Response({"detail": "Unsupported action"}, status=status.HTTP_400_BAD_REQUEST)
-
-
-@api_view(["PATCH"])
-@permission_classes([IsAuthenticated])
-def meeting_member_role(request, meeting_id: int, target_user_id: int):
-    return _meeting_member_control(request, meeting_id, target_user_id, "role")
-
-
-@api_view(["PATCH"])
-@permission_classes([IsAuthenticated])
-def meeting_member_mute(request, meeting_id: int, target_user_id: int):
-    return _meeting_member_control(request, meeting_id, target_user_id, "mute")
-
-
-@api_view(["PATCH"])
-@permission_classes([IsAuthenticated])
-def meeting_member_video(request, meeting_id: int, target_user_id: int):
-    return _meeting_member_control(request, meeting_id, target_user_id, "video")
-
-
-@api_view(["PATCH"])
-@permission_classes([IsAuthenticated])
-def meeting_member_mic_permission(request, meeting_id: int, target_user_id: int):
-    return _meeting_member_control(request, meeting_id, target_user_id, "mic_permission")
-
-
-@api_view(["PATCH"])
-@permission_classes([IsAuthenticated])
-def meeting_member_video_permission(request, meeting_id: int, target_user_id: int):
-    return _meeting_member_control(request, meeting_id, target_user_id, "video_permission")
-
-
-@api_view(["PATCH"])
-@permission_classes([IsAuthenticated])
-def meeting_member_chat_permission(request, meeting_id: int, target_user_id: int):
-    return _meeting_member_control(request, meeting_id, target_user_id, "chat_permission")
-
-
-@api_view(["PATCH"])
-@permission_classes([IsAuthenticated])
-def meeting_member_screen_share_permission(request, meeting_id: int, target_user_id: int):
-    return _meeting_member_control(request, meeting_id, target_user_id, "screen_share_permission")
-
-
-@api_view(["PATCH"])
-@permission_classes([IsAuthenticated])
-def meeting_member_display_name_control(request, meeting_id: int, target_user_id: int):
-    return _meeting_member_control(request, meeting_id, target_user_id, "display_name")
-
-
-@api_view(["POST"])
-@permission_classes([IsAuthenticated])
-def meeting_member_stop_share(request, meeting_id: int, target_user_id: int):
-    return _meeting_member_control(request, meeting_id, target_user_id, "stop_share")
-
-
-@api_view(["DELETE"])
-@permission_classes([IsAuthenticated])
-def meeting_member_remove(request, meeting_id: int, target_user_id: int):
-    return _meeting_member_control(request, meeting_id, target_user_id, "remove")
-
-
-@api_view(["PATCH"])
-@permission_classes([IsAuthenticated])
-def meeting_participant_mute(request, meeting_id: int, participant_identity: str):
-    return _meeting_participant_control(request, meeting_id, participant_identity, "mute")
-
-
-@api_view(["PATCH"])
-@permission_classes([IsAuthenticated])
-def meeting_participant_video(request, meeting_id: int, participant_identity: str):
-    return _meeting_participant_control(request, meeting_id, participant_identity, "video")
-
-
-@api_view(["PATCH"])
-@permission_classes([IsAuthenticated])
-def meeting_participant_mic_permission(request, meeting_id: int, participant_identity: str):
-    return _meeting_participant_control(request, meeting_id, participant_identity, "mic_permission")
-
-
-@api_view(["PATCH"])
-@permission_classes([IsAuthenticated])
-def meeting_participant_video_permission(request, meeting_id: int, participant_identity: str):
-    return _meeting_participant_control(request, meeting_id, participant_identity, "video_permission")
-
-
-@api_view(["PATCH"])
-@permission_classes([IsAuthenticated])
-def meeting_participant_chat_permission(request, meeting_id: int, participant_identity: str):
-    return _meeting_participant_control(request, meeting_id, participant_identity, "chat_permission")
-
-
-@api_view(["PATCH"])
-@permission_classes([IsAuthenticated])
-def meeting_participant_screen_share_permission(request, meeting_id: int, participant_identity: str):
-    return _meeting_participant_control(request, meeting_id, participant_identity, "screen_share_permission")
-
-
-@api_view(["PATCH"])
-@permission_classes([IsAuthenticated])
-def meeting_participant_display_name_control(request, meeting_id: int, participant_identity: str):
-    return _meeting_participant_control(request, meeting_id, participant_identity, "display_name")
-
-
-@api_view(["POST"])
-@permission_classes([IsAuthenticated])
-def meeting_participant_stop_share(request, meeting_id: int, participant_identity: str):
-    return _meeting_participant_control(request, meeting_id, participant_identity, "stop_share")
-
-
-@api_view(["GET", "DELETE"])
-@permission_classes([IsAuthenticated])
-def meeting_participant_remove(request, meeting_id: int, participant_identity: str):
-    action = "detail" if request.method == "GET" else "remove"
-    return _meeting_participant_control(request, meeting_id, participant_identity, action)
-
-
-@api_view(["PATCH"])
-@permission_classes([IsAuthenticated])
-def meeting_member_role_ref(request, meeting_ref: str, target_user_id: int):
-    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
-    if error:
-        return error
-    return _meeting_member_control_impl(request, meeting, target_user_id, "role", meeting.id)
-
-
-@api_view(["PATCH"])
-@permission_classes([IsAuthenticated])
-def meeting_member_mute_ref(request, meeting_ref: str, target_user_id: int):
-    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
-    if error:
-        return error
-    return _meeting_member_control_impl(request, meeting, target_user_id, "mute", meeting.id)
-
-
-@api_view(["PATCH"])
-@permission_classes([IsAuthenticated])
-def meeting_member_video_ref(request, meeting_ref: str, target_user_id: int):
-    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
-    if error:
-        return error
-    return _meeting_member_control_impl(request, meeting, target_user_id, "video", meeting.id)
-
-
-@api_view(["PATCH"])
-@permission_classes([IsAuthenticated])
-def meeting_member_mic_permission_ref(request, meeting_ref: str, target_user_id: int):
-    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
-    if error:
-        return error
-    return _meeting_member_control_impl(request, meeting, target_user_id, "mic_permission", meeting.id)
-
-
-@api_view(["PATCH"])
-@permission_classes([IsAuthenticated])
-def meeting_member_video_permission_ref(request, meeting_ref: str, target_user_id: int):
-    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
-    if error:
-        return error
-    return _meeting_member_control_impl(request, meeting, target_user_id, "video_permission", meeting.id)
-
-
-@api_view(["PATCH"])
-@permission_classes([IsAuthenticated])
-def meeting_member_chat_permission_ref(request, meeting_ref: str, target_user_id: int):
-    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
-    if error:
-        return error
-    return _meeting_member_control_impl(request, meeting, target_user_id, "chat_permission", meeting.id)
-
-
-@api_view(["PATCH"])
-@permission_classes([IsAuthenticated])
-def meeting_member_screen_share_permission_ref(request, meeting_ref: str, target_user_id: int):
-    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
-    if error:
-        return error
-    return _meeting_member_control_impl(request, meeting, target_user_id, "screen_share_permission", meeting.id)
-
-
-@api_view(["PATCH"])
-@permission_classes([IsAuthenticated])
-def meeting_member_display_name_control_ref(request, meeting_ref: str, target_user_id: int):
-    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
-    if error:
-        return error
-    return _meeting_member_control_impl(request, meeting, target_user_id, "display_name", meeting.id)
-
-
-@api_view(["POST"])
-@permission_classes([IsAuthenticated])
-def meeting_member_stop_share_ref(request, meeting_ref: str, target_user_id: int):
-    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
-    if error:
-        return error
-    return _meeting_member_control_impl(request, meeting, target_user_id, "stop_share", meeting.id)
-
-
-@api_view(["DELETE"])
-@permission_classes([IsAuthenticated])
-def meeting_member_remove_ref(request, meeting_ref: str, target_user_id: int):
-    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
-    if error:
-        return error
-    return _meeting_member_control_impl(request, meeting, target_user_id, "remove", meeting.id)
-
-
-@api_view(["PATCH"])
-@permission_classes([IsAuthenticated])
-def meeting_participant_mute_ref(request, meeting_ref: str, participant_identity: str):
-    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
-    if error:
-        return error
-    return _meeting_participant_control_impl(request, meeting, participant_identity, "mute", meeting.id)
-
-
-@api_view(["PATCH"])
-@permission_classes([IsAuthenticated])
-def meeting_participant_video_ref(request, meeting_ref: str, participant_identity: str):
-    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
-    if error:
-        return error
-    return _meeting_participant_control_impl(request, meeting, participant_identity, "video", meeting.id)
-
-
-@api_view(["PATCH"])
-@permission_classes([IsAuthenticated])
-def meeting_participant_mic_permission_ref(request, meeting_ref: str, participant_identity: str):
-    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
-    if error:
-        return error
-    return _meeting_participant_control_impl(request, meeting, participant_identity, "mic_permission", meeting.id)
-
-
-@api_view(["PATCH"])
-@permission_classes([IsAuthenticated])
-def meeting_participant_video_permission_ref(request, meeting_ref: str, participant_identity: str):
-    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
-    if error:
-        return error
-    return _meeting_participant_control_impl(request, meeting, participant_identity, "video_permission", meeting.id)
-
-
-@api_view(["PATCH"])
-@permission_classes([IsAuthenticated])
-def meeting_participant_chat_permission_ref(request, meeting_ref: str, participant_identity: str):
-    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
-    if error:
-        return error
-    return _meeting_participant_control_impl(request, meeting, participant_identity, "chat_permission", meeting.id)
-
-
-@api_view(["PATCH"])
-@permission_classes([IsAuthenticated])
-def meeting_participant_screen_share_permission_ref(request, meeting_ref: str, participant_identity: str):
-    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
-    if error:
-        return error
-    return _meeting_participant_control_impl(
-        request,
-        meeting,
-        participant_identity,
-        "screen_share_permission",
-        meeting.id,
-    )
-
-
-@api_view(["PATCH"])
-@permission_classes([IsAuthenticated])
-def meeting_participant_display_name_control_ref(request, meeting_ref: str, participant_identity: str):
-    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
-    if error:
-        return error
-    return _meeting_participant_control_impl(request, meeting, participant_identity, "display_name", meeting.id)
-
-
-@api_view(["POST"])
-@permission_classes([IsAuthenticated])
-def meeting_participant_stop_share_ref(request, meeting_ref: str, participant_identity: str):
-    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
-    if error:
-        return error
-    return _meeting_participant_control_impl(request, meeting, participant_identity, "stop_share", meeting.id)
-
-
-@api_view(["GET", "DELETE"])
-@permission_classes([IsAuthenticated])
-def meeting_participant_remove_ref(request, meeting_ref: str, participant_identity: str):
-    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
-    if error:
-        return error
-    action = "detail" if request.method == "GET" else "remove"
-    return _meeting_participant_control_impl(request, meeting, participant_identity, action, meeting.id)
-
-
-def _meeting_host_leave_impl(request, meeting, resource_id_for_log: int):
-    actor_membership = meeting_membership(meeting.id, request.user.id)
-    if not actor_membership or actor_membership.role != MeetingRole.HOST:
-        return Response({"detail": "Only host can end or transfer meeting"}, status=status.HTTP_403_FORBIDDEN)
-
-    serializer = MeetingHostLeaveSerializer(data=request.data)
-    serializer.is_valid(raise_exception=True)
-    transfer_user_id = serializer.validated_data.get("transfer_user_id")
-    online_user_ids = _list_registered_participant_user_ids(meeting)
-
-    if transfer_user_id is not None:
-        if online_user_ids is None:
-            return Response(
-                {"detail": "Unable to verify participant presence. Please try again."},
-                status=status.HTTP_503_SERVICE_UNAVAILABLE,
-            )
-        if transfer_user_id not in online_user_ids:
-            return Response(
-                {"detail": "Target user is not currently in meeting"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        target = MeetingMember.objects.filter(meeting=meeting, user_id=transfer_user_id).select_related("user").first()
-        if not target:
-            return Response({"detail": "Target user not found"}, status=status.HTTP_404_NOT_FOUND)
-        if target.user_id == request.user.id:
-            return Response({"detail": "Cannot transfer host to yourself"}, status=status.HTTP_400_BAD_REQUEST)
-        with transaction.atomic():
-            target.role = MeetingRole.HOST
-            target.save(update_fields=["role"])
-            actor_membership.delete()
-            if meeting.owner_id != target.user_id:
-                _transfer_meeting_owner_with_session_usage(meeting, new_owner=target.user)
-        try:
-            _sync_livekit_permissions_for_member(meeting, target)
-        except Exception:
-            pass
-        log_audit(
-            user=request.user,
-            action="meeting.host_leave_transfer",
-            resource_type="meeting",
-            resource_id=resource_id_for_log,
-            detail=f"handover_to_user_id={target.user_id}",
-            ip_address=client_ip(request),
-        )
-        return Response(
-            {
-                "ok": True,
-                "meeting_ended": False,
-                "handover_to_user_id": target.user_id,
-            }
-        )
-
-    next_host = (
-        MeetingMember.objects.filter(meeting=meeting, role=MeetingRole.COHOST)
-        .exclude(user=request.user)
-        .select_related("user")
-        .order_by("created_at")
-        .first()
-    )
-    if next_host:
-        with transaction.atomic():
-            next_host.role = MeetingRole.HOST
-            next_host.save(update_fields=["role"])
-            actor_membership.delete()
-            if meeting.owner_id != next_host.user_id:
-                _transfer_meeting_owner_with_session_usage(meeting, new_owner=next_host.user)
-        try:
-            _sync_livekit_permissions_for_member(meeting, next_host)
-        except Exception:
-            pass
-        log_audit(
-            user=request.user,
-            action="meeting.host_leave_auto_handover",
-            resource_type="meeting",
-            resource_id=resource_id_for_log,
-            detail=f"handover_to_user_id={next_host.user_id}",
-            ip_address=client_ip(request),
-        )
-        return Response(
-            {
-                "ok": True,
-                "meeting_ended": False,
-                "handover_to_user_id": next_host.user_id,
-                "auto_handover": True,
-            }
-        )
-
-    room_name = meeting.room_name
-    deleted_meeting_id = meeting.id
-    _finalize_room_session_if_needed(meeting)
-    meeting.delete()
-    try:
-        livekit_service.delete_room(room_name)
-    except Exception:
-        pass
-    log_audit(
-        user=request.user,
-        action="meeting.host_leave_end_no_cohost",
-        resource_type="meeting",
-        resource_id=resource_id_for_log,
-        detail=f"deleted_meeting_id={deleted_meeting_id}, room={room_name}",
-        ip_address=client_ip(request),
-    )
-    return Response(
-        {
-            "ok": True,
-            "meeting_ended": True,
-            "deleted_meeting_id": deleted_meeting_id,
-        }
-    )
-
-
-@api_view(["POST"])
-@permission_classes([IsAuthenticated])
-def meeting_host_leave(request, meeting_id: int):
-    meeting, error = _meeting_for_user_or_403(request.user, meeting_id)
-    if error:
-        return error
-    return _meeting_host_leave_impl(request, meeting, meeting_id)
-
-
-@api_view(["POST"])
-@permission_classes([IsAuthenticated])
-def meeting_host_leave_ref(request, meeting_ref: str):
-    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
-    if error:
-        return error
-    return _meeting_host_leave_impl(request, meeting, meeting.id)
-
-
-def _meeting_controls_impl(request, meeting, resource_id_for_log: int):
-    actor_membership = meeting_membership(meeting.id, request.user.id)
-    if not can_moderate(request.user, actor_membership):
-        return Response({"detail": "Only host/cohost can update meeting controls"}, status=status.HTTP_403_FORBIDDEN)
-
-    serializer = MeetingControlUpdateSerializer(data=request.data)
-    serializer.is_valid(raise_exception=True)
-    payload = serializer.validated_data
-    if not payload:
-        return Response(MeetingSerializer(meeting, context={"request": request}).data)
-
-    _apply_meeting_payload(meeting, payload)
-    meeting.save(update_fields=list(payload.keys()))
-    members = MeetingMember.objects.filter(meeting=meeting).select_related("user")
-    _sync_livekit_permissions_for_members(meeting, members)
-    _sync_livekit_permissions_for_guest_participants(meeting)
-    log_audit(
-        user=request.user,
-        action="meeting.controls_update",
-        resource_type="meeting",
-        resource_id=resource_id_for_log,
-        detail=f"fields={','.join(payload.keys())}",
-        ip_address=client_ip(request),
-    )
-    return Response(MeetingSerializer(meeting, context={"request": request}).data)
-
-
-@api_view(["PATCH"])
-@permission_classes([IsAuthenticated])
-def meeting_controls(request, meeting_id: int):
-    meeting, error = _meeting_for_user_or_403(request.user, meeting_id)
-    if error:
-        return error
-    return _meeting_controls_impl(request, meeting, meeting_id)
-
-
-@api_view(["PATCH"])
-@permission_classes([IsAuthenticated])
-def meeting_controls_ref(request, meeting_ref: str):
-    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
-    if error:
-        return error
-    return _meeting_controls_impl(request, meeting, meeting.id)
-
-
-def _meeting_mute_all_impl(request, meeting, resource_id_for_log: int):
-    actor_membership = meeting_membership(meeting.id, request.user.id)
-    if not can_moderate(request.user, actor_membership):
-        return Response({"detail": "Only host/cohost can mute all members"}, status=status.HTTP_403_FORBIDDEN)
-
-    targets = list(
-        MeetingMember.objects.filter(meeting=meeting)
-        .exclude(role=MeetingRole.HOST)
-        .exclude(user=request.user)
-        .select_related("user")
-    )
-    if targets:
-        target_ids = [row.id for row in targets]
-        MeetingMember.objects.filter(id__in=target_ids).update(muted_by_host=True)
-        for row in targets:
-            row.muted_by_host = True
-        _sync_livekit_permissions_for_members(meeting, targets)
-    guest_identities = _list_guest_participant_identities(meeting)
-    muted_guest_count = 0
-    for identity in guest_identities:
-        try:
-            sources = _resolved_guest_publish_sources(meeting, identity)
-            if meeting.allow_self_unmute:
-                sources.add("microphone")
-            else:
-                sources.discard("microphone")
-            effective_sources = _effective_guest_publish_sources(meeting, sources)
-            _sync_livekit_permissions_for_guest_participant(
-                meeting,
-                identity,
-                publish_sources=effective_sources,
-            )
-            livekit_service.mute_participant_track_sources(
-                meeting.room_name,
-                identity,
-                track_sources=["microphone"],
-                muted=True,
-            )
-            muted_guest_count += 1
-        except Exception:
-            continue
-    log_audit(
-        user=request.user,
-        action="meeting.mute_all",
-        resource_type="meeting",
-        resource_id=resource_id_for_log,
-        detail=f"muted_count={len(targets) + muted_guest_count}",
-        ip_address=client_ip(request),
-    )
-    return Response({"ok": True, "muted_count": len(targets) + muted_guest_count})
-
-
-@api_view(["POST"])
-@permission_classes([IsAuthenticated])
-def meeting_mute_all(request, meeting_id: int):
-    meeting, error = _meeting_for_user_or_403(request.user, meeting_id)
-    if error:
-        return error
-    return _meeting_mute_all_impl(request, meeting, meeting_id)
-
-
-@api_view(["POST"])
-@permission_classes([IsAuthenticated])
-def meeting_mute_all_ref(request, meeting_ref: str):
-    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
-    if error:
-        return error
-    return _meeting_mute_all_impl(request, meeting, meeting.id)
-
-
-def _meeting_waiting_room_entries_impl(request, meeting):
-    actor_membership = meeting_membership(meeting.id, request.user.id)
-    if not can_moderate(request.user, actor_membership):
-        return Response({"detail": "Only host/cohost can manage waiting room"}, status=status.HTTP_403_FORBIDDEN)
-
-    status_filter = (request.GET.get("status") or "").strip().lower()
-    include_reviewed = _bool_value(request.GET.get("all"), default=False)
-    entries = MeetingWaitingRoomEntry.objects.filter(meeting=meeting)
-    if status_filter in {
-        WaitingRoomStatus.PENDING,
-        WaitingRoomStatus.APPROVED,
-        WaitingRoomStatus.REJECTED,
-    }:
-        entries = entries.filter(status=status_filter)
-    elif not include_reviewed:
-        entries = entries.filter(status=WaitingRoomStatus.PENDING)
-    entries = entries.select_related("user", "reviewed_by").order_by("created_at")
-    return Response(MeetingWaitingRoomEntrySerializer(entries, many=True).data)
-
-
-@api_view(["GET"])
-@permission_classes([IsAuthenticated])
-def meeting_waiting_room_entries(request, meeting_id: int):
-    meeting, error = _meeting_for_user_or_403(request.user, meeting_id)
-    if error:
-        return error
-    return _meeting_waiting_room_entries_impl(request, meeting)
-
-
-@api_view(["GET"])
-@permission_classes([IsAuthenticated])
-def meeting_waiting_room_entries_ref(request, meeting_ref: str):
-    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
-    if error:
-        return error
-    return _meeting_waiting_room_entries_impl(request, meeting)
-
-
-def _meeting_waiting_room_review_impl(request, meeting, target_user_id: int, resource_id_for_log: int):
-    actor_membership = meeting_membership(meeting.id, request.user.id)
-    if not can_moderate(request.user, actor_membership):
-        return Response({"detail": "Only host/cohost can manage waiting room"}, status=status.HTTP_403_FORBIDDEN)
-
-    target_user = User.objects.filter(id=target_user_id).first()
-    if not target_user:
-        return Response({"detail": "Target user not found"}, status=status.HTTP_404_NOT_FOUND)
-
-    serializer = WaitingRoomReviewSerializer(data=request.data)
-    serializer.is_valid(raise_exception=True)
-    next_status = serializer.validated_data["status"]
-
-    if next_status == WaitingRoomStatus.APPROVED:
-        with transaction.atomic():
-            MeetingBlockedMember.objects.filter(meeting=meeting, user=target_user).delete()
-            member = MeetingMember.objects.filter(meeting=meeting, user=target_user).first()
-            if not member:
-                member_count = MeetingMember.objects.filter(meeting=meeting).count()
-                if member_count >= meeting.max_participants:
-                    return Response(
-                        {"detail": "Meeting has reached max participants"},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-                member = MeetingMember.objects.create(
-                    meeting=meeting,
-                    user=target_user,
-                    role=MeetingRole.PARTICIPANT,
-                    display_name=_fallback_display_name(target_user),
-                    muted_by_host=meeting.mute_on_entry,
-                )
-            entry = _mark_waiting_room_status(
-                meeting,
-                target_user,
-                WaitingRoomStatus.APPROVED,
-                reviewed_by=request.user,
-            )
-        try:
-            _sync_livekit_permissions_for_member(meeting, member)
-        except Exception:
-            pass
-    elif next_status == WaitingRoomStatus.REJECTED:
-        entry = _mark_waiting_room_status(
-            meeting,
-            target_user,
-            WaitingRoomStatus.REJECTED,
-            reviewed_by=request.user,
-        )
-    else:
-        entry = _mark_waiting_room_status(
-            meeting,
-            target_user,
-            WaitingRoomStatus.PENDING,
-            reviewed_by=request.user,
-        )
-
-    log_audit(
-        user=request.user,
-        action="meeting.waiting_room_review",
-        resource_type="meeting",
-        resource_id=resource_id_for_log,
-        detail=f"target_user_id={target_user_id}, status={next_status}",
-        ip_address=client_ip(request),
-    )
-    return Response(MeetingWaitingRoomEntrySerializer(entry).data)
-
-
-@api_view(["PATCH"])
-@permission_classes([IsAuthenticated])
-def meeting_waiting_room_review(request, meeting_id: int, target_user_id: int):
-    meeting, error = _meeting_for_user_or_403(request.user, meeting_id)
-    if error:
-        return error
-    return _meeting_waiting_room_review_impl(request, meeting, target_user_id, meeting_id)
-
-
-@api_view(["PATCH"])
-@permission_classes([IsAuthenticated])
-def meeting_waiting_room_review_ref(request, meeting_ref: str, target_user_id: int):
-    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
-    if error:
-        return error
-    return _meeting_waiting_room_review_impl(request, meeting, target_user_id, meeting.id)
-
-
-def _meeting_blocked_members_impl(request, meeting):
-    actor_membership = meeting_membership(meeting.id, request.user.id)
-    if not can_moderate(request.user, actor_membership):
-        return Response({"detail": "Only host/cohost can view blocked members"}, status=status.HTTP_403_FORBIDDEN)
-    rows = MeetingBlockedMember.objects.filter(meeting=meeting).select_related("user", "blocked_by").order_by("-created_at")
-    return Response(MeetingBlockedMemberSerializer(rows, many=True).data)
-
-
-@api_view(["GET"])
-@permission_classes([IsAuthenticated])
-def meeting_blocked_members(request, meeting_id: int):
-    meeting, error = _meeting_for_user_or_403(request.user, meeting_id)
-    if error:
-        return error
-    return _meeting_blocked_members_impl(request, meeting)
-
-
-@api_view(["GET"])
-@permission_classes([IsAuthenticated])
-def meeting_blocked_members_ref(request, meeting_ref: str):
-    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
-    if error:
-        return error
-    return _meeting_blocked_members_impl(request, meeting)
-
-
-def _meeting_unblock_member_impl(request, meeting, target_user_id: int, resource_id_for_log: int):
-    actor_membership = meeting_membership(meeting.id, request.user.id)
-    if not can_moderate(request.user, actor_membership):
-        return Response({"detail": "Only host/cohost can unblock members"}, status=status.HTTP_403_FORBIDDEN)
-
-    blocked = MeetingBlockedMember.objects.filter(meeting=meeting, user_id=target_user_id).first()
-    if not blocked:
-        return Response({"detail": "Blocked member not found"}, status=status.HTTP_404_NOT_FOUND)
-    blocked.delete()
-    log_audit(
-        user=request.user,
-        action="meeting.member_unblock",
-        resource_type="meeting",
-        resource_id=resource_id_for_log,
-        detail=f"target_user_id={target_user_id}",
-        ip_address=client_ip(request),
-    )
-    return Response({"ok": True})
-
-
-@api_view(["DELETE"])
-@permission_classes([IsAuthenticated])
-def meeting_unblock_member(request, meeting_id: int, target_user_id: int):
-    meeting, error = _meeting_for_user_or_403(request.user, meeting_id)
-    if error:
-        return error
-    return _meeting_unblock_member_impl(request, meeting, target_user_id, meeting_id)
-
-
-@api_view(["DELETE"])
-@permission_classes([IsAuthenticated])
-def meeting_unblock_member_ref(request, meeting_ref: str, target_user_id: int):
-    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
-    if error:
-        return error
-    return _meeting_unblock_member_impl(request, meeting, target_user_id, meeting.id)
 
 
 @api_view(["GET", "POST"])

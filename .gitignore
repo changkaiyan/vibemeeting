@@ -16,6 +16,9 @@ smart_meeting.db
 
 flutter_dashboard/.dart_tool/
 flutter_dashboard/build/
+artifacts/flutter_dashboard_web/
+!artifacts/README.md
 staticfiles/
+tools/
 
 livekit_1.10.1_windows_amd64/
