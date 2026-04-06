@@ -23,12 +23,17 @@ from rest_framework.test import APIClient
 from conference.models import (
     BillingPlan,
     Meeting,
+    MeetingAgentSession,
+    MeetingArtifact,
+    MeetingArtifactType,
+    MeetingContextSnapshot,
     MeetingBlockedMember,
     MeetingMember,
     MeetingGuestParticipant,
     MeetingMessage,
     MeetingRecording,
     MeetingRole,
+    MeetingTranscriptChunk,
     RecordingStorageConfig,
     MeetingWaitingRoomEntry,
     UserBillingProfile,
@@ -2695,3 +2700,92 @@ class BillingSelfViewAndUnlimitedPlanTests(TestCase):
         self.assertIsNone(limits.get("max_current_room_used_seconds"))
         self.assertIsNone(limits.get("max_recording_storage_bytes"))
         self.assertIsNone(limits.get("max_meeting_count"))
+
+
+class MeetingContextWorkspaceApiTests(TestCase):
+    def setUp(self):
+        self.owner = User.objects.create_user(username="workspace-owner", password="pass1234")
+        self.other_user = User.objects.create_user(username="workspace-other", password="pass1234")
+        self.meeting = Meeting.objects.create(
+            title="Workspace Meeting",
+            room_name="workspace-room",
+            owner=self.owner,
+        )
+
+    def _auth_client(self, user):
+        client = APIClient(HTTP_HOST="localhost")
+        client.force_authenticate(user=user)
+        return client
+
+    def test_workspace_happy_path_creates_context_session_and_artifact(self):
+        client = self._auth_client(self.owner)
+
+        transcript_response = client.post(
+            f"/api/meetings/{self.meeting.id}/transcripts",
+            {
+                "speaker_name": "Owner",
+                "text": "Alice should summarize the latest discussion about the realtime context pipeline.",
+                "source": "manual",
+            },
+            format="json",
+        )
+        self.assertEqual(transcript_response.status_code, 201)
+        transcript_payload = transcript_response.json()
+        self.assertEqual(transcript_payload["speaker_name"], "Owner")
+        self.assertEqual(MeetingTranscriptChunk.objects.filter(meeting=self.meeting).count(), 1)
+
+        context_response = client.get(f"/api/meetings/{self.meeting.id}/context/current")
+        self.assertEqual(context_response.status_code, 200)
+        context_payload = context_response.json()
+        self.assertEqual(context_payload["topic_label"], self.meeting.title)
+        self.assertIn("Owner:", context_payload["summary_text"])
+        self.assertEqual(context_payload["source_chunk_ids"], [transcript_payload["id"]])
+        self.assertEqual(MeetingContextSnapshot.objects.filter(meeting=self.meeting).count(), 1)
+
+        connect_response = client.post(
+            f"/api/meetings/{self.meeting.id}/agents",
+            {"agent_type": "codex"},
+            format="json",
+        )
+        self.assertEqual(connect_response.status_code, 201)
+        connect_payload = connect_response.json()
+        self.assertEqual(connect_payload["agent_type"], "codex")
+        self.assertEqual(connect_payload["presence_status"], "idle")
+        session = MeetingAgentSession.objects.get(meeting=self.meeting, owner_user=self.owner, agent_type="codex")
+        self.assertTrue(session.bridge_online)
+
+        action_response = client.post(
+            f"/api/meetings/{self.meeting.id}/agent-actions",
+            {
+                "agent_type": "codex",
+                "task_type": "summarize",
+            },
+            format="json",
+        )
+        self.assertEqual(action_response.status_code, 200)
+        action_payload = action_response.json()
+        self.assertCountEqual(action_payload.keys(), ["session", "artifact", "context"])
+        self.assertEqual(action_payload["artifact"]["artifact_type"], MeetingArtifactType.SUMMARY)
+        self.assertIn("Current topic", action_payload["artifact"]["content"])
+
+        session.refresh_from_db()
+        self.assertEqual(session.presence_status, "done")
+        self.assertEqual(session.current_task_status, "done")
+        self.assertEqual(session.queue_size, 0)
+        self.assertTrue(session.latest_short_reply)
+        self.assertIsNotNone(session.latest_result_artifact_id)
+
+        artifacts_response = client.get(f"/api/meetings/{self.meeting.id}/artifacts")
+        self.assertEqual(artifacts_response.status_code, 200)
+        artifacts_payload = artifacts_response.json()
+        self.assertEqual(len(artifacts_payload), 1)
+        self.assertEqual(artifacts_payload[0]["id"], session.latest_result_artifact_id)
+        self.assertEqual(MeetingArtifact.objects.filter(meeting=self.meeting).count(), 1)
+
+    def test_workspace_api_forbids_non_member_non_owner(self):
+        client = self._auth_client(self.other_user)
+
+        response = client.get(f"/api/meetings/{self.meeting.id}/context/current")
+
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("No permission", response.json()["detail"])
