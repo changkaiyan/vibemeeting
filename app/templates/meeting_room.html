@@ -42,11 +42,44 @@
           <p id="roomMessage" class="room-message">Ready</p>
         </div>
         <div class="side-card">
-          <h2>Chat</h2>
-          <div id="chatList" class="chat-list"></div>
-          <form id="chatForm" class="chat-form">
-            <input id="chatInput" name="content" placeholder="Type a message..." maxlength="2000" />
-            <button type="submit" class="control-btn control-primary">Send</button>
+          <h2>My Agents</h2>
+          <p class="side-subtitle">Bring your local Codex / Claude into the meeting.</p>
+          <div id="agentPanel" class="agent-panel"></div>
+        </div>
+        <div class="side-card">
+          <h2>Current Context</h2>
+          <div id="contextPanel" class="context-panel">
+            <p class="empty-text">No context yet.</p>
+          </div>
+        </div>
+        <div class="side-card">
+          <h2>Live Transcript</h2>
+          <div id="transcriptList" class="transcript-list"></div>
+          <form id="transcriptForm" class="transcript-form">
+            <input id="transcriptSpeakerInput" name="speaker_name" placeholder="Speaker name" maxlength="80" />
+            <textarea id="transcriptTextInput" name="text" placeholder="Add transcript text or meeting note..." maxlength="4000"></textarea>
+            <button type="submit" class="control-btn control-primary">Add Transcript</button>
+          </form>
+        </div>
+        <div class="side-card">
+          <h2>Outputs</h2>
+          <div id="artifactList" class="artifact-list"></div>
+        </div>
+        <div class="side-card">
+          <h2>Workspace Hint</h2>
+          <form id="workspaceActionForm" class="workspace-action-form">
+            <input id="workspaceInstructionInput" name="instruction" placeholder="Optional instruction for selected transcript..." maxlength="4000" />
+            <select id="workspaceTargetSelect" name="agent_type">
+              <option value="codex">Alice / Codex</option>
+              <option value="claude">Bob / Claude</option>
+            </select>
+            <select id="workspaceTaskTypeSelect" name="task_type">
+              <option value="summarize">Summarize</option>
+              <option value="extract_todos">Extract Todos</option>
+              <option value="draft_api">Draft API</option>
+              <option value="ask">Ask</option>
+            </select>
+            <button type="submit" class="control-btn">Run On Selected Context</button>
           </form>
         </div>
       </aside>
