@@ -6,6 +6,8 @@
 
 - `conference/`
   - 后端核心业务代码
+- `docs/`
+  - 设计与架构文档
 - `smart_meeting/`
   - Django 项目配置与入口
 - `app/templates/`
@@ -29,6 +31,11 @@
 - 科技云 OAuth 回调：`/callback`
 - 会议控制台：`/dashboard`
 - Django 管理后台：`/admin`
+
+## 设计文档
+
+- [会议上下文驱动 AI 架构方案](./docs/meeting-context-agent-architecture.md)
+- [虚拟 Agent 参会设计方案](./docs/virtual-agent-meeting-design.md)
 
 ## 功能概览
 
