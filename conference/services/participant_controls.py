@@ -233,6 +233,12 @@ def handle_display_name_action(request, meeting, identity: str, resource_id_for_
         )
     except Exception:
         pass
+    views._sync_participant_display_name_metadata(
+        meeting,
+        identity,
+        display_name=guest.display_name,
+        display_name_version=guest.display_name_version,
+    )
     views.log_audit(
         user=request.user,
         action="meeting.participant_display_name_control",

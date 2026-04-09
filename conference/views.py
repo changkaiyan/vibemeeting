@@ -4780,6 +4780,33 @@ _WAITING_ROOM_REJECTED_DETAIL = "Your waiting room request has been rejected by 
 _REMOVED_AND_BLOCKED_DETAIL = "You were removed by host/cohost and cannot rejoin this meeting."
 _GUEST_LINK_JOIN_DISABLED_DETAIL = "Guest link join is disabled for this meeting."
 _MESSAGE_RECALL_WINDOW = timedelta(minutes=3)
+_PUBLIC_GUEST_IDENTITY_SESSION_KEY_PREFIX = "public_guest_identity:"
+
+
+def _public_guest_identity_session_key(meeting) -> str:
+    return f"{_PUBLIC_GUEST_IDENTITY_SESSION_KEY_PREFIX}{meeting.id}"
+
+
+def _store_public_guest_identity_in_session(request, meeting, participant_identity: str) -> None:
+    identity = (participant_identity or "").strip()
+    if not identity:
+        return
+    try:
+        request.session[_public_guest_identity_session_key(meeting)] = identity
+        request.session.modified = True
+    except Exception:
+        # Session persistence is best effort for anonymous guest clients.
+        return
+
+
+def _public_guest_identity_from_session(request, meeting) -> str:
+    try:
+        return (
+            request.session.get(_public_guest_identity_session_key(meeting), "")
+            or ""
+        ).strip()
+    except Exception:
+        return ""
 
 
 def _meeting_role_for_user(meeting, user, membership=None):
@@ -5053,6 +5080,8 @@ _TRACK_SOURCE_TOKEN_TO_NAME = {
 }
 _HOST_FORCE_OPEN_MIC_METADATA_KEY = "host_force_open_mic_nonce"
 _HOST_FORCE_OPEN_VIDEO_METADATA_KEY = "host_force_open_video_nonce"
+_DISPLAY_NAME_METADATA_KEY = "meeting_display_name"
+_DISPLAY_NAME_VERSION_METADATA_KEY = "meeting_display_name_version"
 
 
 def _user_id_from_participant_identity(identity: str) -> int | None:
@@ -5353,6 +5382,31 @@ def _participant_metadata_map(meeting, participant_identity: str) -> dict:
             return {}
         return {str(key): value for key, value in payload.items()}
     return {}
+
+
+def _sync_participant_display_name_metadata(
+    meeting,
+    participant_identity: str,
+    *,
+    display_name: str,
+    display_name_version: int,
+) -> None:
+    identity = (participant_identity or "").strip()
+    normalized_name = (display_name or "").strip()[:80]
+    if not identity or not normalized_name:
+        return
+    version = max(1, int(display_name_version or 1))
+    payload = _participant_metadata_map(meeting, identity)
+    payload[_DISPLAY_NAME_METADATA_KEY] = normalized_name
+    payload[_DISPLAY_NAME_VERSION_METADATA_KEY] = version
+    try:
+        livekit_service.update_participant_metadata(
+            meeting.room_name,
+            identity,
+            metadata=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+        )
+    except Exception:
+        pass
 
 
 def _request_participant_device_open(
@@ -6097,6 +6151,7 @@ def public_meeting_join_token(request, share_code: str):
         can_publish_sources=can_publish_sources if can_publish_sources else None,
         can_update_own_metadata=True,
     )
+    _store_public_guest_identity_in_session(request, meeting, participant_identity)
     log_audit(
         action="meeting.public_join_token",
         resource_type="meeting",
@@ -6129,6 +6184,78 @@ def public_meeting_join_token(request, share_code: str):
             "allow_member_video": meeting.allow_member_video,
             "can_publish": can_publish,
             "token": token,
+        }
+    )
+
+
+@api_view(["PATCH"])
+@permission_classes([AllowAny])
+def public_meeting_my_display_name(request, share_code: str):
+    meeting = _meeting_by_share_code(share_code)
+    if not meeting:
+        return Response({"detail": "Meeting not found"}, status=status.HTTP_404_NOT_FOUND)
+    if request.user.is_authenticated:
+        return _my_meeting_display_name_impl(request, meeting)
+
+    participant_identity = _public_guest_identity_from_session(request, meeting)
+    if not participant_identity:
+        return Response(
+            {"detail": "Join meeting first before updating display name"},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    if _user_id_from_participant_identity(participant_identity) is not None:
+        return Response(
+            {"detail": "Registered members should use private display-name API"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    serializer = MeetingDisplayNameUpdateSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    next_display_name = serializer.validated_data["display_name"].strip()
+    expected_display_name_version = serializer.validated_data.get(
+        "expected_display_name_version"
+    )
+    guest, conflict = _update_guest_display_name_consistently(
+        meeting,
+        participant_identity,
+        next_display_name=next_display_name,
+        expected_display_name_version=expected_display_name_version,
+    )
+    if conflict is not None:
+        return _display_name_conflict_response(
+            current_display_name=conflict.display_name,
+            current_display_name_version=conflict.display_name_version,
+        )
+    try:
+        livekit_service.update_participant_name(
+            meeting.room_name,
+            participant_identity,
+            name=guest.display_name,
+        )
+    except Exception:
+        pass
+    _sync_participant_display_name_metadata(
+        meeting,
+        participant_identity,
+        display_name=guest.display_name,
+        display_name_version=guest.display_name_version,
+    )
+    log_audit(
+        action="meeting.public_guest_display_name_update",
+        resource_type="meeting",
+        resource_id=meeting.id,
+        detail=(
+            f"participant_identity={participant_identity}, "
+            f"display_name={guest.display_name}, "
+            f"display_name_version={guest.display_name_version}, "
+            f"share={share_code}"
+        ),
+        ip_address=client_ip(request),
+    )
+    return Response(
+        {
+            "display_name": guest.display_name,
+            "display_name_version": guest.display_name_version,
         }
     )
 
@@ -6172,15 +6299,21 @@ def _my_meeting_display_name_impl(request, meeting):
         )
     if membership is None:
         return Response({"detail": "Member not found"}, status=status.HTTP_404_NOT_FOUND)
+    identity = _stable_participant_identity(request.user)
     try:
-        identity = _stable_participant_identity(request.user)
         livekit_service.update_participant_name(
             meeting.room_name,
             identity,
-            name=display_name,
+            name=membership.display_name,
         )
     except Exception:
         pass
+    _sync_participant_display_name_metadata(
+        meeting,
+        identity,
+        display_name=membership.display_name,
+        display_name_version=membership.display_name_version,
+    )
     log_audit(
         user=request.user,
         action="meeting.display_name_update",
@@ -6559,21 +6692,31 @@ def _meeting_member_control_impl(request, meeting, target_user_id: int, action: 
             )
         if target is None:
             return Response({"detail": "Member not found"}, status=status.HTTP_404_NOT_FOUND)
+        identity = _stable_participant_identity(target.user)
         try:
-            identity = _stable_participant_identity(target.user)
             livekit_service.update_participant_name(
                 meeting.room_name,
                 identity,
-                name=next_display_name,
+                name=target.display_name,
             )
         except Exception:
             pass
+        _sync_participant_display_name_metadata(
+            meeting,
+            identity,
+            display_name=target.display_name,
+            display_name_version=target.display_name_version,
+        )
         log_audit(
             user=request.user,
             action="meeting.member_display_name_control",
             resource_type="meeting",
             resource_id=resource_id_for_log,
-            detail=f"target_user_id={target_user_id}, display_name={next_display_name}",
+            detail=(
+                f"target_user_id={target_user_id}, "
+                f"display_name={target.display_name}, "
+                f"display_name_version={target.display_name_version}"
+            ),
             ip_address=client_ip(request),
         )
         return Response(MeetingMemberSerializer(target, context={"meeting": meeting}).data)
@@ -7000,6 +7143,12 @@ def _meeting_participant_control_impl(
             )
         except Exception:
             pass
+        _sync_participant_display_name_metadata(
+            meeting,
+            identity,
+            display_name=guest.display_name,
+            display_name_version=guest.display_name_version,
+        )
         log_audit(
             user=request.user,
             action="meeting.participant_display_name_control",

@@ -191,6 +191,9 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
       'host_force_open_mic_nonce';
   static const String _hostForceOpenVideoMetadataKey =
       'host_force_open_video_nonce';
+  static const String _displayNameMetadataKey = 'meeting_display_name';
+  static const String _displayNameVersionMetadataKey =
+      'meeting_display_name_version';
   static const Duration _permissionRequestTimeout = Duration(seconds: 8);
   static const Duration _roomConnectTimeout = Duration(seconds: 20);
   static const int _realtimeBotAudioTargetSampleRate = 16000;
@@ -328,6 +331,11 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
 
   bool get _isHost => _localRoleKey == 'host';
 
+  bool get _canUseModeratorControls {
+    if (!_isModerator) return false;
+    return _hasPrivateMeetingApiScope;
+  }
+
   bool get _canRecordMeeting {
     if (!_connected) return false;
     if (!_hasPrivateMeetingApiScope) return false;
@@ -394,6 +402,9 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     }
     return '${_privateMeetingApiBase()}/join-token';
   }
+
+  String _publicMyDisplayNameApiPath() =>
+      '${_publicMeetingApiBase()}/my-display-name';
 
   String _meetingControlsApiPath() => '${_privateMeetingApiBase()}/controls';
   String _meetingAiControlsApiPath() =>
@@ -634,7 +645,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
   }
 
   Future<void> _exportParticipantRosterCsv() async {
-    if (!_isModerator || _isShareEntry) {
+    if (!_canUseModeratorControls) {
       _setStatus('仅主持人或联席主持人可导出入会名单');
       return;
     }
@@ -1059,6 +1070,9 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
           _meetingDisplayName = nextName;
         }
       } else {
+        if (displayNameVersion != null && displayNameVersion > 0) {
+          _guestDisplayNameVersionsByIdentity[identity] = displayNameVersion;
+        }
         final localIdentity = _room?.localParticipant?.identity;
         if (localIdentity != null &&
             localIdentity == identity &&
@@ -1122,6 +1136,49 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
       // Ignore malformed metadata payloads and fallback to empty.
     }
     return <String, dynamic>{};
+  }
+
+  String _participantDisplayNameFromMetadata(lk.Participant participant) {
+    final payload = _participantMetadataAsMap(participant);
+    return (payload[_displayNameMetadataKey] ?? '').toString().trim();
+  }
+
+  int _participantDisplayNameVersionFromMetadata(lk.Participant participant) {
+    final payload = _participantMetadataAsMap(participant);
+    return _intFromJson(payload[_displayNameVersionMetadataKey], 0);
+  }
+
+  Future<void> _setLocalDisplayNameMetadata(
+    String displayName, {
+    int? displayNameVersion,
+    bool bumpVersionIfMissing = false,
+  }) async {
+    final local = _room?.localParticipant;
+    if (local == null) return;
+    final normalized = displayName.trim();
+    if (normalized.isEmpty) return;
+    final payload = _participantMetadataAsMap(local);
+    final currentVersion = _intFromJson(
+      payload[_displayNameVersionMetadataKey],
+      0,
+    );
+    var nextVersion = displayNameVersion ?? currentVersion;
+    if (nextVersion <= 0) {
+      nextVersion = currentVersion;
+      if (nextVersion <= 0 || bumpVersionIfMissing) {
+        nextVersion += 1;
+      }
+    }
+    if (nextVersion <= 0) nextVersion = 1;
+    payload[_displayNameMetadataKey] = normalized;
+    payload[_displayNameVersionMetadataKey] = nextVersion;
+    await local.setMetadata(jsonEncode(payload));
+    _applyIdentityDisplayNameLocally(
+      local.identity,
+      normalized,
+      userId: _userIdFromIdentity(local.identity),
+      displayNameVersion: nextVersion,
+    );
   }
 
   _RequestPendingFlags _requestPendingFlagsForParticipant(
@@ -2974,7 +3031,81 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     final localParticipant = _room?.localParticipant;
     final localIdentity = localParticipant?.identity;
     final localUserId = _localUserId;
-    if (_hasPrivateMeetingApiScope) {
+    if (_isShareEntry && localIdentity != null && localUserId == null) {
+      var expectedVersion = _guestDisplayNameVersionsByIdentity[localIdentity];
+      try {
+        final res = await _request(
+          'PATCH',
+          _publicMyDisplayNameApiPath(),
+          body: {
+            'display_name': name,
+            if (expectedVersion != null)
+              'expected_display_name_version': expectedVersion,
+          },
+          requireAuth: false,
+        );
+        final payload = await _jsonOrThrow(res);
+        final resolvedName = payload is Map<String, dynamic>
+            ? (payload['display_name'] ?? name).toString().trim()
+            : name;
+        final nextName = resolvedName.isEmpty ? name : resolvedName;
+        final resolvedVersion = payload is Map<String, dynamic>
+            ? _intFromJson(payload['display_name_version'], expectedVersion ?? 1)
+            : (expectedVersion ?? 1);
+        if (mounted && resolvedVersion > 0) {
+          setState(() {
+            _guestDisplayNameVersionsByIdentity[localIdentity] = resolvedVersion;
+          });
+        }
+        _applyIdentityDisplayNameLocally(
+          localIdentity,
+          nextName,
+          displayNameVersion: resolvedVersion > 0 ? resolvedVersion : null,
+        );
+        try {
+          await _setLocalDisplayNameMetadata(
+            nextName,
+            displayNameVersion: resolvedVersion > 0 ? resolvedVersion : null,
+          );
+        } catch (_) {
+          // Best effort realtime propagation.
+        }
+      } on _ApiException catch (e) {
+        if (e.statusCode == 409 && e.payload != null) {
+          final payload = e.payload!;
+          final currentName =
+              (payload['current_display_name'] ?? '').toString().trim();
+          final currentVersion = _intFromJson(
+            payload['current_display_name_version'],
+            expectedVersion ?? 1,
+          );
+          if (mounted && currentVersion > 0) {
+            setState(() {
+              _guestDisplayNameVersionsByIdentity[localIdentity] =
+                  currentVersion;
+            });
+          }
+          if (currentName.isNotEmpty) {
+            _applyIdentityDisplayNameLocally(
+              localIdentity,
+              currentName,
+              displayNameVersion: currentVersion > 0 ? currentVersion : null,
+            );
+            try {
+              await _setLocalDisplayNameMetadata(
+                currentName,
+                displayNameVersion: currentVersion > 0 ? currentVersion : null,
+              );
+            } catch (_) {
+              // Best effort realtime propagation.
+            }
+          }
+        }
+        rethrow;
+      }
+      return;
+    }
+    if (_hasPrivateMeetingApiScope && localUserId != null) {
       var expectedVersion = _localMemberProfile?.displayNameVersion;
       if (expectedVersion == null) {
         await _loadMeetingMembers();
@@ -3008,6 +3139,16 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
             userId: localUserId,
             displayNameVersion: resolvedVersion > 0 ? resolvedVersion : null,
           );
+          if (localParticipant != null) {
+            try {
+              await _setLocalDisplayNameMetadata(
+                nextName,
+                displayNameVersion: resolvedVersion > 0 ? resolvedVersion : null,
+              );
+            } catch (_) {
+              // Best effort realtime propagation.
+            }
+          }
         } else if (mounted) {
           setState(() {
             _meetingDisplayName = nextName;
@@ -3030,6 +3171,17 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                 userId: localUserId,
                 displayNameVersion: currentVersion > 0 ? currentVersion : null,
               );
+              if (localParticipant != null) {
+                try {
+                  await _setLocalDisplayNameMetadata(
+                    currentName,
+                    displayNameVersion:
+                        currentVersion > 0 ? currentVersion : null,
+                  );
+                } catch (_) {
+                  // Best effort realtime propagation.
+                }
+              }
             } else if (mounted) {
               setState(() {
                 _meetingDisplayName = currentName;
@@ -3049,12 +3201,23 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
         // Keep UI state update even if SDK rename fails.
       }
     }
+    var metadataSynced = false;
+    if (localParticipant != null) {
+      try {
+        await _setLocalDisplayNameMetadata(name, bumpVersionIfMissing: true);
+        metadataSynced = true;
+      } catch (_) {
+        // Best effort realtime propagation.
+      }
+    }
     if (localIdentity != null) {
-      _applyIdentityDisplayNameLocally(
-        localIdentity,
-        name,
-        userId: localUserId,
-      );
+      if (!metadataSynced) {
+        _applyIdentityDisplayNameLocally(
+          localIdentity,
+          name,
+          userId: localUserId,
+        );
+      }
       return;
     }
     if (mounted) {
@@ -3088,7 +3251,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
   }
 
   Future<void> _patchMeetingControls(Map<String, dynamic> payload) async {
-    if (_isShareEntry || payload.isEmpty) return;
+    if (!_canUseModeratorControls || payload.isEmpty) return;
     final res = await _request(
       'PATCH',
       _meetingControlsApiPath(),
@@ -3099,7 +3262,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
   }
 
   Future<void> _patchMeetingAiControls(Map<String, dynamic> payload) async {
-    if (_isShareEntry || payload.isEmpty) return;
+    if (!_canUseModeratorControls || payload.isEmpty) return;
     final res = await _request(
       'PATCH',
       _meetingAiControlsApiPath(),
@@ -4105,7 +4268,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
   }
 
   Future<void> _muteAllMembers() async {
-    if (_isShareEntry) return;
+    if (!_canUseModeratorControls) return;
     final res = await _request(
       'POST',
       _meetingMuteAllApiPath(),
@@ -4386,7 +4549,11 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
           final currentName =
               (detailPayload['display_name'] ?? '').toString().trim();
           if (currentName.isNotEmpty && currentName != nextName) {
-            _applyIdentityDisplayNameLocally(identity, currentName);
+            _applyIdentityDisplayNameLocally(
+              identity,
+              currentName,
+              displayNameVersion: currentVersion > 0 ? currentVersion : null,
+            );
           }
         }
       } catch (_) {
@@ -4422,6 +4589,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
       _applyIdentityDisplayNameLocally(
         identity,
         resolvedName,
+        displayNameVersion: resolvedVersion > 0 ? resolvedVersion : null,
       );
     } on _ApiException catch (e) {
       if (e.statusCode == 409 && e.payload != null) {
@@ -4436,7 +4604,11 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
           });
         }
         if (currentName.isNotEmpty) {
-          _applyIdentityDisplayNameLocally(identity, currentName);
+          _applyIdentityDisplayNameLocally(
+            identity,
+            currentName,
+            displayNameVersion: currentVersion > 0 ? currentVersion : null,
+          );
         }
       }
       rethrow;
@@ -4646,7 +4818,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
 
   Future<void> _loadWaitingRoomEntriesForModerator(
       {bool silent = false}) async {
-    if (_isShareEntry || !_requiresAuth || !_isModerator) {
+    if (!_canUseModeratorControls) {
       if (!mounted) return;
       if (_waitingRoomEntries.isNotEmpty) {
         setState(() {
@@ -4739,7 +4911,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
   }
 
   Future<void> _openModeratorControlDialog() async {
-    if (!_isModerator || _isShareEntry) return;
+    if (!_canUseModeratorControls) return;
     if (mounted) {
       setState(() {
         _hasNewWaitingRoomNotice = false;
@@ -5033,7 +5205,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
   }
 
   Future<void> _openAiControlDialog() async {
-    if (!_isModerator || _isShareEntry) return;
+    if (!_canUseModeratorControls) return;
     var enabled = _realtimeBotEnabled;
     var muted = _realtimeBotMuted;
     var debugPanelVisible = _realtimeBotDebugPanelVisible;
@@ -5898,6 +6070,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     final room = _room;
     final local = room?.localParticipant;
     final nextRuntimeNames = <String, String>{};
+    final nextGuestDisplayNameVersions = <String, int>{};
     final previousRuntimeNames = <String, String>{
       ..._runtimeDisplayNamesByIdentity,
     };
@@ -5908,15 +6081,27 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
         final localProfile = _profileForIdentity(local.identity);
         final cachedLocalName =
             (previousRuntimeNames[local.identity] ?? '').trim();
-        final localName = _meetingDisplayName.trim().isNotEmpty
-            ? _meetingDisplayName.trim()
-            : (localProfile?.displayName.trim().isNotEmpty ?? false)
-                ? localProfile!.displayName.trim()
-                : cachedLocalName.isNotEmpty
-                    ? cachedLocalName
-                    : local.name.trim();
+        final localProfileName = localProfile?.displayName.trim() ?? '';
+        final localProfileVersion = localProfile?.displayNameVersion ?? 0;
+        final localMetadataName = _participantDisplayNameFromMetadata(local);
+        final localMetadataVersion =
+            _participantDisplayNameVersionFromMetadata(local);
+        final localLivekitName = local.name.trim();
+        final useLocalProfileName = localProfileName.isNotEmpty &&
+            localProfileVersion >= localMetadataVersion;
+        final localName = useLocalProfileName
+            ? localProfileName
+            : localMetadataName.isNotEmpty
+                ? localMetadataName
+                : localLivekitName.isNotEmpty
+                    ? localLivekitName
+                    : cachedLocalName;
         if (localName.isNotEmpty) {
           nextRuntimeNames[local.identity] = localName;
+        }
+        if (_userIdFromIdentity(local.identity) == null &&
+            localMetadataVersion > 0) {
+          nextGuestDisplayNameVersions[local.identity] = localMetadataVersion;
         }
       }
       for (final participant in room.remoteParticipants.values) {
@@ -5924,14 +6109,29 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
         final profile = _profileForIdentity(participant.identity);
         final cachedParticipantName =
             (previousRuntimeNames[participant.identity] ?? '').trim();
-        final participantName =
-            (profile?.displayName.trim().isNotEmpty ?? false)
-                ? profile!.displayName.trim()
-                : cachedParticipantName.isNotEmpty
-                    ? cachedParticipantName
-                    : participant.name.trim();
+        final profileDisplayName = profile?.displayName.trim() ?? '';
+        final profileVersion = profile?.displayNameVersion ?? 0;
+        final metadataDisplayName =
+            _participantDisplayNameFromMetadata(participant);
+        final metadataDisplayNameVersion =
+            _participantDisplayNameVersionFromMetadata(participant);
+        final participantLivekitName = participant.name.trim();
+        final useProfileName = profileDisplayName.isNotEmpty &&
+            profileVersion >= metadataDisplayNameVersion;
+        final participantName = useProfileName
+            ? profileDisplayName
+            : metadataDisplayName.isNotEmpty
+                ? metadataDisplayName
+                : participantLivekitName.isNotEmpty
+                    ? participantLivekitName
+                    : cachedParticipantName;
         if (participantName.isNotEmpty) {
           nextRuntimeNames[participant.identity] = participantName;
+        }
+        if (_userIdFromIdentity(participant.identity) == null &&
+            metadataDisplayNameVersion > 0) {
+          nextGuestDisplayNameVersions[participant.identity] =
+              metadataDisplayNameVersion;
         }
       }
     }
@@ -5950,6 +6150,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
       _guestDisplayNameVersionsByIdentity.removeWhere(
         (identity, _) => !connectedIdentities.contains(identity),
       );
+      _guestDisplayNameVersionsByIdentity.addAll(nextGuestDisplayNameVersions);
       if (local != null) {
         final localName =
             _runtimeDisplayNamesByIdentity[local.identity]?.trim();
@@ -7473,12 +7674,12 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
         }
         return;
       case 'moderator':
-        if (_isModerator && !_isShareEntry) {
+        if (_canUseModeratorControls) {
           await _openModeratorControlDialog();
         }
         return;
       case 'ai_control':
-        if (_isModerator && !_isShareEntry) {
+        if (_canUseModeratorControls) {
           await _openAiControlDialog();
         }
         return;
@@ -7589,8 +7790,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
   }
 
   Widget _buildMobileMoreAction() {
-    final hasNotice =
-        _isModerator && _hasNewWaitingRoomNotice && !_isShareEntry;
+    final hasNotice = _canUseModeratorControls && _hasNewWaitingRoomNotice;
     return Container(
       margin: const EdgeInsets.only(left: 6),
       child: PopupMenuButton<String>(
@@ -7648,7 +7848,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
               subtitle: '复制邀请链接或完整会议信息',
             ),
           );
-          if (_isModerator && !_isShareEntry) {
+          if (_canUseModeratorControls) {
             entries.add(const PopupMenuDivider(height: 6));
             entries.add(
               _buildMobileMenuItem(
@@ -8469,7 +8669,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                         icon: Icons.tune,
                         onPressed: _openMediaSettingsDialog,
                       ),
-                      if (_isModerator && !_isShareEntry)
+                      if (_canUseModeratorControls)
                         _buildDesktopHeaderAction(
                           label: '会议管控',
                           icon: _waitingRoomEntries.isNotEmpty
@@ -8477,7 +8677,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                               : Icons.admin_panel_settings,
                           onPressed: _openModeratorControlDialog,
                         ),
-                      if (_isModerator && !_isShareEntry)
+                      if (_canUseModeratorControls)
                         _buildDesktopHeaderAction(
                           label: 'AI管控',
                           icon: Icons.smart_toy_outlined,
@@ -9977,7 +10177,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
             style: TextStyle(color: Color(0xFF667085), fontSize: 11.5),
           ),
           const SizedBox(height: 8),
-          if (_isModerator && !_isShareEntry) ...[
+          if (_canUseModeratorControls) ...[
             Align(
               alignment: Alignment.centerRight,
               child: TextButton.icon(

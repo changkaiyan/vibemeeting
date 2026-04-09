@@ -77,6 +77,7 @@ urlpatterns = [
     path("api/public/meetings/share/<str:share_code>/messages", views.public_meeting_messages),
     path("api/public/meetings/share/<str:share_code>/messages/<int:message_id>", views.public_meeting_message_recall),
     path("api/public/meetings/share/<str:share_code>/join-token", views.public_meeting_join_token),
+    path("api/public/meetings/share/<str:share_code>/my-display-name", views.public_meeting_my_display_name),
     path("api/orgs/my", views.my_orgs),
     path("api/orgs/<int:org_id>/members", views.org_members),
     path("api/audit/logs", views.audit_logs),
