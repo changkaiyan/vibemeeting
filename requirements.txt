@@ -5,3 +5,4 @@ python-dotenv==1.1.1
 livekit-api==1.0.3
 cryptography==46.0.6
 django-unfold==0.81.0
+websocket-client==1.8.0

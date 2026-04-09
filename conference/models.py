@@ -15,6 +15,11 @@ class MeetingRecurrence(models.TextChoices):
     MONTHLY = "monthly", "Monthly"
 
 
+class RealtimeBotProvider(models.TextChoices):
+    OPENAI = "openai", "OpenAI"
+    VOLCENGINE = "volcengine", "Volcengine"
+
+
 class Organization(models.Model):
     name = models.CharField(max_length=100, unique=True, db_index=True)
     owner_user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="owned_organizations")
@@ -106,12 +111,27 @@ class Meeting(models.Model):
     allow_self_unmute = models.BooleanField(default=True)
     allow_member_video = models.BooleanField(default=True)
     mute_on_entry = models.BooleanField(default=False)
+    realtime_bot_provider = models.CharField(
+        max_length=20,
+        choices=RealtimeBotProvider.choices,
+        default=RealtimeBotProvider.OPENAI,
+    )
     realtime_bot_enabled = models.BooleanField(default=False)
     realtime_bot_muted = models.BooleanField(default=False)
     realtime_bot_base_url = models.CharField(max_length=255, blank=True, default="https://api.openai.com")
     realtime_bot_model = models.CharField(max_length=120, blank=True, default="gpt-realtime")
     realtime_bot_api_key = models.CharField(max_length=255, blank=True, default="")
     realtime_bot_voice = models.CharField(max_length=40, blank=True, default="marin")
+    realtime_bot_volc_ws_url = models.CharField(
+        max_length=255,
+        blank=True,
+        default="wss://openspeech.bytedance.com/api/v3/realtime/dialogue",
+    )
+    realtime_bot_volc_app_id = models.CharField(max_length=64, blank=True, default="")
+    realtime_bot_volc_app_key = models.CharField(max_length=255, blank=True, default="")
+    realtime_bot_volc_access_key = models.CharField(max_length=255, blank=True, default="")
+    realtime_bot_volc_resource_id = models.CharField(max_length=120, blank=True, default="volc.speech.dialog")
+    realtime_bot_volc_uid = models.CharField(max_length=120, blank=True, default="")
     realtime_bot_display_name = models.CharField(max_length=80, blank=True, default="实时语音助手")
     active_egress_id = models.CharField(max_length=120, blank=True, default="")
     active_egress_file_name = models.CharField(max_length=255, blank=True, default="")
