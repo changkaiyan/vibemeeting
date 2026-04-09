@@ -12,7 +12,7 @@ import wave
 from array import array
 from datetime import timedelta, timezone as dt_timezone
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 from typing import Iterable
 from uuid import uuid4
@@ -141,6 +141,7 @@ _MEETING_ROOM_LIMIT_TIMERS: dict[int, threading.Timer] = {}
 _MEETING_ROOM_LIMIT_TIMERS_LOCK = threading.Lock()
 _TECHCLOUD_OAUTH_STATE_KEY = "techcloud_oauth_state"
 _TECHCLOUD_OAUTH_NEXT_KEY = "techcloud_oauth_next"
+_TECHCLOUD_AUTHENTICATED_SESSION_KEY = "techcloud_oauth_authenticated"
 _REALTIME_BOT_SYSTEM_USERNAME = "__meeting_realtime_bot__"
 _REALTIME_BOT_SYSTEM_EMAIL = "meeting-realtime-bot@local.invalid"
 _REALTIME_BOT_DEFAULT_BASE_URL = "https://api.openai.com"
@@ -370,6 +371,11 @@ class ControlledLoginView(auth_views.LoginView):
             return self.render_to_response(context)
         return super().post(request, *args, **kwargs)
 
+    def form_valid(self, form):
+        response = super().form_valid(form)
+        self.request.session.pop(_TECHCLOUD_AUTHENTICATED_SESSION_KEY, None)
+        return response
+
 
 def _techcloud_authorize_url(state: str) -> str:
     params = {
@@ -387,6 +393,32 @@ def _techcloud_authorize_url(state: str) -> str:
 
 def _techcloud_login_error_redirect(message: str):
     return redirect(f"/accounts/login?{urlencode({'oauth_error': message})}")
+
+
+def _techcloud_logout_url(request, *, next_path: str = "/") -> str:
+    logout_url = (
+        getattr(settings, "TECHCLOUD_OAUTH_LOGOUT_URL", "")
+        or "https://passport.escience.cn/logout"
+    ).strip()
+    if not logout_url:
+        return ""
+    redirect_param = (
+        getattr(settings, "TECHCLOUD_OAUTH_LOGOUT_REDIRECT_PARAM", "")
+        or "WebServerURL"
+    ).strip() or "WebServerURL"
+    parsed = urlsplit(logout_url)
+    query_items = parse_qsl(parsed.query, keep_blank_values=True)
+    if not any(key == redirect_param for key, _ in query_items):
+        query_items.append((redirect_param, request.build_absolute_uri(next_path)))
+    return urlunsplit(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            urlencode(query_items),
+            parsed.fragment,
+        )
+    )
 
 
 def _techcloud_exchange_code_for_token(code: str) -> dict:
@@ -1916,6 +1948,7 @@ def register_page_view(request):
                 ip_address=client_ip(request),
             )
             auth_login(request, user)
+            request.session.pop(_TECHCLOUD_AUTHENTICATED_SESSION_KEY, None)
             return redirect("/dashboard")
     else:
         form = MeetingRegisterForm()
@@ -1981,6 +2014,7 @@ def techcloud_oauth_callback(request):
         return _techcloud_login_error_redirect(str(exc))
 
     auth_login(request, user)
+    request.session[_TECHCLOUD_AUTHENTICATED_SESSION_KEY] = True
     log_audit(
         user=user,
         action="auth.login_techcloud",
@@ -2003,9 +2037,16 @@ def session_jwt(request):
     return JsonResponse({"access_token": token, "token_type": "bearer"})
 
 
-@login_required(login_url="/accounts/login")
 def session_logout(request):
-    auth_logout(request)
+    is_techcloud_session = bool(
+        request.session.get(_TECHCLOUD_AUTHENTICATED_SESSION_KEY, False)
+    )
+    if request.user.is_authenticated:
+        auth_logout(request)
+    if is_techcloud_session:
+        techcloud_logout = _techcloud_logout_url(request, next_path="/")
+        if techcloud_logout:
+            return redirect(techcloud_logout)
     return redirect("/")
 
 

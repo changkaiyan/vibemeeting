@@ -1,4 +1,3 @@
-from django.contrib.auth import views as auth_views
 from django.urls import include, path
 
 from conference import views
@@ -17,7 +16,7 @@ urlpatterns = [
         "accounts/login",
         views.ControlledLoginView.as_view(),
     ),
-    path("accounts/logout", auth_views.LogoutView.as_view(next_page="/")),
+    path("accounts/logout", views.session_logout),
     path("accounts/register", views.register_page_view),
     path("auth/techcloud/login", views.techcloud_oauth_start),
     path("callback", views.techcloud_oauth_callback),

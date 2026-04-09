@@ -136,3 +136,11 @@ TECHCLOUD_OAUTH_TOKEN_URL = os.getenv(
 ).strip()
 TECHCLOUD_OAUTH_SCOPE = os.getenv("TECHCLOUD_OAUTH_SCOPE", "").strip()
 TECHCLOUD_OAUTH_THEME = os.getenv("TECHCLOUD_OAUTH_THEME", "full").strip() or "full"
+TECHCLOUD_OAUTH_LOGOUT_URL = os.getenv(
+    "TECHCLOUD_OAUTH_LOGOUT_URL",
+    "https://passport.escience.cn/logout",
+).strip()
+TECHCLOUD_OAUTH_LOGOUT_REDIRECT_PARAM = (
+    os.getenv("TECHCLOUD_OAUTH_LOGOUT_REDIRECT_PARAM", "WebServerURL").strip()
+    or "WebServerURL"
+)
