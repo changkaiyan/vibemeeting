@@ -1,4 +1,4 @@
-part of '../meeting_room_page.dart';
+part of 'page.dart';
 
 class _ApiException implements Exception {
   final int statusCode;

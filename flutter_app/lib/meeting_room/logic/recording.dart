@@ -1,4 +1,4 @@
-part of '../meeting_room_page.dart';
+part of '../page.dart';
 
 extension _MeetingRoomRecording on _MeetingRoomPageState {
   void _startRecordingStatusPolling() {

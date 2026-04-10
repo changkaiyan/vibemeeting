@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:smart_meeting_dashboard/meeting_room/stt_debug.dart';
+import 'package:smart_meeting_app/meeting_room/debug/stt_debug.dart';
 
 void main() {
   group('workspaceSttReadyStateLabel', () {

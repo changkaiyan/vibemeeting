@@ -1,6 +1,170 @@
-part of '../meeting_room_page.dart';
+part of '../page.dart';
 
 extension _MeetingRoomChatLogic on _MeetingRoomPageState {
+  List<_ChatMessage> _mergeServerRowsWithPendingDrafts(
+    List<_ChatMessage> serverRows,
+  ) {
+    if (_pendingLocalDraftMessages.isEmpty) {
+      return serverRows;
+    }
+    final merged = <_ChatMessage>[...serverRows];
+    final drafts = _pendingLocalDraftMessages.values.toList()
+      ..sort((a, b) {
+        final aTime = a.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+        final bTime = b.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+        final byTime = aTime.compareTo(bTime);
+        if (byTime != 0) return byTime;
+        return a.id.compareTo(b.id);
+      });
+    for (final draft in drafts) {
+      final exists = merged.any((msg) => msg.id == draft.id);
+      if (!exists) {
+        merged.add(draft);
+      }
+    }
+    return merged;
+  }
+
+  int _latestMessageIdFromRows(List<_ChatMessage> rows) {
+    var latest = 0;
+    for (final row in rows) {
+      if (row.id > latest) {
+        latest = row.id;
+      }
+    }
+    return latest;
+  }
+
+  bool _sameMessageSnapshot(List<_ChatMessage> rows) {
+    if (rows.length != _messages.length) return false;
+    for (var i = 0; i < rows.length; i++) {
+      final current = _messages[i];
+      final next = rows[i];
+      if (current.id != next.id) return false;
+      if (current.senderUserId != next.senderUserId) return false;
+      if (current.senderDisplayName != next.senderDisplayName) return false;
+      if (current.content != next.content) return false;
+      if (current.isRealtimeBot != next.isRealtimeBot) return false;
+      if (current.audioMimeType != next.audioMimeType) return false;
+      if (current.audioBase64 != next.audioBase64) return false;
+      if (current.createdAt != next.createdAt) return false;
+    }
+    return true;
+  }
+
+  bool _isRealtimeBotMutedForPlayback() {
+    if (_realtimeBotMuted) return true;
+    final botUserId = _realtimeBotUserId;
+    if (botUserId == null) return false;
+    final profile = _memberProfiles[botUserId];
+    if (profile == null) return false;
+    return profile.mutedByHost;
+  }
+
+  bool _isRealtimeBotMessage(_ChatMessage message) {
+    if (message.isRealtimeBot) return true;
+    final botUserId = _realtimeBotUserId;
+    if (botUserId == null) return false;
+    return message.senderUserId == botUserId;
+  }
+
+  Future<void> _playRealtimeBotAudio(_ChatMessage message) async {
+    if (!_isRealtimeBotMessage(message)) return;
+    if (_isRealtimeBotMutedForPlayback()) return;
+    if (_playedRealtimeBotAudioMessageIds.contains(message.id)) return;
+    if (_playingRealtimeBotAudioMessageIds.contains(message.id)) return;
+    final audioBase64 = message.audioBase64.trim();
+    if (audioBase64.isEmpty) return;
+    _playingRealtimeBotAudioMessageIds.add(message.id);
+    _realtimeBotPlaybackActive = _playingRealtimeBotAudioMessageIds.isNotEmpty;
+    html.AudioElement? audio;
+    String? objectUrl;
+    var cleaned = false;
+    final playbackDone = Completer<void>();
+
+    void cleanupPlayback() {
+      if (cleaned) return;
+      cleaned = true;
+      if (objectUrl != null && objectUrl.isNotEmpty) {
+        try {
+          html.Url.revokeObjectUrl(objectUrl);
+        } catch (_) {}
+      }
+      try {
+        audio?.remove();
+      } catch (_) {}
+      if (!playbackDone.isCompleted) {
+        playbackDone.complete();
+      }
+    }
+
+    try {
+      var bytes = base64Decode(audioBase64);
+      var mimeType = message.audioMimeType.trim().isEmpty
+          ? 'audio/wav'
+          : message.audioMimeType.trim();
+      final loweredMime = mimeType.toLowerCase();
+      final shouldConvertPcm = loweredMime.contains('audio/pcm') ||
+          loweredMime.contains('audio/l16') ||
+          loweredMime.contains('audio/raw') ||
+          (loweredMime == 'audio/wav' && !_looksLikeWav(bytes));
+      if (shouldConvertPcm) {
+        bytes = _pcm16ToWavBytes(bytes, sampleRate: 24000, channels: 1);
+        mimeType = 'audio/wav';
+      }
+      final blob = html.Blob(<dynamic>[bytes], mimeType);
+      objectUrl = html.Url.createObjectUrlFromBlob(blob);
+      audio = html.AudioElement(objectUrl)
+        ..autoplay = true
+        ..preload = 'auto';
+      audio.onEnded.first.then((_) => cleanupPlayback());
+      audio.onError.first.then((_) => cleanupPlayback());
+      await audio.play();
+      _playedRealtimeBotAudioMessageIds.add(message.id);
+      await playbackDone.future.timeout(
+        const Duration(seconds: 30),
+        onTimeout: () {
+          cleanupPlayback();
+        },
+      );
+    } catch (e) {
+      _updateRealtimeBotDebug(
+        event: 'audio_play_failed',
+        error: _friendlyError(e),
+        forceRebuild: true,
+      );
+      _setStatus('AI语音播放失败：${_friendlyError(e)}');
+    }
+    cleanupPlayback();
+    _playingRealtimeBotAudioMessageIds.remove(message.id);
+    _realtimeBotPlaybackActive = _playingRealtimeBotAudioMessageIds.isNotEmpty;
+  }
+
+  void _playRealtimeBotAudioForNewMessages(
+    List<_ChatMessage> rows,
+    int previousLatest,
+  ) {
+    if (previousLatest <= 0) return;
+    if (_isRealtimeBotMutedForPlayback()) return;
+    for (final message in rows) {
+      if (message.id <= previousLatest) continue;
+      if (!_isRealtimeBotMessage(message)) continue;
+      if (message.audioBase64.trim().isEmpty) continue;
+      unawaited(_playRealtimeBotAudio(message));
+    }
+  }
+
+  void _scrollChatToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_chatScrollController.hasClients) return;
+      _chatScrollController.animateTo(
+        _chatScrollController.position.maxScrollExtent,
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOut,
+      );
+    });
+  }
+
   Future<void> _loadMessages() async {
     final localProfile = _localMemberProfile;
     final canChat = _isModerator || (localProfile?.allowChat ?? _allowChat);

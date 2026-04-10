@@ -14,9 +14,9 @@
   - Django 模板
 - `app/static/`
   - 手写静态资源
-- `flutter_dashboard/`
+- `flutter_app/`
   - Flutter Dashboard 源码
-- `artifacts/flutter_dashboard_web/`
+- `artifacts/flutter_app_web/`
   - Flutter Web 构建产物，供 Django 作为静态文件挂载
   - 不应手工编辑，应由 Flutter Web 构建结果同步过来
 - `tools/`
@@ -70,12 +70,12 @@ uv run --python .venv/bin/python manage.py runserver 127.0.0.1:8000 --noreload
 如果需要刷新 Flutter Dashboard 静态产物：
 
 ```bash
-cd flutter_dashboard
+cd flutter_app
 flutter pub get
 flutter build web
 ```
 
-然后将 `flutter_dashboard/build/web/` 的内容同步到 `artifacts/flutter_dashboard_web/`。
+然后将 `flutter_app/build/web/` 的内容同步到 `artifacts/flutter_app_web/`。
 
 ## 环境变量
 

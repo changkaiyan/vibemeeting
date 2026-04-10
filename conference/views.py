@@ -1179,7 +1179,7 @@ def _sync_room_session_state_with_online_count(
 
 
 def _flutter_cache_bust() -> int:
-    js_path = settings.FLUTTER_DASHBOARD_BUILD_DIR / "main.dart.js"
+    js_path = settings.FLUTTER_APP_BUILD_DIR / "main.dart.js"
     try:
         return int(os.path.getmtime(js_path))
     except OSError:
@@ -1825,16 +1825,16 @@ def home_view(request):
 
 @login_required(login_url="/accounts/login")
 def dashboard_view(request):
-    flutter_index = settings.FLUTTER_DASHBOARD_BUILD_DIR / "index.html"
+    flutter_index = settings.FLUTTER_APP_BUILD_DIR / "index.html"
     if flutter_index.exists():
         return render(
             request,
-            "flutter_dashboard.html",
+            "flutter_app.html",
             {"flutter_cache_bust": _flutter_cache_bust()},
         )
     return HttpResponse(
-        "Flutter dashboard static files are missing. Run `flutter build web` in "
-        "`flutter_dashboard` and sync `build/web` to `artifacts/flutter_dashboard_web`.",
+        "Flutter app static files are missing. Run `flutter build web` in "
+        "`flutter_app` and sync `build/web` to `artifacts/flutter_app_web`.",
         status=503,
         content_type="text/plain; charset=utf-8",
     )
@@ -1844,16 +1844,16 @@ def dashboard_view(request):
 def billing_dashboard_view(request):
     if not request.user.is_superuser:
         return redirect("/dashboard")
-    flutter_index = settings.FLUTTER_DASHBOARD_BUILD_DIR / "index.html"
+    flutter_index = settings.FLUTTER_APP_BUILD_DIR / "index.html"
     if flutter_index.exists():
         return render(
             request,
-            "flutter_dashboard.html",
+            "flutter_app.html",
             {"flutter_cache_bust": _flutter_cache_bust()},
         )
     return HttpResponse(
-        "Flutter dashboard static files are missing. Run `flutter build web` in "
-        "`flutter_dashboard` and sync `build/web` to `artifacts/flutter_dashboard_web`.",
+        "Flutter app static files are missing. Run `flutter build web` in "
+        "`flutter_app` and sync `build/web` to `artifacts/flutter_app_web`.",
         status=503,
         content_type="text/plain; charset=utf-8",
     )
