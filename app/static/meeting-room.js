@@ -14,6 +14,8 @@
   const transcriptFormEl = document.getElementById("transcriptForm");
   const transcriptSpeakerInputEl = document.getElementById("transcriptSpeakerInput");
   const transcriptTextInputEl = document.getElementById("transcriptTextInput");
+  const realtimeSttBtn = document.getElementById("realtimeSttBtn");
+  const realtimeSttStatusEl = document.getElementById("realtimeSttStatus");
   const artifactListEl = document.getElementById("artifactList");
   const workspaceActionFormEl = document.getElementById("workspaceActionForm");
   const workspaceInstructionInputEl = document.getElementById("workspaceInstructionInput");
@@ -50,6 +52,12 @@
     artifacts: [],
     currentContext: null,
     selectedTranscriptIds: new Set(),
+    realtimeSttSocket: null,
+    realtimeSttRecorder: null,
+    realtimeSttStream: null,
+    realtimeSttActive: false,
+    realtimeSttStopping: false,
+    realtimePartialText: "",
   };
 
   function setMessage(text, isError = false) {
@@ -200,12 +208,37 @@
     workspaceInstructionInputEl.disabled = !connected;
     workspaceTargetSelectEl.disabled = !connected;
     workspaceTaskTypeSelectEl.disabled = !connected;
+    realtimeSttBtn.disabled = !connected;
   }
 
   function updateButtonLabels() {
     micBtn.textContent = state.micEnabled ? "Mute" : "Unmute";
     camBtn.textContent = state.camEnabled ? "Camera Off" : "Camera On";
     screenBtn.textContent = state.screenSharing ? "Stop Share" : "Share Screen";
+    realtimeSttBtn.textContent = state.realtimeSttActive ? "Stop Live Captions" : "Start Live Captions";
+    if (state.realtimeSttActive && state.realtimeSttStopping) {
+      realtimeSttStatusEl.textContent = "Stopping realtime STT...";
+    } else if (state.realtimeSttActive) {
+      realtimeSttStatusEl.textContent = "Realtime STT streaming";
+    } else {
+      realtimeSttStatusEl.textContent = "Realtime STT idle";
+    }
+  }
+
+  function websocketUrl(path, token) {
+    const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+    return `${protocol}://${window.location.host}${path}?token=${encodeURIComponent(token)}`;
+  }
+
+  async function blobToBase64(blob) {
+    const buffer = await blob.arrayBuffer();
+    let binary = "";
+    const bytes = new Uint8Array(buffer);
+    const chunkSize = 0x8000;
+    for (let index = 0; index < bytes.length; index += chunkSize) {
+      binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+    }
+    return btoa(binary);
   }
 
   function attachTrackToTile(track, identity, isLocal = false) {
@@ -278,8 +311,24 @@
 
   function renderTranscriptList() {
     transcriptListEl.innerHTML = "";
+    if (state.realtimePartialText) {
+      const partialRow = document.createElement("div");
+      partialRow.className = "transcript-item";
+      partialRow.innerHTML = `
+        <div class="transcript-body">
+          <div class="transcript-head">
+            <span class="transcript-speaker">Live partial</span>
+            <span class="transcript-badge">partial</span>
+          </div>
+          <div class="transcript-text">${state.realtimePartialText}</div>
+        </div>
+      `;
+      transcriptListEl.appendChild(partialRow);
+    }
     if (!state.transcripts.length) {
-      transcriptListEl.innerHTML = '<p class="empty-text">No transcript yet. Add manual transcript or connect realtime STT later.</p>';
+      if (!state.realtimePartialText) {
+        transcriptListEl.innerHTML = '<p class="empty-text">No transcript yet. Add manual transcript or start realtime STT.</p>';
+      }
       return;
     }
     for (const item of state.transcripts) {
@@ -422,6 +471,7 @@
   }
 
   async function leaveMeeting() {
+    await stopRealtimeStt(true);
     if (!state.room) return;
     await state.room.disconnect();
     state.localMicTrack?.stop();
@@ -440,6 +490,7 @@
     state.artifacts = [];
     state.currentContext = null;
     state.selectedTranscriptIds.clear();
+    state.realtimePartialText = "";
     if (state.workspaceTimer) {
       clearInterval(state.workspaceTimer);
       state.workspaceTimer = null;
@@ -453,6 +504,111 @@
     renderArtifacts();
     restorePlaceholderIfEmpty();
     setMessage("Disconnected");
+  }
+
+  async function startRealtimeStt() {
+    if (state.realtimeSttActive) return;
+    if (!window.MediaRecorder) throw new Error("MediaRecorder is not supported in this browser");
+    const token = await ensureToken();
+    if (!token) throw new Error("Not logged in");
+
+    const recorderStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const socket = new WebSocket(websocketUrl(`/ws/meetings/${meetingId}/stt`, token));
+    state.realtimeSttSocket = socket;
+    state.realtimeSttStream = recorderStream;
+    state.realtimeSttStopping = false;
+
+    socket.onmessage = async (event) => {
+      const payload = JSON.parse(event.data);
+      if (payload.type === "session_started") {
+        realtimeSttStatusEl.textContent = "Realtime STT session started";
+        return;
+      }
+      if (payload.type === "partial_transcript") {
+        state.realtimePartialText = payload.text || "";
+        renderTranscriptList();
+        return;
+      }
+      if (payload.type === "final_transcript") {
+        state.realtimePartialText = "";
+        await loadWorkspace();
+        renderTranscriptList();
+        if (state.realtimeSttStopping) {
+          socket.close();
+        }
+        return;
+      }
+      if (payload.type === "error") {
+        setMessage(payload.detail || "Realtime STT error", true);
+      }
+    };
+    socket.onclose = () => {
+      state.realtimeSttSocket = null;
+      state.realtimeSttRecorder = null;
+      if (state.realtimeSttStream) {
+        state.realtimeSttStream.getTracks().forEach((track) => track.stop());
+      }
+      state.realtimeSttStream = null;
+      state.realtimeSttActive = false;
+      state.realtimeSttStopping = false;
+      state.realtimePartialText = "";
+      updateButtonLabels();
+      renderTranscriptList();
+    };
+
+    await new Promise((resolve, reject) => {
+      socket.onopen = resolve;
+      socket.onerror = () => reject(new Error("Realtime STT websocket failed"));
+    });
+
+    const mimeType = MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : "";
+    const recorder = mimeType
+      ? new MediaRecorder(recorderStream, { mimeType })
+      : new MediaRecorder(recorderStream);
+    state.realtimeSttRecorder = recorder;
+    socket.send(
+      JSON.stringify({
+        type: "start",
+        speaker_name: state.localIdentity || "Me",
+        speaker_identity: state.localIdentity || "me",
+      }),
+    );
+    recorder.ondataavailable = async (event) => {
+      if (!event.data || event.data.size === 0 || !state.realtimeSttSocket || state.realtimeSttSocket.readyState !== WebSocket.OPEN) return;
+      const dataBase64 = await blobToBase64(event.data);
+      state.realtimeSttSocket.send(
+        JSON.stringify({
+          type: "audio_chunk",
+          mime_type: event.data.type || mimeType || "audio/webm",
+          data_base64: dataBase64,
+        }),
+      );
+    };
+    recorder.start(1000);
+    state.realtimeSttActive = true;
+    updateButtonLabels();
+    setMessage("Realtime STT started");
+  }
+
+  async function stopRealtimeStt(immediate = false) {
+    if (!state.realtimeSttActive && !state.realtimeSttSocket && !state.realtimeSttStream) return;
+    state.realtimeSttStopping = true;
+    if (state.realtimeSttRecorder && state.realtimeSttRecorder.state !== "inactive") {
+      state.realtimeSttRecorder.stop();
+    }
+    if (state.realtimeSttSocket && state.realtimeSttSocket.readyState === WebSocket.OPEN) {
+      if (immediate) {
+        state.realtimeSttSocket.close();
+      } else {
+        state.realtimeSttSocket.send(JSON.stringify({ type: "stop" }));
+      }
+    } else if (state.realtimeSttStream) {
+      state.realtimeSttStream.getTracks().forEach((track) => track.stop());
+      state.realtimeSttStream = null;
+      state.realtimeSttActive = false;
+      state.realtimeSttStopping = false;
+    }
+    updateButtonLabels();
   }
 
   async function toggleMic() {
@@ -580,6 +736,19 @@
       await toggleScreenShare();
     } catch (err) {
       setMessage(err.message || "Share screen failed", true);
+    }
+  });
+
+  realtimeSttBtn.addEventListener("click", async () => {
+    try {
+      if (state.realtimeSttActive) {
+        await stopRealtimeStt(false);
+      } else {
+        await startRealtimeStt();
+      }
+    } catch (err) {
+      setMessage(err.message || "Realtime STT failed", true);
+      await stopRealtimeStt(true);
     }
   });
 

@@ -11,6 +11,7 @@ __pycache__/
 livekit-keys.yaml
 
 *.log
+.runlogs/
 
 smart_meeting.db
 

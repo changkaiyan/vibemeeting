@@ -3,6 +3,7 @@ import os
 import tempfile
 import base64
 import hashlib
+import asyncio
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,10 +16,13 @@ from django.db import connection
 from django.test import TestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
+from asgiref.sync import async_to_sync
+from asgiref.testing import ApplicationCommunicator
 from livekit import api as lk_api
 from livekit.api.twirp_client import TwirpError
 from livekit.protocol import egress as lk_egress
 from rest_framework.test import APIClient
+from rest_framework_simplejwt.tokens import AccessToken
 
 from conference.models import (
     BillingPlan,
@@ -42,6 +46,23 @@ from conference.models import (
 from conference.meeting_resolver import MeetingLookup
 from conference.meeting_refs import ensure_meeting_ref
 from conference.share import build_meeting_share_code
+from services.stt_worker.stt_worker.config import SttWorkerConfig
+from services.stt_worker.stt_worker.server import DEFAULT_WS_PATH, start_server
+from smart_meeting.asgi import application
+
+
+class _MockUrlopenResponse:
+    def __init__(self, payload):
+        self._payload = json.dumps(payload).encode("utf-8")
+
+    def read(self):
+        return self._payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
 
 
 class MeetingLookupTests(TestCase):
@@ -2702,6 +2723,7 @@ class BillingSelfViewAndUnlimitedPlanTests(TestCase):
         self.assertIsNone(limits.get("max_meeting_count"))
 
 
+@override_settings(MEETING_AGENT_BRIDGE_MODE="mock")
 class MeetingContextWorkspaceApiTests(TestCase):
     def setUp(self):
         self.owner = User.objects.create_user(username="workspace-owner", password="pass1234")
@@ -2789,3 +2811,369 @@ class MeetingContextWorkspaceApiTests(TestCase):
 
         self.assertEqual(response.status_code, 403)
         self.assertIn("No permission", response.json()["detail"])
+
+
+class MeetingAgentBridgeApiTests(TestCase):
+    def setUp(self):
+        self.owner = User.objects.create_user(username="bridge-owner", password="pass1234")
+        self.meeting = Meeting.objects.create(
+            title="Bridge Meeting",
+            room_name="bridge-room",
+            owner=self.owner,
+        )
+
+    def _auth_client(self):
+        client = APIClient(HTTP_HOST="localhost")
+        client.force_authenticate(user=self.owner)
+        return client
+
+    def test_connect_agent_fails_when_bridge_is_not_configured(self):
+        client = self._auth_client()
+
+        response = client.post(
+            f"/api/meetings/{self.meeting.id}/agents",
+            {"agent_type": "codex"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("bridge", response.json()["detail"].lower())
+        session = MeetingAgentSession.objects.get(meeting=self.meeting, owner_user=self.owner, agent_type="codex")
+        self.assertFalse(session.bridge_online)
+
+    def test_action_fails_when_bridge_is_not_configured(self):
+        client = self._auth_client()
+        MeetingTranscriptChunk.objects.create(
+            meeting=self.meeting,
+            speaker_name="Owner",
+            text="Please draft an API for the meeting bridge.",
+            source="manual",
+            is_final=True,
+            sequence_no=1,
+        )
+
+        response = client.post(
+            f"/api/meetings/{self.meeting.id}/agent-actions",
+            {"agent_type": "codex", "task_type": "summarize"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("bridge", response.json()["detail"].lower())
+        self.assertEqual(MeetingArtifact.objects.filter(meeting=self.meeting).count(), 0)
+
+    @override_settings(
+        MEETING_AGENT_BRIDGE_MODE="http",
+        MEETING_AGENT_BRIDGE_URL="http://bridge.test",
+    )
+    @patch(
+        "conference.meeting_agent_bridge.client.urlopen",
+        return_value=_MockUrlopenResponse({"ok": True, "runner": "http"}),
+    )
+    def test_connect_agent_succeeds_when_http_bridge_health_check_passes(self, _mock_urlopen):
+        client = self._auth_client()
+
+        response = client.post(
+            f"/api/meetings/{self.meeting.id}/agents",
+            {"agent_type": "codex"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        payload = response.json()
+        self.assertEqual(payload["presence_status"], "idle")
+        self.assertTrue(payload["bridge_online"])
+
+    @override_settings(
+        MEETING_AGENT_BRIDGE_MODE="http",
+        MEETING_AGENT_BRIDGE_URL="http://bridge.test",
+    )
+    @patch("conference.meeting_agent_bridge.client.urlopen")
+    def test_action_succeeds_when_http_bridge_returns_payload(self, mock_urlopen):
+        client = self._auth_client()
+        MeetingTranscriptChunk.objects.create(
+            meeting=self.meeting,
+            speaker_name="Owner",
+            text="Please summarize the agent bridge plan.",
+            source="manual",
+            is_final=True,
+            sequence_no=1,
+        )
+        mock_urlopen.side_effect = [
+            _MockUrlopenResponse({"ok": True, "runner": "http"}),
+            _MockUrlopenResponse(
+                {
+                    "short_reply": "Bridge summary ready.",
+                    "artifact_type": "summary",
+                    "artifact_title": "Codex bridge summary",
+                    "artifact_content": "Summarized over HTTP bridge.",
+                }
+            ),
+        ]
+
+        response = client.post(
+            f"/api/meetings/{self.meeting.id}/agent-actions",
+            {"agent_type": "codex", "task_type": "summarize"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["artifact"]["artifact_type"], "summary")
+        self.assertEqual(payload["artifact"]["title"], "Codex bridge summary")
+        self.assertIn("HTTP bridge", payload["artifact"]["content"])
+
+
+class MeetingSpeechToTextApiTests(TestCase):
+    def setUp(self):
+        self.owner = User.objects.create_user(username="stt-owner", password="pass1234")
+        self.meeting = Meeting.objects.create(
+            title="STT Meeting",
+            room_name="stt-room",
+            owner=self.owner,
+        )
+
+    def _auth_client(self):
+        client = APIClient(HTTP_HOST="localhost")
+        client.force_authenticate(user=self.owner)
+        return client
+
+    def _audio_upload(self, name="sample.wav", content=b"fake-audio", content_type="audio/wav"):
+        return SimpleUploadedFile(name, content, content_type=content_type)
+
+    def test_stt_upload_fails_when_provider_is_not_configured(self):
+        client = self._auth_client()
+
+        response = client.post(
+            f"/api/meetings/{self.meeting.id}/transcripts/stt-upload",
+            {"audio_file": self._audio_upload()},
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("stt", response.json()["detail"].lower())
+        self.assertEqual(MeetingTranscriptChunk.objects.filter(meeting=self.meeting).count(), 0)
+
+    @override_settings(MEETING_STT_PROVIDER="mock")
+    def test_stt_upload_with_mock_provider_creates_transcript_chunk(self):
+        client = self._auth_client()
+
+        response = client.post(
+            f"/api/meetings/{self.meeting.id}/transcripts/stt-upload",
+            {
+                "audio_file": self._audio_upload(),
+                "speaker_name": "Owner",
+                "speaker_identity": "owner-1",
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        payload = response.json()
+        self.assertEqual(payload["speaker_name"], "Owner")
+        self.assertEqual(payload["speaker_identity"], "owner-1")
+        self.assertEqual(payload["source"], "stt_upload")
+        self.assertEqual(payload["sequence_no"], 1)
+        self.assertTrue(payload["text"])
+        chunk = MeetingTranscriptChunk.objects.get(meeting=self.meeting)
+        self.assertEqual(chunk.source, "stt_upload")
+        self.assertEqual(chunk.speaker_name, "Owner")
+        context_response = client.get(f"/api/meetings/{self.meeting.id}/context/current")
+        self.assertEqual(context_response.status_code, 200)
+        context_payload = context_response.json()
+        self.assertEqual(context_payload["source_chunk_ids"], [chunk.id])
+        self.assertIn(payload["text"], context_payload["summary_text"])
+
+
+class MeetingRealtimeSpeechToTextTests(TestCase):
+    def setUp(self):
+        self.owner = User.objects.create_user(username="realtime-stt-owner", password="pass1234")
+        self.meeting = Meeting.objects.create(
+            title="Realtime STT Meeting",
+            room_name="realtime-stt-room",
+            owner=self.owner,
+        )
+
+    async def _run_ws_session(self, token: str, frames: list[dict]):
+        communicator = ApplicationCommunicator(
+            application,
+            {
+                "type": "websocket",
+                "path": f"/ws/meetings/{self.meeting.id}/stt",
+                "query_string": f"token={token}".encode("utf-8"),
+                "headers": [],
+                "client": ("127.0.0.1", 12345),
+                "server": ("testserver", 80),
+                "subprotocols": [],
+            },
+        )
+        await communicator.send_input({"type": "websocket.connect"})
+        accepted = await communicator.receive_output(timeout=3)
+        outputs = [accepted]
+        for frame in frames:
+            await communicator.send_input(
+                {
+                    "type": "websocket.receive",
+                    "text": json.dumps(frame),
+                }
+            )
+            outputs.append(await communicator.receive_output(timeout=5))
+        await communicator.send_input({"type": "websocket.disconnect", "code": 1000})
+        await communicator.wait()
+        return outputs
+
+    async def _run_ws_session_with_real_worker(self, token: str, frames: list[dict], *, provider: str = "mock"):
+        server = await start_server(
+            SttWorkerConfig(
+                host="127.0.0.1",
+                port=0,
+                provider=provider,
+                model_size="tiny",
+                compute_type="int8",
+                language="zh",
+            )
+        )
+        port = server.sockets[0].getsockname()[1]
+        try:
+            with override_settings(
+                MEETING_REALTIME_STT_WORKER_URL=f"ws://127.0.0.1:{port}{DEFAULT_WS_PATH}"
+            ):
+                return await self._run_ws_session(token, frames)
+        finally:
+            server.close()
+            await server.wait_closed()
+
+    def test_realtime_stt_websocket_rejects_invalid_token(self):
+        async def runner():
+            communicator = ApplicationCommunicator(
+                application,
+                {
+                    "type": "websocket",
+                    "path": f"/ws/meetings/{self.meeting.id}/stt",
+                    "query_string": b"token=bad-token",
+                    "headers": [],
+                    "client": ("127.0.0.1", 12345),
+                    "server": ("testserver", 80),
+                    "subprotocols": [],
+                },
+            )
+            await communicator.send_input({"type": "websocket.connect"})
+            event = await communicator.receive_output()
+            await communicator.wait()
+            return event
+
+        event = async_to_sync(runner)()
+        self.assertEqual(event["type"], "websocket.close")
+
+    def test_realtime_stt_websocket_returns_error_when_worker_is_not_configured(self):
+        token = str(AccessToken.for_user(self.owner))
+
+        outputs = async_to_sync(self._run_ws_session)(
+            token,
+            [
+                {"type": "start", "speaker_name": "Owner", "speaker_identity": "owner-1"},
+            ],
+        )
+
+        self.assertEqual(outputs[0]["type"], "websocket.accept")
+        error_payload = json.loads(outputs[1]["text"])
+        self.assertEqual(error_payload["type"], "error")
+        self.assertIn("worker", error_payload["detail"].lower())
+        self.assertEqual(MeetingTranscriptChunk.objects.filter(meeting=self.meeting).count(), 0)
+
+    @override_settings(MEETING_REALTIME_STT_WORKER_URL="ws://worker.test/ws/realtime-transcribe")
+    @patch("conference.speech_to_text.realtime.WorkerRealtimeBridge")
+    def test_realtime_stt_websocket_relays_worker_partial_and_persists_final_chunk(self, mock_bridge_cls):
+        bridge = mock_bridge_cls.return_value
+
+        async def _connect():
+            return None
+
+        async def _close():
+            return None
+
+        async def _start_session(**kwargs):
+            return {
+                "type": "session_started",
+                "speaker_name": kwargs["speaker_name"],
+                "speaker_identity": kwargs["speaker_identity"],
+                "provider": "mock",
+            }
+
+        async def _push_audio_chunk(**kwargs):
+            self.assertEqual(kwargs["mime_type"], "audio/webm")
+            return {
+                "type": "partial_transcript",
+                "text": "Owner speaking from worker...",
+                "chunk_count": 1,
+                "byte_count": 3,
+            }
+
+        async def _stop_session():
+            return {
+                "type": "final_transcript",
+                "text": "Worker final transcript",
+                "chunk_count": 1,
+                "byte_count": 3,
+            }
+
+        bridge.connect.side_effect = _connect
+        bridge.close.side_effect = _close
+        bridge.start_session.side_effect = _start_session
+        bridge.push_audio_chunk.side_effect = _push_audio_chunk
+        bridge.stop_session.side_effect = _stop_session
+
+        token = str(AccessToken.for_user(self.owner))
+
+        outputs = async_to_sync(self._run_ws_session)(
+            token,
+            [
+                {"type": "start", "speaker_name": "Owner", "speaker_identity": "owner-1"},
+                {"type": "audio_chunk", "mime_type": "audio/webm", "data_base64": base64.b64encode(b"abc").decode("ascii")},
+                {"type": "stop"},
+            ],
+        )
+
+        self.assertEqual(outputs[0]["type"], "websocket.accept")
+        start_payload = json.loads(outputs[1]["text"])
+        partial_payload = json.loads(outputs[2]["text"])
+        final_payload = json.loads(outputs[3]["text"])
+        self.assertEqual(start_payload["type"], "session_started")
+        self.assertEqual(partial_payload["type"], "partial_transcript")
+        self.assertEqual(final_payload["type"], "final_transcript")
+        self.assertEqual(final_payload["source"], "live_stream")
+        self.assertEqual(MeetingTranscriptChunk.objects.filter(meeting=self.meeting).count(), 1)
+        chunk = MeetingTranscriptChunk.objects.get(meeting=self.meeting)
+        self.assertEqual(chunk.source, "live_stream")
+        self.assertEqual(chunk.speaker_name, "Owner")
+        self.assertEqual(chunk.text, "Worker final transcript")
+
+    def test_realtime_stt_websocket_works_with_real_mock_worker_server(self):
+        token = str(AccessToken.for_user(self.owner))
+
+        outputs = async_to_sync(self._run_ws_session_with_real_worker)(
+            token,
+            [
+                {"type": "start", "speaker_name": "Owner", "speaker_identity": "owner-1"},
+                {
+                    "type": "audio_chunk",
+                    "mime_type": "audio/webm",
+                    "data_base64": base64.b64encode(b"abc").decode("ascii"),
+                },
+                {"type": "stop"},
+            ],
+            provider="mock",
+        )
+
+        self.assertEqual(outputs[0]["type"], "websocket.accept")
+        start_payload = json.loads(outputs[1]["text"])
+        partial_payload = json.loads(outputs[2]["text"])
+        final_payload = json.loads(outputs[3]["text"])
+        self.assertEqual(start_payload["type"], "session_started")
+        self.assertEqual(start_payload["provider"], "mock")
+        self.assertEqual(partial_payload["type"], "partial_transcript")
+        self.assertEqual(final_payload["type"], "final_transcript")
+        self.assertEqual(final_payload["source"], "live_stream")
+        self.assertEqual(MeetingTranscriptChunk.objects.filter(meeting=self.meeting).count(), 1)
+        chunk = MeetingTranscriptChunk.objects.get(meeting=self.meeting)
+        self.assertIn("Mock realtime transcript", chunk.text)

@@ -1,13 +1,8 @@
-import json
 from dataclasses import dataclass
-from time import monotonic
-from urllib.error import HTTPError, URLError
-from urllib.parse import urljoin
-from urllib.request import Request, urlopen
 
-from django.conf import settings
 from django.utils import timezone
 
+from conference.meeting_agent_bridge import is_mock_mode, run_bridge_action
 from conference.models import (
     Meeting,
     MeetingAgentPresence,
@@ -107,6 +102,29 @@ def connect_agent_session(session: MeetingAgentSession) -> MeetingAgentSession:
     return session
 
 
+def mark_agent_session_error(session: MeetingAgentSession, message: str) -> MeetingAgentSession:
+    session.display_name = session.display_name or agent_display_name(session.agent_type)
+    session.bridge_online = False
+    session.presence_status = MeetingAgentPresence.ERROR
+    session.current_task_status = "error"
+    session.last_error = message.strip()[:1000]
+    session.queue_size = 0
+    session.last_used_at = timezone.now()
+    session.save(
+        update_fields=[
+            "display_name",
+            "bridge_online",
+            "presence_status",
+            "current_task_status",
+            "last_error",
+            "queue_size",
+            "last_used_at",
+            "updated_at",
+        ]
+    )
+    return session
+
+
 @dataclass
 class AgentDispatchResult:
     short_reply: str
@@ -114,10 +132,6 @@ class AgentDispatchResult:
     artifact_title: str
     artifact_content: str
     latency_ms: int
-
-
-def _bridge_base_url() -> str:
-    return (getattr(settings, "MEETING_AGENT_BRIDGE_URL", "") or "").strip().rstrip("/")
 
 
 def _mock_reply(agent_type: str, task_type: str, instruction: str, chunks: list[MeetingTranscriptChunk], snapshot: MeetingContextSnapshot) -> AgentDispatchResult:
@@ -211,24 +225,10 @@ def dispatch_agent_action(
             for chunk in chunks
         ],
     }
-    bridge_url = _bridge_base_url()
-    if not bridge_url:
+    if is_mock_mode():
         return _mock_reply(session.agent_type, task_type, instruction, chunks, snapshot)
 
-    started = monotonic()
-    request = Request(
-        urljoin(f"{bridge_url}/", "meeting-agent/actions"),
-        data=json.dumps(body).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urlopen(request, timeout=20) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except (HTTPError, URLError, TimeoutError, json.JSONDecodeError):
-        return _mock_reply(session.agent_type, task_type, instruction, chunks, snapshot)
-
-    latency_ms = int((monotonic() - started) * 1000)
+    payload, latency_ms = run_bridge_action(body)
     return AgentDispatchResult(
         short_reply=(payload.get("short_reply") or "Agent replied").strip(),
         artifact_type=(payload.get("artifact_type") or MeetingArtifactType.REPLY),

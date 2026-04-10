@@ -54,6 +54,10 @@
         </div>
         <div class="side-card">
           <h2>Live Transcript</h2>
+          <div class="transcript-live-controls">
+            <button id="realtimeSttBtn" type="button" class="control-btn" disabled>Start Live Captions</button>
+            <p id="realtimeSttStatus" class="side-subtitle">Realtime STT idle</p>
+          </div>
           <div id="transcriptList" class="transcript-list"></div>
           <form id="transcriptForm" class="transcript-form">
             <input id="transcriptSpeakerInput" name="speaker_name" placeholder="Speaker name" maxlength="80" />

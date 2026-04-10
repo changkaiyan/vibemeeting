@@ -1,5 +1,26 @@
 # 虚拟 Agent 参会设计方案
 
+## 当前实现状态
+
+这份文档描述的是“虚拟 Agent 参会”的**目标产品方案**，不是当前仓库已经完成的能力。
+
+当前 Git 代码实际情况：
+
+- 已有一个会议页工作区，用于展示 transcript / context / artifact
+- transcript 目前主要靠手动录入 API 驱动
+- agent action 目前主要是工作区里的任务触发接口
+- agent session 只是后端状态对象，不是真正的实时虚拟参会者
+- 当前没有实时 STT 落地实现
+- 当前没有真实的本地 Codex / Claude bridge 落地实现
+- 当前没有 Agent 通过语音直接参与会议的能力
+
+可以把当前状态理解成：
+
+- 已实现：`meeting_context workspace MVP`
+- 未实现：`virtual agent in meeting`
+
+下面内容是后续设计目标。
+
 ## 1. 目标
 
 本方案的目标不是在会议页里增加一个聊天机器人，而是让用户可以把自己的本地 Agent 作为“虚拟参会者”带入会议。
@@ -86,7 +107,7 @@ Agent 输出的结果不能只停留在对话里，还需要沉淀为：
 4. 会中短反馈 + 侧边栏详细结果分层展示
 5. 本地 Agent 连接能力复用已有 bridge
 
-## 5. 总体架构
+## 5. 目标总体架构
 
 ```mermaid
 graph TD
@@ -105,7 +126,7 @@ graph TD
     L --> N[Meeting artifacts]
 ```
 
-## 6. 系统分层
+## 6. 目标系统分层
 
 ### 6.1 Meeting Runtime Layer
 
@@ -162,7 +183,7 @@ graph TD
 - 形成会议产物
 - 支持后续导出/同步
 
-## 7. 关键模块设计
+## 7. 目标关键模块设计
 
 建议新增独立模块：
 
@@ -188,18 +209,21 @@ graph TD
 - `views.py`
   - transcript/context/actions/artifacts API
 
-复用现有模块：
+目标上希望复用的模块：
 
 - `conference/speech_to_text/`
-  - 继续负责音频 -> 文本
+  - 目标上负责音频 -> 文本
+  - 当前仓库无有效实现
 - `conference/speech_agent/services/bridge.py`
-  - 继续负责调用本地 Agent
+  - 目标上负责调用本地 Agent
+  - 当前仓库无有效实现
 
 需要调整定位：
 
 - `speech_to_text` 不负责产品交互
 - `bridge` 不负责 prompt 设计
-- 新的 `meeting_context` 模块负责“会议上下文 -> Agent”主逻辑
+- 当前已存在的 `meeting_context` 模块只覆盖了轻量 workspace MVP
+- 后续再演进成“会议上下文 -> Agent”主逻辑
 
 ## 8. 数据模型
 

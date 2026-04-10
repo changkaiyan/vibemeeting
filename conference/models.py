@@ -212,6 +212,7 @@ class MeetingMessage(models.Model):
 class MeetingTranscriptSource(models.TextChoices):
     LIVE = "live_stream", "Live Stream"
     MANUAL = "manual", "Manual"
+    STT_UPLOAD = "stt_upload", "STT Upload"
     MOCK = "mock", "Mock"
 
 

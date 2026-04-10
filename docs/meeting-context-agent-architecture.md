@@ -1,5 +1,30 @@
 # 会议上下文驱动 AI 架构方案
 
+## 当前实现状态
+
+截至当前 Git 主线代码，这个项目**已经落地**的只有一个很轻量的 `meeting_context` MVP，而不是完整的“语音入会 + 实时 STT + 本地 Agent 双向桥接”系统。
+
+当前已存在的能力：
+
+- 会议页里有一个 meeting workspace 面板
+- 支持通过 API 手动写入 transcript chunk
+- 支持基于 transcript 生成当前 context snapshot
+- 支持为当前用户创建 `codex` / `claude` 两类 agent session
+- 支持触发 `summarize` / `extract_todos` / `draft_api` 等 action
+- 支持把 action 结果保存为 artifact
+- 当前前端可以浏览 transcript / context / artifact，并把选中的 transcript 发送给 agent action API
+
+当前**没有落地**的能力：
+
+- 没有 Git 跟踪的 `conference/speech_to_text/` 实现
+- 没有实时音频转写链路
+- 没有真正把会议音频自动写入 transcript
+- 没有 Git 跟踪的 `conference/speech_agent/` bridge 实现
+- 没有真正连到本地 Codex / Claude Code 的稳定执行链路
+- 没有“Agent 像真实参会者一样通过语音实时交流”的已实现能力
+
+所以，这份文档下面的内容应理解为：**目标架构 / 后续演进方向**，不是当前已交付能力说明。
+
 ## 背景
 
 当前主线会议页的 AI 交互如果继续沿用“输入框/聊天框 -> agent”的模式，本质上和在飞书里通过机器人对话区别不大：
@@ -56,7 +81,7 @@ MVP 目标：
 4. 本地 agent bridge 复用，但 prompt 来源改为会议上下文包
 5. 语音是会议数据源，不是主交互入口
 
-## 总体架构
+## 目标总体架构
 
 ```text
 LiveKit 音视频
@@ -78,9 +103,9 @@ Agent Orchestrator
 Meeting UI (timeline / actions / outputs)
 ```
 
-## 模块拆分
+## 目标模块拆分
 
-建议新增独立模块，避免和原有聊天逻辑耦合：
+建议后续新增独立模块，避免和当前轻量 workspace 逻辑耦合：
 
 - `conference/meeting_context/`
   - 会议上下文核心模块
@@ -102,15 +127,15 @@ Meeting UI (timeline / actions / outputs)
 已有模块的复用方式：
 
 - `conference/speech_to_text/`
-  - 继续负责音频 -> 文本
-  - 不负责会议 UI，不负责 agent 路由
+  - 目标模块，负责音频 -> 文本
+  - 当前 Git 代码中并不存在有效实现
 - `conference/speech_agent/services/bridge.py`
-  - 保留本地 bridge 调用能力
-  - 由新的 `orchestrator.py` 调用
+  - 目标模块，负责调用本地 agent
+  - 当前 Git 代码中并不存在有效实现
 - `app/templates/meeting_room.html`
-  - 改造成上下文协作页面
+  - 当前已经承载轻量 workspace UI
 - `app/static/meeting-room.js`
-  - 从聊天轮询改为 transcript + actions + outputs 驱动
+  - 当前已经有 transcript + actions + outputs 驱动的基础版
 
 ## 数据模型
 

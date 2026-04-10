@@ -4,6 +4,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from conference.meeting_agent_bridge import MeetingAgentBridgeError, ensure_bridge_available
 from conference.meeting_context.serializers import (
     MeetingAgentActionSerializer,
     MeetingAgentConnectSerializer,
@@ -19,6 +20,7 @@ from conference.meeting_context.services import (
     dispatch_agent_action,
     ensure_agent_session,
     get_or_build_current_context,
+    mark_agent_session_error,
     store_agent_result,
 )
 from conference.models import Meeting, MeetingAgentPresence, MeetingArtifact, MeetingTranscriptChunk
@@ -122,6 +124,12 @@ def meeting_agents(request, meeting_id: int):
             "updated_at",
         ]
     )
+    try:
+        ensure_bridge_available(session.agent_type)
+    except MeetingAgentBridgeError as exc:
+        mark_agent_session_error(session, str(exc))
+        return Response({"detail": str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
     session = connect_agent_session(session)
     log_audit(
         user=request.user,
@@ -147,7 +155,14 @@ def meeting_agent_actions(request, meeting_id: int):
     task_type = serializer.validated_data["task_type"].strip().lower()
     instruction = serializer.validated_data.get("instruction", "").strip()
     chunk_ids = serializer.validated_data.get("chunk_ids") or []
-    session = connect_agent_session(ensure_agent_session(meeting, request.user, agent_type))
+    session = ensure_agent_session(meeting, request.user, agent_type)
+    try:
+        ensure_bridge_available(session.agent_type)
+    except MeetingAgentBridgeError as exc:
+        mark_agent_session_error(session, str(exc))
+        return Response({"detail": str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+    session = connect_agent_session(session)
     snapshot = get_or_build_current_context(meeting)
     chunks_qs = MeetingTranscriptChunk.objects.filter(meeting=meeting)
     if chunk_ids:
@@ -180,14 +195,19 @@ def meeting_agent_actions(request, meeting_id: int):
         ]
     )
 
-    result = dispatch_agent_action(
-        meeting=meeting,
-        session=session,
-        task_type=task_type,
-        instruction=instruction,
-        chunks=chunks,
-        snapshot=snapshot,
-    )
+    try:
+        result = dispatch_agent_action(
+            meeting=meeting,
+            session=session,
+            task_type=task_type,
+            instruction=instruction,
+            chunks=chunks,
+            snapshot=snapshot,
+        )
+    except MeetingAgentBridgeError as exc:
+        mark_agent_session_error(session, str(exc))
+        return Response({"detail": str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
     artifact = store_agent_result(
         meeting=meeting,
         session=session,

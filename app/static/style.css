@@ -398,6 +398,14 @@ pre {
   gap: 8px;
 }
 
+.transcript-live-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
 .agent-card,
 .artifact-item,
 .transcript-item,
