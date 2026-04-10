@@ -1,0 +1,51 @@
+flowchart LR
+    subgraph MeetingSpace["VibeMeeting"]
+        UI["Meeting UI<br/>Stage / Transcript / Agent Panels"]
+        LK["LiveKit Room<br/>Human participants + virtual agents"]
+        RT["Realtime Transcription"]
+        TS["Transcript Timeline Store"]
+        CE["Meeting Context Engine<br/>topic / summary / decisions / todos"]
+        AO["Agent Orchestrator"]
+        AP["Agent Dashboard<br/>presence / task / outputs / health"]
+        AR["Meeting Artifacts<br/>summary / tasks / drafts"]
+        NB["Notebook Provider<br/>Notion / Obsidian / Feishu / local markdown"]
+    end
+
+    subgraph UserSide["User Local Environment"]
+        UB["Local Agent Bridge"]
+        CX["Codex"]
+        CL["Claude Code"]
+    end
+
+    U["User"] -->|join meeting| UI
+    UI --> LK
+    LK --> RT
+    RT --> TS
+    TS --> CE
+    CE --> AO
+    AO --> AP
+    AO --> AR
+    AP --> UI
+    AR --> UI
+    AR --> NB
+    NB --> CE
+
+    UI -->|bring my agent| UB
+    UB --> CX
+    UB --> CL
+    UB --> AO
+    AO --> UB
+
+    U -->|talk to Alice / Bob| LK
+    U -->|assign light tasks| UI
+    UI -->|selected context + task| AO
+
+    classDef core fill:#e8f0ff,stroke:#3b82f6,color:#111827,stroke-width:1.5px;
+    classDef runtime fill:#ecfeff,stroke:#0891b2,color:#111827,stroke-width:1.5px;
+    classDef agent fill:#f5f3ff,stroke:#7c3aed,color:#111827,stroke-width:1.5px;
+    classDef memory fill:#f0fdf4,stroke:#16a34a,color:#111827,stroke-width:1.5px;
+
+    class UI,LK,RT,TS,CE,AO core;
+    class AP,AR runtime;
+    class UB,CX,CL agent;
+    class NB memory;

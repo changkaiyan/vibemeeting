@@ -8,9 +8,19 @@
   const participantStatsEl = document.getElementById("participantStats");
   const participantListEl = document.getElementById("participantList");
   const stageGridEl = document.getElementById("stageGrid");
-  const chatListEl = document.getElementById("chatList");
-  const chatFormEl = document.getElementById("chatForm");
-  const chatInputEl = document.getElementById("chatInput");
+  const agentPanelEl = document.getElementById("agentPanel");
+  const contextPanelEl = document.getElementById("contextPanel");
+  const transcriptListEl = document.getElementById("transcriptList");
+  const transcriptFormEl = document.getElementById("transcriptForm");
+  const transcriptSpeakerInputEl = document.getElementById("transcriptSpeakerInput");
+  const transcriptTextInputEl = document.getElementById("transcriptTextInput");
+  const realtimeSttBtn = document.getElementById("realtimeSttBtn");
+  const realtimeSttStatusEl = document.getElementById("realtimeSttStatus");
+  const artifactListEl = document.getElementById("artifactList");
+  const workspaceActionFormEl = document.getElementById("workspaceActionForm");
+  const workspaceInstructionInputEl = document.getElementById("workspaceInstructionInput");
+  const workspaceTargetSelectEl = document.getElementById("workspaceTargetSelect");
+  const workspaceTaskTypeSelectEl = document.getElementById("workspaceTaskTypeSelect");
 
   const joinBtn = document.getElementById("joinBtn");
   const joinMeetUiBtn = document.getElementById("joinMeetUiBtn");
@@ -18,6 +28,11 @@
   const micBtn = document.getElementById("micBtn");
   const camBtn = document.getElementById("camBtn");
   const screenBtn = document.getElementById("screenBtn");
+
+  const AGENT_DEFS = [
+    { agentType: "codex", displayName: "Alice / Codex" },
+    { agentType: "claude", displayName: "Bob / Claude" },
+  ];
 
   const state = {
     room: null,
@@ -30,10 +45,19 @@
     camEnabled: true,
     screenSharing: false,
     allowScreenShare: true,
-    allowChat: true,
     participants: new Map(),
-    chatTimer: null,
-    latestMessageId: 0,
+    workspaceTimer: null,
+    agentSessions: [],
+    transcripts: [],
+    artifacts: [],
+    currentContext: null,
+    selectedTranscriptIds: new Set(),
+    realtimeSttSocket: null,
+    realtimeSttRecorder: null,
+    realtimeSttStream: null,
+    realtimeSttActive: false,
+    realtimeSttStopping: false,
+    realtimePartialText: "",
   };
 
   function setMessage(text, isError = false) {
@@ -63,7 +87,12 @@
     if (!token) throw new Error("Not logged in");
     const headers = options.headers || {};
     headers.Authorization = `Bearer ${token}`;
-    if (!headers["Content-Type"] && options.body && !(options.body instanceof URLSearchParams)) {
+    if (
+      !headers["Content-Type"] &&
+      options.body &&
+      !(options.body instanceof URLSearchParams) &&
+      !(typeof FormData !== "undefined" && options.body instanceof FormData)
+    ) {
       headers["Content-Type"] = "application/json";
     }
     let response = await fetch(url, { ...options, headers, credentials: "same-origin" });
@@ -89,11 +118,9 @@
     const tile = document.createElement("article");
     tile.className = "tile";
     tile.dataset.identity = identity;
-
     const media = document.createElement("div");
     media.className = "tile-media";
     tile.appendChild(media);
-
     const meta = document.createElement("div");
     meta.className = "tile-meta";
     meta.innerHTML = `
@@ -102,7 +129,6 @@
     `;
     tile.appendChild(meta);
     stageGridEl.appendChild(tile);
-
     return tile;
   }
 
@@ -128,21 +154,37 @@
     `;
   }
 
+  function agentPresenceLabel(status) {
+    return (status || "offline").replace(/_/g, " ");
+  }
+
+  function agentSessionFor(agentType) {
+    return state.agentSessions.find((item) => item.agent_type === agentType) || null;
+  }
+
   function renderParticipantList() {
     participantListEl.innerHTML = "";
-    const sorted = Array.from(state.participants.values()).sort((a, b) =>
-      a.identity.localeCompare(b.identity),
-    );
-    for (const p of sorted) {
+    const participantRows = Array.from(state.participants.values())
+      .sort((a, b) => a.identity.localeCompare(b.identity))
+      .map((participant) => ({
+        name: participant.identity,
+        role: participant.isLocal ? "host" : "member",
+      }));
+    const agentRows = state.agentSessions.map((session) => ({
+      name: session.display_name || session.agent_type,
+      role: `agent · ${agentPresenceLabel(session.presence_status)}`,
+    }));
+    const rows = participantRows.concat(agentRows);
+    for (const row of rows) {
       const li = document.createElement("li");
       li.className = "participant-item";
       li.innerHTML = `
-        <span class="participant-name">${p.identity}</span>
-        <span class="participant-role">${p.isLocal ? "host" : "member"}</span>
+        <span class="participant-name">${row.name}</span>
+        <span class="participant-role">${row.role}</span>
       `;
       participantListEl.appendChild(li);
     }
-    participantStatsEl.textContent = `${sorted.length} online`;
+    participantStatsEl.textContent = `${rows.length} online`;
   }
 
   function upsertParticipant(identity, isLocal = false) {
@@ -161,63 +203,197 @@
     micBtn.disabled = !connected;
     camBtn.disabled = !connected;
     screenBtn.disabled = !connected || !state.allowScreenShare;
-    chatInputEl.disabled = !connected || !state.allowChat;
+    transcriptSpeakerInputEl.disabled = !connected;
+    transcriptTextInputEl.disabled = !connected;
+    workspaceInstructionInputEl.disabled = !connected;
+    workspaceTargetSelectEl.disabled = !connected;
+    workspaceTaskTypeSelectEl.disabled = !connected;
+    realtimeSttBtn.disabled = !connected;
   }
 
   function updateButtonLabels() {
     micBtn.textContent = state.micEnabled ? "Mute" : "Unmute";
     camBtn.textContent = state.camEnabled ? "Camera Off" : "Camera On";
     screenBtn.textContent = state.screenSharing ? "Stop Share" : "Share Screen";
+    realtimeSttBtn.textContent = state.realtimeSttActive ? "Stop Live Captions" : "Start Live Captions";
+    if (state.realtimeSttActive && state.realtimeSttStopping) {
+      realtimeSttStatusEl.textContent = "Stopping realtime STT...";
+    } else if (state.realtimeSttActive) {
+      realtimeSttStatusEl.textContent = "Realtime STT streaming";
+    } else {
+      realtimeSttStatusEl.textContent = "Realtime STT idle";
+    }
+  }
+
+  function websocketUrl(path, token) {
+    const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+    return `${protocol}://${window.location.host}${path}?token=${encodeURIComponent(token)}`;
+  }
+
+  async function blobToBase64(blob) {
+    const buffer = await blob.arrayBuffer();
+    let binary = "";
+    const bytes = new Uint8Array(buffer);
+    const chunkSize = 0x8000;
+    for (let index = 0; index < bytes.length; index += chunkSize) {
+      binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+    }
+    return btoa(binary);
   }
 
   function attachTrackToTile(track, identity, isLocal = false) {
     ensureNoPlaceholder();
     const tile = getOrCreateTile(identity, isLocal);
     const mediaEl = tile.querySelector(".tile-media");
-
     if (track.kind === "video") {
       mediaEl.querySelectorAll("video").forEach((el) => el.remove());
     }
-
     const attached = track.attach();
     attached.className = "video-element";
     mediaEl.appendChild(attached);
   }
 
-  function appendChatMessage(message) {
-    const row = document.createElement("div");
-    row.className = "chat-item";
-    row.innerHTML = `
-      <div class="chat-meta">${message.sender_username}</div>
-      <div>${message.content}</div>
-    `;
-    chatListEl.appendChild(row);
-    chatListEl.scrollTop = chatListEl.scrollHeight;
-    state.latestMessageId = Math.max(state.latestMessageId, message.id);
+  function renderAgentPanel() {
+    agentPanelEl.innerHTML = "";
+    for (const agent of AGENT_DEFS) {
+      const session = agentSessionFor(agent.agentType);
+      const card = document.createElement("div");
+      card.className = "agent-card";
+      card.innerHTML = `
+        <div class="agent-card-header">
+          <span class="agent-title">${agent.displayName}</span>
+          <span class="presence-badge">${agentPresenceLabel(session?.presence_status || "offline")}</span>
+        </div>
+        <div class="agent-meta">
+          ${session?.current_task_title ? `Task: ${session.current_task_title}` : "Not connected yet"}
+          ${session?.bridge_online ? " · bridge online" : ""}
+        </div>
+        <div class="agent-meta">
+          ${session?.latest_short_reply || "No recent reply"}
+        </div>
+        <div class="agent-actions">
+          <div class="agent-actions-row">
+            <button type="button" class="control-btn" data-agent-connect="${agent.agentType}">Bring ${agent.displayName}</button>
+            <button type="button" class="control-btn" data-agent-quick="${agent.agentType}:summarize">Summarize</button>
+            <button type="button" class="control-btn" data-agent-quick="${agent.agentType}:extract_todos">Todos</button>
+            <button type="button" class="control-btn" data-agent-quick="${agent.agentType}:draft_api">Draft API</button>
+          </div>
+          <div class="agent-actions-row">
+            <input type="text" data-agent-input="${agent.agentType}" placeholder="Talk to ${agent.displayName}..." maxlength="4000" />
+            <button type="button" class="control-btn control-primary" data-agent-send="${agent.agentType}">Ask</button>
+          </div>
+        </div>
+      `;
+      agentPanelEl.appendChild(card);
+    }
   }
 
-  async function loadMessages() {
-    if (!state.allowChat) {
-      chatListEl.innerHTML = "";
-      state.latestMessageId = 0;
+  function renderContextPanel() {
+    if (!state.currentContext) {
+      contextPanelEl.innerHTML = '<p class="empty-text">No context yet.</p>';
       return;
     }
-    const messages = await api(`/api/meetings/${meetingId}/messages?limit=100`);
-    chatListEl.innerHTML = "";
-    state.latestMessageId = 0;
-    for (const message of messages) {
-      appendChatMessage(message);
+    const { topic_label, summary_text, decisions, todos, source_chunk_ids } = state.currentContext;
+    contextPanelEl.innerHTML = `
+      <div class="context-block">
+        <div class="artifact-head">
+          <span class="artifact-title">${topic_label || "Current discussion"}</span>
+          <span class="artifact-type">${source_chunk_ids?.length || 0} chunks</span>
+        </div>
+        <div class="context-summary">${summary_text || "No rolling summary yet."}</div>
+        <ul class="context-list">
+          ${(decisions || []).map((item) => `<li>${item}</li>`).join("")}
+          ${(todos || []).map((item) => `<li>${item}</li>`).join("")}
+        </ul>
+      </div>
+    `;
+  }
+
+  function renderTranscriptList() {
+    transcriptListEl.innerHTML = "";
+    if (state.realtimePartialText) {
+      const partialRow = document.createElement("div");
+      partialRow.className = "transcript-item";
+      partialRow.innerHTML = `
+        <div class="transcript-body">
+          <div class="transcript-head">
+            <span class="transcript-speaker">Live partial</span>
+            <span class="transcript-badge">partial</span>
+          </div>
+          <div class="transcript-text">${state.realtimePartialText}</div>
+        </div>
+      `;
+      transcriptListEl.appendChild(partialRow);
+    }
+    if (!state.transcripts.length) {
+      if (!state.realtimePartialText) {
+        transcriptListEl.innerHTML = '<p class="empty-text">No transcript yet. Add manual transcript or start realtime STT.</p>';
+      }
+      return;
+    }
+    for (const item of state.transcripts) {
+      const selected = state.selectedTranscriptIds.has(item.id);
+      const row = document.createElement("div");
+      row.className = "transcript-item";
+      row.innerHTML = `
+        <div class="check-row">
+          <input type="checkbox" data-transcript-checkbox="${item.id}" ${selected ? "checked" : ""} />
+          <div class="transcript-body">
+            <div class="transcript-head">
+              <span class="transcript-speaker">${item.speaker_name || item.speaker_identity || "Speaker"}</span>
+              <span class="transcript-badge">${item.source}${item.is_final ? "" : " · partial"}</span>
+            </div>
+            <div class="transcript-text">${item.text}</div>
+            <div class="transcript-meta">chunk #${item.id} · seq ${item.sequence_no}</div>
+            <div class="transcript-actions-row">
+              <button type="button" class="control-btn" data-transcript-send="codex:${item.id}">To Alice</button>
+              <button type="button" class="control-btn" data-transcript-send="claude:${item.id}">To Bob</button>
+            </div>
+          </div>
+        </div>
+      `;
+      transcriptListEl.appendChild(row);
     }
   }
 
-  async function pollMessages() {
-    if (!state.room || !state.allowChat) return;
-    const messages = await api(`/api/meetings/${meetingId}/messages?limit=30`);
-    for (const message of messages) {
-      if (message.id > state.latestMessageId) {
-        appendChatMessage(message);
-      }
+  function renderArtifacts() {
+    artifactListEl.innerHTML = "";
+    if (!state.artifacts.length) {
+      artifactListEl.innerHTML = '<p class="empty-text">No outputs yet.</p>';
+      return;
     }
+    for (const artifact of state.artifacts) {
+      const row = document.createElement("div");
+      row.className = "artifact-item";
+      row.innerHTML = `
+        <div class="artifact-head">
+          <span class="artifact-title">${artifact.title || "Untitled output"}</span>
+          <span class="artifact-type">${artifact.artifact_type}</span>
+        </div>
+        <div class="artifact-content">${artifact.content}</div>
+        <div class="artifact-meta">artifact #${artifact.id}</div>
+      `;
+      artifactListEl.appendChild(row);
+    }
+  }
+
+  async function loadWorkspace() {
+    if (!state.room) return;
+    const [agents, context, transcripts, artifacts] = await Promise.all([
+      api(`/api/meetings/${meetingId}/agents`),
+      api(`/api/meetings/${meetingId}/context/current`),
+      api(`/api/meetings/${meetingId}/transcripts?limit=80`),
+      api(`/api/meetings/${meetingId}/artifacts?limit=20`),
+    ]);
+    state.agentSessions = agents;
+    state.currentContext = context;
+    state.transcripts = transcripts;
+    state.artifacts = artifacts;
+    renderParticipantList();
+    renderAgentPanel();
+    renderContextPanel();
+    renderTranscriptList();
+    renderArtifacts();
   }
 
   async function fetchMeetingInfo() {
@@ -225,7 +401,6 @@
     meetingTitleEl.textContent = meeting.title;
     meetingMetaEl.textContent = `会议号: ${meeting.room_name}`;
     state.allowScreenShare = meeting.allow_screen_share !== false;
-    state.allowChat = meeting.allow_chat !== false;
     updateControls(Boolean(state.room));
     return meeting;
   }
@@ -239,7 +414,6 @@
     state.roomName = tokenData.room_name;
     state.localIdentity = tokenData.participant_identity;
     state.allowScreenShare = tokenData.allow_screen_share !== false;
-    state.allowChat = tokenData.allow_chat !== false;
 
     const room = new LivekitClient.Room({ adaptiveStream: true, dynacast: true });
     state.room = room;
@@ -288,15 +462,16 @@
     state.screenSharing = false;
     updateControls(true);
     updateButtonLabels();
-    await loadMessages();
-    if (state.chatTimer) clearInterval(state.chatTimer);
-    state.chatTimer = setInterval(() => {
-      pollMessages().catch(() => {});
-    }, 3000);
+    await loadWorkspace();
+    if (state.workspaceTimer) clearInterval(state.workspaceTimer);
+    state.workspaceTimer = setInterval(() => {
+      loadWorkspace().catch(() => {});
+    }, 5000);
     setMessage(`Connected to ${state.roomName}`);
   }
 
   async function leaveMeeting() {
+    await stopRealtimeStt(true);
     if (!state.room) return;
     await state.room.disconnect();
     state.localMicTrack?.stop();
@@ -310,17 +485,130 @@
     state.localCamTrack = null;
     state.localScreenTrack = null;
     state.screenSharing = false;
-    if (state.chatTimer) {
-      clearInterval(state.chatTimer);
-      state.chatTimer = null;
+    state.agentSessions = [];
+    state.transcripts = [];
+    state.artifacts = [];
+    state.currentContext = null;
+    state.selectedTranscriptIds.clear();
+    state.realtimePartialText = "";
+    if (state.workspaceTimer) {
+      clearInterval(state.workspaceTimer);
+      state.workspaceTimer = null;
     }
-    chatListEl.innerHTML = "";
-    state.latestMessageId = 0;
     updateControls(false);
     updateButtonLabels();
     renderParticipantList();
+    renderAgentPanel();
+    renderContextPanel();
+    renderTranscriptList();
+    renderArtifacts();
     restorePlaceholderIfEmpty();
     setMessage("Disconnected");
+  }
+
+  async function startRealtimeStt() {
+    if (state.realtimeSttActive) return;
+    if (!window.MediaRecorder) throw new Error("MediaRecorder is not supported in this browser");
+    const token = await ensureToken();
+    if (!token) throw new Error("Not logged in");
+
+    const recorderStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const socket = new WebSocket(websocketUrl(`/ws/meetings/${meetingId}/stt`, token));
+    state.realtimeSttSocket = socket;
+    state.realtimeSttStream = recorderStream;
+    state.realtimeSttStopping = false;
+
+    socket.onmessage = async (event) => {
+      const payload = JSON.parse(event.data);
+      if (payload.type === "session_started") {
+        realtimeSttStatusEl.textContent = "Realtime STT session started";
+        return;
+      }
+      if (payload.type === "partial_transcript") {
+        state.realtimePartialText = payload.text || "";
+        renderTranscriptList();
+        return;
+      }
+      if (payload.type === "final_transcript") {
+        state.realtimePartialText = "";
+        await loadWorkspace();
+        renderTranscriptList();
+        if (state.realtimeSttStopping) {
+          socket.close();
+        }
+        return;
+      }
+      if (payload.type === "error") {
+        setMessage(payload.detail || "Realtime STT error", true);
+      }
+    };
+    socket.onclose = () => {
+      state.realtimeSttSocket = null;
+      state.realtimeSttRecorder = null;
+      if (state.realtimeSttStream) {
+        state.realtimeSttStream.getTracks().forEach((track) => track.stop());
+      }
+      state.realtimeSttStream = null;
+      state.realtimeSttActive = false;
+      state.realtimeSttStopping = false;
+      state.realtimePartialText = "";
+      updateButtonLabels();
+      renderTranscriptList();
+    };
+
+    await new Promise((resolve, reject) => {
+      socket.onopen = resolve;
+      socket.onerror = () => reject(new Error("Realtime STT websocket failed"));
+    });
+
+    const mimeType = MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : "";
+    const recorder = mimeType
+      ? new MediaRecorder(recorderStream, { mimeType })
+      : new MediaRecorder(recorderStream);
+    state.realtimeSttRecorder = recorder;
+    socket.send(
+      JSON.stringify({
+        type: "start",
+        speaker_name: state.localIdentity || "Me",
+        speaker_identity: state.localIdentity || "me",
+      }),
+    );
+    recorder.ondataavailable = async (event) => {
+      if (!event.data || event.data.size === 0 || !state.realtimeSttSocket || state.realtimeSttSocket.readyState !== WebSocket.OPEN) return;
+      const dataBase64 = await blobToBase64(event.data);
+      state.realtimeSttSocket.send(
+        JSON.stringify({
+          type: "audio_chunk",
+          mime_type: event.data.type || mimeType || "audio/webm",
+          data_base64: dataBase64,
+        }),
+      );
+    };
+    recorder.start(1000);
+    state.realtimeSttActive = true;
+    updateButtonLabels();
+    setMessage("Realtime STT started");
+  }
+
+  async function stopRealtimeStt(immediate = false) {
+    if (!state.realtimeSttActive && !state.realtimeSttSocket && !state.realtimeSttStream) return;
+    state.realtimeSttStopping = true;
+    if (state.realtimeSttRecorder && state.realtimeSttRecorder.state !== "inactive") {
+      state.realtimeSttRecorder.stop();
+    }
+    if (state.realtimeSttSocket && state.realtimeSttSocket.readyState === WebSocket.OPEN) {
+      if (immediate) {
+        state.realtimeSttSocket.close();
+      } else {
+        state.realtimeSttSocket.send(JSON.stringify({ type: "stop" }));
+      }
+    } else if (state.realtimeSttStream) {
+      state.realtimeSttStream.getTracks().forEach((track) => track.stop());
+      state.realtimeSttStream = null;
+      state.realtimeSttActive = false;
+      state.realtimeSttStopping = false;
+    }
+    updateButtonLabels();
   }
 
   async function toggleMic() {
@@ -379,6 +667,29 @@
     window.open(url, "_blank");
   }
 
+  async function connectAgent(agentType) {
+    await api(`/api/meetings/${meetingId}/agents`, {
+      method: "POST",
+      body: JSON.stringify({ agent_type: agentType }),
+    });
+    await loadWorkspace();
+    setMessage(`${agentType} connected to this meeting workspace`);
+  }
+
+  async function runAgentAction(agentType, taskType, instruction = "", chunkIds = null) {
+    await api(`/api/meetings/${meetingId}/agent-actions`, {
+      method: "POST",
+      body: JSON.stringify({
+        agent_type: agentType,
+        task_type: taskType,
+        instruction,
+        chunk_ids: chunkIds || Array.from(state.selectedTranscriptIds),
+      }),
+    });
+    await loadWorkspace();
+    setMessage(`${agentType} completed ${taskType}`);
+  }
+
   joinBtn.addEventListener("click", async () => {
     try {
       await joinMeeting();
@@ -428,26 +739,94 @@
     }
   });
 
-  chatFormEl.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    if (!state.room) return;
-    if (!state.allowChat) {
-      setMessage("Chat is disabled for this meeting", true);
-      return;
-    }
-    const content = (chatInputEl.value || "").trim();
-    if (!content) return;
+  realtimeSttBtn.addEventListener("click", async () => {
     try {
-      const message = await api(`/api/meetings/${meetingId}/messages`, {
-        method: "POST",
-        body: JSON.stringify({ content }),
-      });
-      if (message.id > state.latestMessageId) {
-        appendChatMessage(message);
+      if (state.realtimeSttActive) {
+        await stopRealtimeStt(false);
+      } else {
+        await startRealtimeStt();
       }
-      chatInputEl.value = "";
     } catch (err) {
-      setMessage(err.message || "Send message failed", true);
+      setMessage(err.message || "Realtime STT failed", true);
+      await stopRealtimeStt(true);
+    }
+  });
+
+  agentPanelEl.addEventListener("click", async (event) => {
+    const connectBtn = event.target.closest("[data-agent-connect]");
+    const quickBtn = event.target.closest("[data-agent-quick]");
+    const sendBtn = event.target.closest("[data-agent-send]");
+    try {
+      if (connectBtn) {
+        await connectAgent(connectBtn.dataset.agentConnect);
+      } else if (quickBtn) {
+        const [agentType, taskType] = quickBtn.dataset.agentQuick.split(":");
+        await runAgentAction(agentType, taskType);
+      } else if (sendBtn) {
+        const agentType = sendBtn.dataset.agentSend;
+        const input = agentPanelEl.querySelector(`[data-agent-input="${agentType}"]`);
+        const instruction = (input?.value || "").trim();
+        if (!instruction) return;
+        await runAgentAction(agentType, "ask", instruction);
+        if (input) input.value = "";
+      }
+    } catch (err) {
+      setMessage(err.message || "Agent action failed", true);
+    }
+  });
+
+  transcriptListEl.addEventListener("change", (event) => {
+    const checkbox = event.target.closest("[data-transcript-checkbox]");
+    if (!checkbox) return;
+    const chunkId = Number(checkbox.dataset.transcriptCheckbox);
+    if (checkbox.checked) state.selectedTranscriptIds.add(chunkId);
+    else state.selectedTranscriptIds.delete(chunkId);
+  });
+
+  transcriptListEl.addEventListener("click", async (event) => {
+    const sendBtn = event.target.closest("[data-transcript-send]");
+    if (!sendBtn) return;
+    try {
+      const [agentType, chunkId] = sendBtn.dataset.transcriptSend.split(":");
+      await runAgentAction(agentType, "ask", "", [Number(chunkId)]);
+    } catch (err) {
+      setMessage(err.message || "Transcript action failed", true);
+    }
+  });
+
+  transcriptFormEl.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const text = (transcriptTextInputEl.value || "").trim();
+    if (!text) return;
+    try {
+      await api(`/api/meetings/${meetingId}/transcripts`, {
+        method: "POST",
+        body: JSON.stringify({
+          speaker_name: (transcriptSpeakerInputEl.value || "").trim(),
+          text,
+          source: "manual",
+          is_final: true,
+        }),
+      });
+      transcriptTextInputEl.value = "";
+      await loadWorkspace();
+      setMessage("Transcript added");
+    } catch (err) {
+      setMessage(err.message || "Add transcript failed", true);
+    }
+  });
+
+  workspaceActionFormEl.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      await runAgentAction(
+        workspaceTargetSelectEl.value,
+        workspaceTaskTypeSelectEl.value,
+        (workspaceInstructionInputEl.value || "").trim(),
+      );
+      workspaceInstructionInputEl.value = "";
+    } catch (err) {
+      setMessage(err.message || "Workspace action failed", true);
     }
   });
 
@@ -458,7 +837,10 @@
   updateControls(false);
   updateButtonLabels();
   renderParticipantList();
-  chatInputEl.disabled = true;
+  renderAgentPanel();
+  renderContextPanel();
+  renderTranscriptList();
+  renderArtifacts();
   fetchMeetingInfo().catch((err) => {
     setMessage(err.message || "Load meeting info failed", true);
   });

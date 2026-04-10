@@ -81,12 +81,15 @@ USE_I18N = True
 USE_TZ = False
 
 STATIC_URL = "/static/"
-STATICFILES_DIRS = [BASE_DIR / "app" / "static"]
+STATICFILES_DIRS = []
 if (
     FLUTTER_DASHBOARD_BUILD_DIR.exists()
     and FLUTTER_DASHBOARD_BUILD_DIR != _APP_STATIC_FLUTTER_DASHBOARD_BUILD_DIR
 ):
+    # Put generated Flutter assets ahead of app/static so /static/flutter_dashboard/*
+    # resolves to the latest build instead of the checked-in fallback bundle.
     STATICFILES_DIRS.append(("flutter_dashboard", FLUTTER_DASHBOARD_BUILD_DIR))
+STATICFILES_DIRS.append(BASE_DIR / "app" / "static")
 STATIC_ROOT = BASE_DIR / "staticfiles"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
@@ -122,6 +125,13 @@ LIVEKIT_API_KEY = os.getenv("LIVEKIT_API_KEY", "devkey")
 LIVEKIT_API_SECRET = os.getenv("LIVEKIT_API_SECRET", "secret")
 LIVEKIT_MEET_URL = os.getenv("LIVEKIT_MEET_URL", "https://meet.livekit.io")
 LIVEKIT_EGRESS_OUTPUT_ROOT = os.getenv("LIVEKIT_EGRESS_OUTPUT_ROOT", "").strip()
+MEETING_AGENT_BRIDGE_URL = os.getenv("MEETING_AGENT_BRIDGE_URL", "").strip()
+MEETING_AGENT_BRIDGE_MODE = os.getenv("MEETING_AGENT_BRIDGE_MODE", "").strip().lower() or (
+    "http" if MEETING_AGENT_BRIDGE_URL else "disabled"
+)
+MEETING_AGENT_BRIDGE_TIMEOUT_SECONDS = float(os.getenv("MEETING_AGENT_BRIDGE_TIMEOUT_SECONDS", "20"))
+MEETING_STT_PROVIDER = os.getenv("MEETING_STT_PROVIDER", "").strip().lower()
+MEETING_REALTIME_STT_WORKER_URL = os.getenv("MEETING_REALTIME_STT_WORKER_URL", "").strip()
 
 TECHCLOUD_OAUTH_CLIENT_ID = os.getenv("TECHCLOUD_OAUTH_CLIENT_ID", "").strip()
 TECHCLOUD_OAUTH_CLIENT_SECRET = os.getenv("TECHCLOUD_OAUTH_CLIENT_SECRET", "").strip()

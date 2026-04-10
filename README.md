@@ -6,6 +6,8 @@
 
 - `conference/`
   - 后端核心业务代码
+- `docs/`
+  - 设计与架构文档
 - `smart_meeting/`
   - Django 项目配置与入口
 - `app/templates/`
@@ -30,6 +32,11 @@
 - 会议控制台：`/dashboard`
 - Django 管理后台：`/admin`
 
+## 设计文档
+
+- [会议上下文驱动 AI 架构方案](./docs/meeting-context-agent-architecture.md)
+- [虚拟 Agent 参会设计方案](./docs/virtual-agent-meeting-design.md)
+
 ## 功能概览
 
 - 用户注册/登录（Django 认证体系）
@@ -44,19 +51,21 @@
 - 超级管理员可配置登录策略（科技云 OAuth、本地注册、本地用户名密码登录）
 - 超级管理员可导出用户信息与用量报表（CSV）
 
-## 快速启动（Windows PowerShell）
+## 本地开发快速启动（uv）
 
-```powershell
-py -3.10 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-Copy-Item .env.example .env
-python manage.py migrate
-python manage.py createsuperuser
-python manage.py runserver 0.0.0.0:8000
+推荐使用 `uv` 管理本地 Python 环境，当前已验证可用的 Python 版本为 `3.10.19`。
+
+```bash
+uv venv --python 3.10.19 .venv
+uv pip install --python .venv/bin/python -r requirements.txt
+cp .env.example .env
+uv run --python .venv/bin/python manage.py migrate
+uv run --python .venv/bin/python manage.py runserver 127.0.0.1:8000 --noreload
 ```
 
-启动后访问 `http://127.0.0.1:8000`。
+启动后访问 `http://127.0.0.1:8000`，或检查 `http://127.0.0.1:8000/healthz`。
+
+完整的本地开发部署说明见 [docs/development.md](./docs/development.md)。
 
 如果需要刷新 Flutter Dashboard 静态产物：
 
@@ -72,8 +81,8 @@ flutter build web
 
 以 `.env.example` 为模板创建 `.env`：
 
-```powershell
-Copy-Item .env.example .env
+```bash
+cp .env.example .env
 ```
 
 关键配置：
@@ -86,6 +95,10 @@ Copy-Item .env.example .env
 - `LIVEKIT_PUBLIC_URL`：前端可访问的 LiveKit 地址（HTTPS 页面需 `wss://`）
 - `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET`：LiveKit 服务端鉴权
 - `LIVEKIT_MEET_URL`：打开 LiveKit Meet 的地址（默认官方托管）
+- `MEETING_STT_PROVIDER`：上传音频转写模式；当前可留空或使用 `mock`
+- `MEETING_REALTIME_STT_WORKER_URL`：主应用连接实时 STT worker 的 WebSocket 地址
+- `MEETING_AGENT_BRIDGE_MODE`：Agent bridge 模式，默认 `disabled`
+- `MEETING_AGENT_BRIDGE_URL`：HTTP 模式下的 Agent bridge 地址
 - `TECHCLOUD_OAUTH_CLIENT_ID`：中国科技云通行证应用 `client_id`
 - `TECHCLOUD_OAUTH_CLIENT_SECRET`：中国科技云通行证应用 `client_secret`
 - `TECHCLOUD_OAUTH_REDIRECT_URI`：OAuth 回调地址（建议与应用平台登记一致）
@@ -127,6 +140,10 @@ Copy-Item .env.example .env
 ## HTTPS 本地联调
 
 参考 [HTTPS_TESTING.md](./HTTPS_TESTING.md) 与 [LIVEKIT_SSL_STARTUP.md](./LIVEKIT_SSL_STARTUP.md)。
+
+## 本地开发部署文档
+
+- [Development Guide](./docs/development.md)
 
 ## 主要 API
 

@@ -1833,8 +1833,8 @@ def dashboard_view(request):
             {"flutter_cache_bust": _flutter_cache_bust()},
         )
     return HttpResponse(
-        "Flutter dashboard static files are missing. Run `puro flutter build web` in "
-        "`flutter_dashboard` and sync `build/web` to `app/static/flutter_dashboard`.",
+        "Flutter dashboard static files are missing. Run `flutter build web` in "
+        "`flutter_dashboard` and sync `build/web` to `artifacts/flutter_dashboard_web`.",
         status=503,
         content_type="text/plain; charset=utf-8",
     )
@@ -1852,8 +1852,8 @@ def billing_dashboard_view(request):
             {"flutter_cache_bust": _flutter_cache_bust()},
         )
     return HttpResponse(
-        "Flutter dashboard static files are missing. Run `puro flutter build web` in "
-        "`flutter_dashboard` and sync `build/web` to `app/static/flutter_dashboard`.",
+        "Flutter dashboard static files are missing. Run `flutter build web` in "
+        "`flutter_dashboard` and sync `build/web` to `artifacts/flutter_dashboard_web`.",
         status=503,
         content_type="text/plain; charset=utf-8",
     )
@@ -6001,6 +6001,7 @@ def _meeting_join_token_impl(request, meeting, *, membership=None):
     meeting_ref = ensure_meeting_ref(meeting, request.user)
     return Response(
         {
+            "meeting_id": meeting.id,
             "meeting_ref": meeting_ref,
             "room_name": meeting.room_name,
             "participant_identity": participant_identity,

@@ -2,14 +2,30 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:html' as html;
 import 'dart:js' as js;
+import 'dart:js_interop';
 import 'dart:math' as math;
+import 'dart:ui_web' as ui_web;
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:livekit_client/livekit_client.dart' as lk;
+import 'package:web/web.dart' as web;
+import 'meeting_room/audio_level.dart';
+import 'meeting_room/debug_flags.dart';
+import 'meeting_room/media_test_widgets.dart';
+import 'meeting_room/panel_widgets.dart';
+import 'meeting_room/selectable_region.dart';
+import 'meeting_room/stt_debug.dart';
 import 'device_profile.dart';
+part 'meeting_room/models.dart';
+part 'meeting_room/chat_logic.dart';
+part 'meeting_room/chat_widgets.dart';
+part 'meeting_room/layout_panels.dart';
+part 'meeting_room/recording.dart';
+part 'meeting_room/workspace_logic.dart';
+part 'meeting_room/workspace_widgets.dart';
 
 class MeetingRoomPage extends StatefulWidget {
   final int? meetingId;
@@ -40,6 +56,8 @@ class MeetingRoomPage extends StatefulWidget {
 class _MeetingRoomPageState extends State<MeetingRoomPage> {
   final TextEditingController _chatController = TextEditingController();
   final ScrollController _chatScrollController = ScrollController();
+  final TextEditingController _workspaceTranscriptController =
+      TextEditingController();
 
   String _accessToken = '';
   String _meetingTitle = '会议';
@@ -98,6 +116,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
   bool _realtimeBotDebugPanelVisible = false;
   String _currentUserRole = '';
   String _resolvedMeetingRef = '';
+  int? _resolvedMeetingId;
   bool _recordingActive = false;
   bool _recordingUploading = false;
   DateTime? _recordingStartedAt;
@@ -105,7 +124,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
   html.MediaRecorder? _meetingRecorder;
   html.MediaStream? _meetingRecordingStream;
   final List<html.Blob> _meetingRecordingChunks = <html.Blob>[];
-  StreamSubscription<html.BlobEvent>? _meetingRecordingDataSubscription;
+  StreamSubscription<html.Event>? _meetingRecordingDataSubscription;
   StreamSubscription<html.Event>? _meetingRecordingStopSubscription;
   Completer<void>? _meetingRecordingFinalizeCompleter;
   dynamic _realtimeBotAudioContext;
@@ -159,6 +178,9 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
       <String, TransformationController>{};
   bool _desktopParticipantsCollapsed = false;
   bool _desktopChatCollapsed = false;
+  bool _desktopChatPanelExpanded = false;
+  bool _desktopWorkspacePanelExpanded = false;
+  int _cameraPreviewFactoryCounter = 0;
 
   static const double _minTileZoomScale = 1.0;
   static const double _maxTileZoomScale = 5.0;
@@ -169,11 +191,6 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
   static const int _microphoneTrackSourceValue = 2;
   static const int _screenShareTrackSourceValue = 3;
   static const int _screenShareAudioTrackSourceValue = 4;
-  static const html.EventStreamProvider<html.BlobEvent>
-      _mediaRecorderDataAvailableEvent =
-      html.EventStreamProvider<html.BlobEvent>('dataavailable');
-  static const html.EventStreamProvider<html.Event> _mediaRecorderStopEvent =
-      html.EventStreamProvider<html.Event>('stop');
   static const Map<String, int> _trackSourceTokenToValue = <String, int>{
     'camera': _cameraTrackSourceValue,
     'microphone': _microphoneTrackSourceValue,
@@ -209,22 +226,98 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
   String? _spotlightIdentity;
   String? _fullscreenIdentity;
 
+  double _normalizedAudioLevel(double rawLevel) {
+    if (!rawLevel.isFinite || rawLevel <= 0) return 0;
+    return math.sqrt(rawLevel.clamp(0.0, 1.0)).clamp(0.0, 1.0);
+  }
+
+  void _openCommunicationPanelFullscreen({required bool forChat}) {
+    final panelLabel = forChat ? '聊天' : '工作区';
+    showDialog<void>(
+      context: context,
+      barrierDismissible: true,
+      builder: (dialogContext) => Dialog.fullscreen(
+        child: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
+            child: forChat
+                ? _buildChatPanel(
+                    headerActions: [
+                      MeetingPanelHeaderActionBar(
+                        panelLabel: panelLabel,
+                        isFullscreen: true,
+                        onToggleFullscreen: () =>
+                            Navigator.of(dialogContext).pop(),
+                      ),
+                    ],
+                  )
+                : _buildWorkspacePanel(
+                    headerActions: [
+                      MeetingPanelHeaderActionBar(
+                        panelLabel: panelLabel,
+                        isFullscreen: true,
+                        onToggleFullscreen: () =>
+                            Navigator.of(dialogContext).pop(),
+                      ),
+                    ],
+                  ),
+          ),
+        ),
+      ),
+    );
+  }
+
   lk.Room? _room;
   lk.EventsListener<lk.RoomEvent>? _roomListener;
   Timer? _meetingElapsedTimer;
   Timer? _chatTimer;
   Timer? _memberTimer;
+  Timer? _workspaceTimer;
   Timer? _waitingRoomTimer;
   Timer? _recordingStatusTimer;
   Timer? _realtimeBotCaptureKeepaliveTimer;
   StreamSubscription<html.Event>? _fullscreenSubscription;
   int _latestMessageId = 0;
   final List<_ChatMessage> _messages = [];
-  final Map<int, _ChatMessage> _pendingLocalDraftMessages = <int, _ChatMessage>{};
+  final Map<int, _ChatMessage> _pendingLocalDraftMessages =
+      <int, _ChatMessage>{};
   final Set<int> _playedRealtimeBotAudioMessageIds = <int>{};
   final Set<int> _playingRealtimeBotAudioMessageIds = <int>{};
   final Set<int> _recallingMessageIds = <int>{};
   int _localDraftMessageSequence = -1;
+  bool _workspaceLoading = false;
+  bool _workspaceReady = false;
+  bool _workspaceSttActive = false;
+  bool _workspaceSttStopping = false;
+  String _workspacePartialText = '';
+  String _workspaceSttDebugState = 'idle';
+  String _workspaceSttDebugMimeType = '';
+  int _workspaceSttDebugBlobEventCount = 0;
+  int _workspaceSttDebugLastBlobSize = 0;
+  String _workspaceSttDebugLastError = '';
+  String _workspaceSttDebugWsState = 'not-created';
+  int _workspaceSttDebugAudioTrackCount = 0;
+  int _workspaceSttDebugStartTapCount = 0;
+  int _workspaceSttDebugStopTapCount = 0;
+  String _workspaceSttDebugLastAction = '-';
+  html.WebSocket? _workspaceSttSocket;
+  html.MediaRecorder? _workspaceSttRecorder;
+  html.MediaStream? _workspaceSttStream;
+  StreamSubscription<html.Event>? _workspaceSttDataSubscription;
+  StreamSubscription<html.Event>? _workspaceSttStopSubscription;
+  StreamSubscription<html.MessageEvent>? _workspaceSttMessageSubscription;
+  StreamSubscription<html.Event>? _workspaceSttOpenSubscription;
+  StreamSubscription<html.Event>? _workspaceSttCloseSubscription;
+  StreamSubscription<html.Event>? _workspaceSttErrorSubscription;
+  Completer<void>? _workspaceSttRecorderStopCompleter;
+  Completer<void>? _workspaceSttFlushDataCompleter;
+  int _workspacePendingAudioChunkSends = 0;
+  List<_WorkspaceAgentSession> _workspaceAgentSessions =
+      const <_WorkspaceAgentSession>[];
+  _WorkspaceContextSnapshot? _workspaceContext;
+  List<_WorkspaceTranscriptChunk> _workspaceTranscripts =
+      const <_WorkspaceTranscriptChunk>[];
+  List<_WorkspaceArtifact> _workspaceArtifacts = const <_WorkspaceArtifact>[];
   Map<int, _MeetingMemberProfile> _memberProfiles = {};
   final Map<String, String> _runtimeDisplayNamesByIdentity = <String, String>{};
   final Map<String, int> _guestDisplayNameVersionsByIdentity = <String, int>{};
@@ -349,6 +442,8 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     return _resolvedMeetingRef.trim().isNotEmpty;
   }
 
+  int? get _effectiveMeetingId => widget.meetingId ?? _resolvedMeetingId;
+
   String _privateMeetingApiBase() {
     final meetingRef = (widget.meetingRef ?? '').trim();
     if (meetingRef.isNotEmpty) {
@@ -434,6 +529,59 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
   String _meetingRecordingEgressStopApiPath() =>
       '${_meetingRecordingEgressApiPath()}/stop';
 
+  String _meetingWorkspaceTranscriptsApiPath({int? limit}) {
+    final meetingId = _effectiveMeetingId;
+    if (meetingId == null || meetingId <= 0) {
+      throw StateError('Meeting id is unavailable for workspace transcripts.');
+    }
+    final base = '/api/meetings/$meetingId/transcripts';
+    if (limit == null) return base;
+    return '$base?limit=$limit';
+  }
+
+  String _meetingWorkspaceCurrentContextApiPath() {
+    final meetingId = _effectiveMeetingId;
+    if (meetingId == null || meetingId <= 0) {
+      throw StateError('Meeting id is unavailable for workspace context.');
+    }
+    return '/api/meetings/$meetingId/context/current';
+  }
+
+  String _meetingWorkspaceAgentsApiPath() {
+    final meetingId = _effectiveMeetingId;
+    if (meetingId == null || meetingId <= 0) {
+      throw StateError('Meeting id is unavailable for workspace agents.');
+    }
+    return '/api/meetings/$meetingId/agents';
+  }
+
+  String _meetingWorkspaceAgentActionsApiPath() {
+    final meetingId = _effectiveMeetingId;
+    if (meetingId == null || meetingId <= 0) {
+      throw StateError(
+          'Meeting id is unavailable for workspace agent actions.');
+    }
+    return '/api/meetings/$meetingId/agent-actions';
+  }
+
+  String _meetingWorkspaceArtifactsApiPath({int? limit}) {
+    final meetingId = _effectiveMeetingId;
+    if (meetingId == null || meetingId <= 0) {
+      throw StateError('Meeting id is unavailable for workspace artifacts.');
+    }
+    final base = '/api/meetings/$meetingId/artifacts';
+    if (limit == null) return base;
+    return '$base?limit=$limit';
+  }
+
+  String _meetingWorkspaceRealtimeSttWebsocketPath() {
+    final meetingId = _effectiveMeetingId;
+    if (meetingId == null || meetingId <= 0) {
+      throw StateError('Meeting id is unavailable for realtime STT.');
+    }
+    return '/ws/meetings/$meetingId/stt';
+  }
+
   String _meetingMemberActionApiPath(int userId, String action) =>
       '${_privateMeetingApiBase()}/members/$userId/$action';
 
@@ -469,8 +617,11 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     _recordingStatusTimer = null;
     _realtimeBotCaptureKeepaliveTimer?.cancel();
     _realtimeBotCaptureKeepaliveTimer = null;
+    _workspaceTimer?.cancel();
+    _workspaceTimer = null;
     _chatController.dispose();
     _chatScrollController.dispose();
+    _workspaceTranscriptController.dispose();
     _meetingElapsedTimer?.cancel();
     _meetingElapsedTimer = null;
     _stopChatPolling();
@@ -478,6 +629,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     _stopWaitingRoomPolling();
     _fullscreenSubscription?.cancel();
     _disposeAllZoomControllers();
+    unawaited(_stopWorkspaceRealtimeStt(immediate: true));
     unawaited(_stopRealtimeBotAudioIngress());
     unawaited(_disposeRoom());
     super.dispose();
@@ -493,7 +645,17 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
   }
 
   bool get _showRealtimeBotDebugPanel {
-    return _isSuperAdminUser && _realtimeBotDebugPanelVisible;
+    return shouldShowRealtimeBotDebugPanel(
+      projectDebugUiEnabled: meetingDebugUiEnabled,
+      isSuperAdminUser: _isSuperAdminUser,
+      debugPanelVisible: _realtimeBotDebugPanelVisible,
+    );
+  }
+
+  bool get _showWorkspaceSttDebugPanel {
+    return shouldShowWorkspaceSttDebug(
+      projectDebugUiEnabled: meetingDebugUiEnabled,
+    );
   }
 
   String _clipDebugText(String text, {int maxLength = 120}) {
@@ -569,7 +731,8 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
       _realtimeBotDebugProcessCount += 1;
       changed = true;
     }
-    if (sourceCount != null && sourceCount != _realtimeBotDebugInputSourceCount) {
+    if (sourceCount != null &&
+        sourceCount != _realtimeBotDebugInputSourceCount) {
       _realtimeBotDebugInputSourceCount = sourceCount;
       changed = true;
     }
@@ -578,7 +741,8 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
       _realtimeBotDebugFallbackMicOpen = fallbackMicOpen;
       changed = true;
     }
-    if (bufferedBytes != null && bufferedBytes != _realtimeBotDebugBufferedBytes) {
+    if (bufferedBytes != null &&
+        bufferedBytes != _realtimeBotDebugBufferedBytes) {
       _realtimeBotDebugBufferedBytes = bufferedBytes;
       changed = true;
     }
@@ -1601,7 +1765,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
         children: [
           Icon(icon, size: 14, color: accent),
           const SizedBox(width: 5),
-          Text(
+          MeetingMetaText(
             text,
             style: const TextStyle(
               color: Color(0xFF175CD3),
@@ -2042,8 +2206,19 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     var dynacastEnabled = _dynacastEnabled;
     var remoteCameraViewMode = _remoteCameraViewMode;
     var remoteShareViewMode = _remoteShareViewMode;
-    var testing = false;
-    var testResult = '';
+    var micTesting = false;
+    var cameraTesting = false;
+    var micTestStatus = '尚未开始麦克风测试';
+    var cameraTestStatus = '尚未开始摄像头测试';
+    var micTestLevel = 0.0;
+    String? cameraPreviewViewType;
+    web.MediaStream? micTestStream;
+    html.MediaStream? cameraTestStream;
+    html.VideoElement? cameraPreviewElement;
+    web.AudioContext? micTestAudioContext;
+    web.AnalyserNode? micTestAnalyser;
+    web.MediaStreamAudioSourceNode? micTestSource;
+    Timer? micLevelTimer;
 
     if (_findDeviceById(_audioInputs, audioInputId) == null) {
       audioInputId =
@@ -2065,36 +2240,173 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
               final theme = Theme.of(context);
               final colors = theme.colorScheme;
 
-              Future<void> runMicTest() async {
+              Future<void> stopMicTest({bool resetStatus = true}) async {
+                micLevelTimer?.cancel();
+                micLevelTimer = null;
+                try {
+                  await micTestAudioContext?.close().toDart;
+                } catch (_) {}
+                micTestAudioContext = null;
+                micTestAnalyser = null;
+                try {
+                  micTestSource?.disconnect();
+                } catch (_) {}
+                micTestSource = null;
+                for (final track
+                    in micTestStream?.getTracks().toDart ?? const []) {
+                  track.stop();
+                }
+                micTestStream = null;
                 setDialogState(() {
-                  testing = true;
-                  testResult = '';
-                });
-                final ok = await _requestBrowserPermissionWithRetry(
-                  audio: true,
-                  video: false,
-                );
-                if (!mounted) return;
-                setDialogState(() {
-                  testing = false;
-                  testResult = ok ? '麦克风测试成功' : '麦克风权限被禁用';
+                  micTesting = false;
+                  micTestLevel = 0;
+                  if (resetStatus) {
+                    micTestStatus = '麦克风测试已停止';
+                  }
                 });
               }
 
+              Future<void> stopCameraTest({bool resetStatus = true}) async {
+                try {
+                  cameraPreviewElement?.pause();
+                } catch (_) {}
+                cameraPreviewElement?.srcObject = null;
+                cameraPreviewElement = null;
+                cameraTestStream?.getTracks().forEach((track) => track.stop());
+                cameraTestStream = null;
+                setDialogState(() {
+                  cameraTesting = false;
+                  cameraPreviewViewType = null;
+                  if (resetStatus) {
+                    cameraTestStatus = '摄像头测试已停止';
+                  }
+                });
+              }
+
+              Future<void> runMicTest() async {
+                await stopMicTest(resetStatus: false);
+                setDialogState(() {
+                  micTesting = true;
+                  micTestLevel = 0;
+                  micTestStatus = '正在采集麦克风输入...';
+                });
+                try {
+                  final mediaDevices = web.window.navigator.mediaDevices;
+                  if (mediaDevices == null) {
+                    throw StateError('浏览器不支持媒体设备测试');
+                  }
+                  final audioConstraints = audioInputId == null
+                      ? web.MediaTrackConstraints(
+                          echoCancellation: echoCancellation.toJS,
+                          noiseSuppression: noiseSuppression.toJS,
+                          autoGainControl: autoGainControl.toJS,
+                        )
+                      : web.MediaTrackConstraints(
+                          deviceId: web.ConstrainDOMStringParameters(
+                            exact: audioInputId!.toJS,
+                          ),
+                          echoCancellation: echoCancellation.toJS,
+                          noiseSuppression: noiseSuppression.toJS,
+                          autoGainControl: autoGainControl.toJS,
+                        );
+                  final stream = await mediaDevices
+                      .getUserMedia(
+                        web.MediaStreamConstraints(
+                          audio: audioConstraints,
+                          video: false.toJS,
+                        ),
+                      )
+                      .toDart;
+                  micTestStream = stream;
+                  micTestAudioContext = web.AudioContext(
+                    web.AudioContextOptions(
+                      latencyHint: 'interactive'.toJS,
+                    ),
+                  );
+                  final ctx = micTestAudioContext!;
+                  try {
+                    await ctx.resume().toDart.timeout(
+                          const Duration(seconds: 3),
+                        );
+                  } catch (_) {
+                    // Best effort only.
+                  }
+                  micTestAnalyser = ctx.createAnalyser()
+                    ..fftSize = 2048
+                    ..smoothingTimeConstant = 0.8;
+                  micTestSource = ctx.createMediaStreamSource(stream);
+                  micTestSource!.connect(micTestAnalyser!);
+                  micLevelTimer = Timer.periodic(
+                    const Duration(milliseconds: 120),
+                    (_) {
+                      final analyser = micTestAnalyser;
+                      if (analyser == null) return;
+                      final data =
+                          JSUint8Array.withLength(analyser.frequencyBinCount);
+                      analyser.getByteTimeDomainData(data);
+                      final samples = data.toDart;
+                      if (!mounted) return;
+                      setDialogState(() {
+                        micTestLevel = computeNormalizedMicTestLevel(samples);
+                        micTestStatus =
+                            micTestLevel > 0.04 ? '已检测到麦克风输入' : '等待你说话以验证麦克风';
+                      });
+                    },
+                  );
+                } catch (e) {
+                  await stopMicTest(resetStatus: false);
+                  setDialogState(() {
+                    micTestStatus = '麦克风测试失败：${_friendlyError(e)}';
+                  });
+                }
+              }
+
               Future<void> runCameraTest() async {
+                await stopCameraTest(resetStatus: false);
                 setDialogState(() {
-                  testing = true;
-                  testResult = '';
+                  cameraTesting = true;
+                  cameraTestStatus = '正在打开摄像头预览...';
                 });
-                final ok = await _requestBrowserPermissionWithRetry(
-                  audio: false,
-                  video: true,
-                );
-                if (!mounted) return;
-                setDialogState(() {
-                  testing = false;
-                  testResult = ok ? '摄像头测试成功' : '摄像头权限被禁用';
-                });
+                try {
+                  final mediaDevices = html.window.navigator.mediaDevices;
+                  if (mediaDevices == null) {
+                    throw StateError('浏览器不支持媒体设备测试');
+                  }
+                  final stream =
+                      await mediaDevices.getUserMedia(<String, dynamic>{
+                    'audio': false,
+                    'video': <String, dynamic>{
+                      'deviceId': videoInputId == null
+                          ? null
+                          : <String, String>{'exact': videoInputId!},
+                    },
+                  });
+                  cameraTestStream = stream;
+                  final preview = html.VideoElement()
+                    ..autoplay = true
+                    ..muted = true
+                    ..setAttribute('playsinline', 'true')
+                    ..style.width = '100%'
+                    ..style.height = '100%'
+                    ..style.objectFit = 'cover'
+                    ..srcObject = stream;
+                  final viewType =
+                      'meeting-room-camera-preview-${_cameraPreviewFactoryCounter++}';
+                  ui_web.platformViewRegistry.registerViewFactory(
+                    viewType,
+                    (int _) => preview,
+                  );
+                  cameraPreviewElement = preview;
+                  setDialogState(() {
+                    cameraPreviewViewType = viewType;
+                    cameraTestStatus = '摄像头预览中';
+                  });
+                } catch (e) {
+                  await stopCameraTest(resetStatus: false);
+                  setDialogState(() {
+                    cameraTestStatus = '摄像头测试失败：${_friendlyError(e)}';
+                  });
+                }
               }
 
               return AlertDialog(
@@ -2241,49 +2553,91 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                             title: const Text('自动增益'),
                           ),
                           const SizedBox(height: 8),
-                          Wrap(
-                            spacing: 8,
-                            runSpacing: 8,
-                            children: [
-                              OutlinedButton.icon(
-                                onPressed: testing ? null : runMicTest,
-                                icon: const Icon(Icons.mic),
-                                label: const Text('测试麦克风'),
-                              ),
-                              OutlinedButton.icon(
-                                onPressed: testing ? null : runCameraTest,
-                                icon: const Icon(Icons.videocam),
-                                label: const Text('测试摄像头'),
-                              ),
-                            ],
-                          ),
-                          if (testResult.isNotEmpty) ...[
-                            const SizedBox(height: 10),
-                            Container(
-                              width: double.infinity,
-                              padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
-                              decoration: BoxDecoration(
-                                borderRadius: BorderRadius.circular(10),
-                                color: testResult.contains('成功')
-                                    ? const Color(0xFFECFDF3)
-                                    : const Color(0xFFFEF3F2),
-                                border: Border.all(
-                                  color: testResult.contains('成功')
-                                      ? const Color(0xFFABEFC6)
-                                      : const Color(0xFFFDA29B),
+                          DeviceTestCard(
+                            title: '麦克风测试',
+                            description: '检查输入设备是否可用，并观察说话时音量变化',
+                            icon: Icons.mic_none_rounded,
+                            isRunning: micTesting,
+                            statusText: micTestStatus,
+                            statusIsError: micTestStatus.contains('失败'),
+                            primaryActionLabel: micTesting ? '重新测试' : '开始测试',
+                            secondaryActionLabel: '停止测试',
+                            onPrimaryAction: runMicTest,
+                            onSecondaryAction: micTesting ? stopMicTest : null,
+                            footer: Row(
+                              children: [
+                                const SizedBox(
+                                  width: 72,
+                                  child: Text(
+                                    '输入电平',
+                                    style: TextStyle(
+                                      color: Color(0xFF667085),
+                                      fontSize: 12,
+                                    ),
+                                  ),
                                 ),
-                              ),
-                              child: Text(
-                                testResult,
-                                style: TextStyle(
-                                  color: testResult.contains('成功')
-                                      ? const Color(0xFF067647)
-                                      : const Color(0xFFB42318),
-                                  fontWeight: FontWeight.w600,
+                                Expanded(
+                                  child: ParticipantAudioLevelBar(
+                                    level: micTestLevel,
+                                    isActive: micTesting && micTestLevel > 0.02,
+                                    width: double.infinity,
+                                    height: 8,
+                                  ),
                                 ),
-                              ),
+                                const SizedBox(width: 8),
+                                SizedBox(
+                                  width: 44,
+                                  child: Text(
+                                    '${(micTestLevel * 100).round()}%',
+                                    textAlign: TextAlign.right,
+                                    style: const TextStyle(
+                                      color: Color(0xFF667085),
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ),
-                          ],
+                          ),
+                          const SizedBox(height: 10),
+                          DeviceTestCard(
+                            title: '摄像头测试',
+                            description: '检查所选摄像头是否能正常出画',
+                            icon: Icons.videocam_outlined,
+                            isRunning: cameraTesting,
+                            statusText: cameraTestStatus,
+                            statusIsError: cameraTestStatus.contains('失败'),
+                            primaryActionLabel: cameraTesting ? '重新测试' : '开始测试',
+                            secondaryActionLabel: '停止测试',
+                            onPrimaryAction: runCameraTest,
+                            onSecondaryAction:
+                                cameraTesting ? stopCameraTest : null,
+                            preview: Container(
+                              height: 180,
+                              width: double.infinity,
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF0F172A),
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(
+                                  color: const Color(0xFFDDE6FF),
+                                ),
+                              ),
+                              clipBehavior: Clip.antiAlias,
+                              child: cameraPreviewViewType == null
+                                  ? const Center(
+                                      child: Text(
+                                        '开始测试后会在这里显示摄像头预览',
+                                        style: TextStyle(
+                                          color: Color(0xFF98A2B3),
+                                          fontSize: 12.5,
+                                        ),
+                                      ),
+                                    )
+                                  : HtmlElementView(
+                                      viewType: cameraPreviewViewType!,
+                                    ),
+                            ),
+                          ),
                           const SizedBox(height: 14),
                           const Divider(height: 1),
                           const SizedBox(height: 14),
@@ -2413,6 +2767,19 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
           ),
         ) ??
         false;
+
+    micLevelTimer?.cancel();
+    try {
+      await micTestAudioContext?.close().toDart;
+    } catch (_) {}
+    try {
+      micTestSource?.disconnect();
+    } catch (_) {}
+    for (final track in micTestStream?.getTracks().toDart ?? const []) {
+      track.stop();
+    }
+    cameraPreviewElement?.srcObject = null;
+    cameraTestStream?.getTracks().forEach((track) => track.stop());
 
     if (!applied || !mounted) return;
 
@@ -3050,11 +3417,13 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
             : name;
         final nextName = resolvedName.isEmpty ? name : resolvedName;
         final resolvedVersion = payload is Map<String, dynamic>
-            ? _intFromJson(payload['display_name_version'], expectedVersion ?? 1)
+            ? _intFromJson(
+                payload['display_name_version'], expectedVersion ?? 1)
             : (expectedVersion ?? 1);
         if (mounted && resolvedVersion > 0) {
           setState(() {
-            _guestDisplayNameVersionsByIdentity[localIdentity] = resolvedVersion;
+            _guestDisplayNameVersionsByIdentity[localIdentity] =
+                resolvedVersion;
           });
         }
         _applyIdentityDisplayNameLocally(
@@ -3143,7 +3512,8 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
             try {
               await _setLocalDisplayNameMetadata(
                 nextName,
-                displayNameVersion: resolvedVersion > 0 ? resolvedVersion : null,
+                displayNameVersion:
+                    resolvedVersion > 0 ? resolvedVersion : null,
               );
             } catch (_) {
               // Best effort realtime propagation.
@@ -3418,7 +3788,8 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     if (room == null) return null;
     final local = room.localParticipant;
     if (local == null) return null;
-    final primaryPub = local.getTrackPublicationBySource(lk.TrackSource.microphone);
+    final primaryPub =
+        local.getTrackPublicationBySource(lk.TrackSource.microphone);
     if (primaryPub is lk.LocalTrackPublication<lk.LocalAudioTrack>) {
       final primaryTrack = primaryPub.track;
       if (primaryTrack != null && !primaryPub.muted) return primaryTrack;
@@ -3629,7 +4000,8 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     }
   }
 
-  dynamic _createRealtimeBotMediaStreamSource(dynamic audioContext, dynamic stream) {
+  dynamic _createRealtimeBotMediaStreamSource(
+      dynamic audioContext, dynamic stream) {
     final candidates = <dynamic>[stream];
     try {
       final nested = stream == null ? null : stream.jsStream;
@@ -3887,8 +4259,8 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     final now = DateTime.now();
     final safeRms = rms.isFinite ? rms : 0.0;
     final peak = _pcm16PeakLevel(pcmBytes);
-    final hasVoice =
-        safeRms >= _realtimeBotVadThreshold || peak >= _realtimeBotVadPeakThreshold;
+    final hasVoice = safeRms >= _realtimeBotVadThreshold ||
+        peak >= _realtimeBotVadPeakThreshold;
     final startVoice = safeRms >= (_realtimeBotVadThreshold * 0.2) ||
         peak >= (_realtimeBotVadPeakThreshold * 0.5);
     _realtimeBotCaptureSampleRate = _realtimeBotAudioTargetSampleRate;
@@ -3963,8 +4335,8 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     final now = DateTime.now();
     final safeRms = rms.isFinite ? rms : 0.0;
     final peak = _pcm16PeakLevel(normalizedPcmBytes);
-    final hasVoice =
-        safeRms >= _realtimeBotVadThreshold || peak >= _realtimeBotVadPeakThreshold;
+    final hasVoice = safeRms >= _realtimeBotVadThreshold ||
+        peak >= _realtimeBotVadPeakThreshold;
     final startVoice = safeRms >= (_realtimeBotVadThreshold * 0.2) ||
         peak >= (_realtimeBotVadPeakThreshold * 0.5);
     _updateRealtimeBotDebug(
@@ -5429,14 +5801,13 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                         contentPadding: EdgeInsets.zero,
                         title: const Text('静音实时语音成员'),
                       ),
-                      if (_isSuperAdminUser)
+                      if (_isSuperAdminUser && meetingDebugUiEnabled)
                         SwitchListTile.adaptive(
                           value: debugPanelVisible,
                           onChanged: busy
                               ? null
                               : (v) {
-                                  setDialogState(
-                                      () => debugPanelVisible = v);
+                                  setDialogState(() => debugPanelVisible = v);
                                   if (_realtimeBotDebugPanelVisible == v ||
                                       !mounted) {
                                     return;
@@ -5717,6 +6088,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     final isSuperAdminUser = _boolFromJson(data['can_debug_token'], false);
     final currentUserRole = (data['current_user_role'] ?? '').toString();
     final meetingRefFromApi = (data['meeting_ref'] ?? '').toString().trim();
+    final meetingIdFromApi = _intFromJson(data['id'], 0);
     setState(() {
       _meetingTitle = (data['title'] ?? '会议').toString();
       _roomNumber = (data['room_name'] ?? '-').toString();
@@ -5762,6 +6134,9 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
         _realtimeBotDebugPanelVisible = false;
       }
       _currentUserRole = currentUserRole;
+      if (meetingIdFromApi > 0) {
+        _resolvedMeetingId = meetingIdFromApi;
+      }
       if (meetingRefFromApi.isNotEmpty) {
         _resolvedMeetingRef = meetingRefFromApi;
       }
@@ -5813,94 +6188,6 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
       }
     }
     return latest;
-  }
-
-  Future<void> _loadMessages() async {
-    final localProfile = _localMemberProfile;
-    final canChat = _isModerator || (localProfile?.allowChat ?? _allowChat);
-    if (!canChat) {
-      if (!mounted) return;
-      setState(() {
-        _messages.clear();
-        _latestMessageId = 0;
-        _pendingLocalDraftMessages.clear();
-        _playedRealtimeBotAudioMessageIds.clear();
-        _playingRealtimeBotAudioMessageIds.clear();
-        _realtimeBotPlaybackActive = false;
-        _recallingMessageIds.clear();
-      });
-      return;
-    }
-    final res = await _request(
-      'GET',
-      _meetingMessagesApiPath(limit: 100),
-      requireAuth: _requiresAuth,
-    );
-    final list = await _jsonOrThrow(res) as List<dynamic>;
-    final serverRows = list
-        .map((e) => _ChatMessage.fromJson(e as Map<String, dynamic>))
-        .toList();
-    final rows = _mergeServerRowsWithPendingDrafts(serverRows);
-    if (!mounted) return;
-    final previousLatest = _latestMessageId;
-    setState(() {
-      _messages
-        ..clear()
-        ..addAll(rows);
-      _latestMessageId = _latestMessageIdFromRows(_messages);
-      _playedRealtimeBotAudioMessageIds.removeWhere(
-        (messageId) => !_messages.any((message) => message.id == messageId),
-      );
-      _playingRealtimeBotAudioMessageIds.removeWhere(
-        (messageId) => !_messages.any((message) => message.id == messageId),
-      );
-      _realtimeBotPlaybackActive = _playingRealtimeBotAudioMessageIds.isNotEmpty;
-      _recallingMessageIds.removeWhere(
-        (messageId) => !_messages.any((message) => message.id == messageId),
-      );
-    });
-    _playRealtimeBotAudioForNewMessages(rows, previousLatest);
-    if (_latestMessageId > previousLatest) {
-      _scrollChatToBottom();
-    }
-  }
-
-  Future<void> _pollMessages() async {
-    if (!_connected || !_allowChat) return;
-    try {
-      final res = await _request(
-        'GET',
-        _meetingMessagesApiPath(limit: 100),
-        requireAuth: _requiresAuth,
-      );
-      final list = await _jsonOrThrow(res) as List<dynamic>;
-      final serverRows = list
-          .map((e) => _ChatMessage.fromJson(e as Map<String, dynamic>))
-          .toList();
-      final rows = _mergeServerRowsWithPendingDrafts(serverRows);
-      if (!mounted || _sameMessageSnapshot(rows)) return;
-      final previousLatest = _latestMessageId;
-      setState(() {
-        _messages
-          ..clear()
-          ..addAll(rows);
-        _latestMessageId = _latestMessageIdFromRows(_messages);
-        _playedRealtimeBotAudioMessageIds.removeWhere(
-          (messageId) => !_messages.any((message) => message.id == messageId),
-        );
-        _playingRealtimeBotAudioMessageIds.removeWhere(
-          (messageId) => !_messages.any((message) => message.id == messageId),
-        );
-        _realtimeBotPlaybackActive = _playingRealtimeBotAudioMessageIds.isNotEmpty;
-        _recallingMessageIds.removeWhere(
-          (messageId) => !_messages.any((message) => message.id == messageId),
-        );
-      });
-      _playRealtimeBotAudioForNewMessages(rows, previousLatest);
-      if (_latestMessageId > previousLatest) {
-        _scrollChatToBottom();
-      }
-    } catch (_) {}
   }
 
   bool _sameMessageSnapshot(List<_ChatMessage> rows) {
@@ -5964,6 +6251,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
         playbackDone.complete();
       }
     }
+
     try {
       var bytes = base64Decode(audioBase64);
       var mimeType = message.audioMimeType.trim().isEmpty
@@ -6016,18 +6304,6 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
       if (message.audioBase64.trim().isEmpty) continue;
       unawaited(_playRealtimeBotAudio(message));
     }
-  }
-
-  void _startChatPolling() {
-    _stopChatPolling();
-    _chatTimer = Timer.periodic(const Duration(seconds: 3), (_) {
-      unawaited(_pollMessages());
-    });
-  }
-
-  void _stopChatPolling() {
-    _chatTimer?.cancel();
-    _chatTimer = null;
   }
 
   void _scrollChatToBottom() {
@@ -6213,8 +6489,10 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
           });
           _stopChatPolling();
           _stopMemberPolling();
+          _stopWorkspacePolling();
           _stopWaitingRoomPolling();
           _stopRecordingStatusPolling();
+          await _stopWorkspaceRealtimeStt(immediate: true);
           _syncRealtimeBotAudioIngress();
         })
         ..on<lk.ParticipantEvent>((event) {
@@ -6292,6 +6570,9 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
         if (token.meetingRef.isNotEmpty) {
           _resolvedMeetingRef = token.meetingRef;
         }
+        if (token.meetingId > 0) {
+          _resolvedMeetingId = token.meetingId;
+        }
         _roomNumber = token.roomName;
         _status = '已加入会议';
         _waitingRoomEnabled = token.waitingRoomEnabled;
@@ -6326,12 +6607,14 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
         await _loadWaitingRoomEntriesForModerator(silent: true);
       }
       await _loadMessages();
+      await _loadWorkspace(silent: true);
       if (_allowChat) {
         _startChatPolling();
       } else {
         _stopChatPolling();
       }
       _startMemberPolling();
+      _startWorkspacePolling();
       if (_isModerator && _hasPrivateMeetingApiScope) {
         await _syncMeetingRecordingEgressStatus(silent: true);
       } else {
@@ -6391,6 +6674,8 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
   }
 
   Future<void> _disposeRoom() async {
+    _stopWorkspacePolling();
+    await _stopWorkspaceRealtimeStt(immediate: true);
     await _stopRealtimeBotAudioIngress();
     final room = _room;
     final listener = _roomListener;
@@ -6417,6 +6702,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     _stopRecordingStatusPolling();
     _stopChatPolling();
     _stopMemberPolling();
+    _stopWorkspacePolling();
     _stopWaitingRoomPolling();
     await _disposeRoom();
     if (!mounted) return;
@@ -6639,532 +6925,6 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
       _setStatus('已停止共享屏幕');
     } catch (e) {
       _setStatus('共享切换失败：${_friendlyError(e)}');
-    }
-  }
-
-  void _startRecordingStatusPolling() {
-    if (_recordingStatusTimer != null) return;
-    _recordingStatusTimer = Timer.periodic(const Duration(seconds: 3), (_) {
-      if (!_connected || !_isModerator || !_hasPrivateMeetingApiScope) return;
-      unawaited(_syncMeetingRecordingEgressStatus(silent: true));
-    });
-  }
-
-  void _stopRecordingStatusPolling() {
-    _recordingStatusTimer?.cancel();
-    _recordingStatusTimer = null;
-  }
-
-  void _applyMeetingRecordingEgressPayload(
-    Map<String, dynamic> payload, {
-    bool silent = true,
-  }) {
-    final active = _boolFromJson(payload['active'], false);
-    final startedAt = _dateTimeFromJson(payload['started_at']);
-    final egressId = (payload['egress_id'] ?? '').toString().trim();
-    final statusKey = (payload['status'] ?? '').toString().trim().toLowerCase();
-    final errorText = (payload['error'] ?? '').toString().trim();
-    final fileName = (payload['file_name'] ?? '').toString().trim();
-    final recording = payload['recording'];
-
-    if (mounted) {
-      setState(() {
-        _recordingActive = active;
-        _recordingStartedAt = startedAt;
-        _activeEgressId = active ? egressId : '';
-      });
-    } else {
-      _recordingActive = active;
-      _recordingStartedAt = startedAt;
-      _activeEgressId = active ? egressId : '';
-    }
-
-    if (active) {
-      _startRecordingStatusPolling();
-      return;
-    }
-    _stopRecordingStatusPolling();
-
-    if (silent) return;
-    if (statusKey == 'complete') {
-      var savedName = fileName;
-      if (savedName.isEmpty && recording is Map<String, dynamic>) {
-        savedName = (recording['file_name'] ?? '').toString().trim();
-      }
-      if (savedName.isEmpty) {
-        _setStatus('会议录制已完成并保存');
-      } else {
-        _setStatus('会议录制已保存：$savedName');
-      }
-      return;
-    }
-    if (errorText.isNotEmpty) {
-      _setStatus('会议录制失败：$errorText');
-      return;
-    }
-    if (statusKey == 'idle') {
-      _setStatus('当前没有进行中的会议录制');
-      return;
-    }
-    _setStatus('会议录制已停止');
-  }
-
-  Future<void> _syncMeetingRecordingEgressStatus({
-    bool silent = false,
-    int waitSeconds = 0,
-  }) async {
-    if (!_hasPrivateMeetingApiScope || !_isModerator) return;
-    final safeWait = waitSeconds.clamp(0, 30);
-    final path = safeWait > 0
-        ? '${_meetingRecordingEgressApiPath()}?wait_seconds=$safeWait'
-        : _meetingRecordingEgressApiPath();
-    try {
-      final res = await _request('GET', path);
-      final payload = await _jsonOrThrow(res);
-      if (payload is! Map<String, dynamic>) return;
-      _applyMeetingRecordingEgressPayload(payload, silent: silent);
-    } catch (e) {
-      if (!silent) {
-        _setStatus('获取录制状态失败：${_friendlyError(e)}');
-      }
-    }
-  }
-
-  String _recordingExtensionFromMime(String mimeType) {
-    final lower = mimeType.toLowerCase();
-    if (lower.contains('mp4')) return '.mp4';
-    return '.webm';
-  }
-
-  String _pickMeetingRecordingMimeType() {
-    return 'video/webm';
-  }
-
-  String _buildRecordingFileName(String mimeType) {
-    final now = DateTime.now();
-    String twoDigits(int value) => value.toString().padLeft(2, '0');
-    final stamp =
-        '${now.year}${twoDigits(now.month)}${twoDigits(now.day)}_${twoDigits(now.hour)}${twoDigits(now.minute)}${twoDigits(now.second)}';
-    return 'meeting_recording_$stamp${_recordingExtensionFromMime(mimeType)}';
-  }
-
-  void _disposeMeetingRecorderState({bool clearChunks = false}) {
-    _meetingRecordingDataSubscription?.cancel();
-    _meetingRecordingDataSubscription = null;
-    _meetingRecordingStopSubscription?.cancel();
-    _meetingRecordingStopSubscription = null;
-    _meetingRecorder = null;
-    _meetingRecordingStream = null;
-    if (clearChunks) {
-      _meetingRecordingChunks.clear();
-    }
-  }
-
-  Future<Uint8List> _blobToBytes(html.Blob blob) async {
-    throw UnsupportedError('Legacy browser recorder path is disabled.');
-  }
-
-  Future<http.Response> _uploadMeetingRecordingMultipart({
-    required Uint8List bytes,
-    required String fileName,
-    required int durationSeconds,
-    bool retry = true,
-  }) async {
-    throw UnsupportedError('Legacy browser recorder path is disabled.');
-  }
-
-  Future<html.MediaStream> _requestDisplayMediaStream() async {
-    final dynamic mediaDevices = html.window.navigator.mediaDevices;
-    if (mediaDevices == null) {
-      throw Exception('当前浏览器不支持屏幕捕获');
-    }
-    try {
-      final dynamic stream = await mediaDevices.getDisplayMedia(
-        <String, dynamic>{
-          // 只采集屏幕/标签页及其输出音频，不回退到摄像头和麦克风。
-          'video': <String, dynamic>{
-            'displaySurface': 'browser',
-            'cursor': 'always',
-            'frameRate': 30,
-          },
-          'audio': <String, dynamic>{
-            'echoCancellation': false,
-            'noiseSuppression': false,
-            'autoGainControl': false,
-            'suppressLocalAudioPlayback': false,
-          },
-          'preferCurrentTab': true,
-          'selfBrowserSurface': 'include',
-          'surfaceSwitching': 'include',
-        },
-      );
-      if (stream is html.MediaStream) {
-        final hasAudioTrack = stream.getAudioTracks().isNotEmpty;
-        if (!hasAudioTrack) {
-          for (final track in stream.getTracks()) {
-            try {
-              track.stop();
-            } catch (_) {}
-          }
-          throw Exception('未采集到浏览器输出音频。请在共享对话框选择“标签页/窗口”并勾选“共享音频”后重试');
-        }
-        return stream;
-      }
-      throw Exception('当前浏览器不支持会议录制');
-    } on NoSuchMethodError {
-      throw Exception('当前浏览器不支持会议录制');
-    } catch (e) {
-      throw Exception('无法开始录制：$e');
-    }
-  }
-
-  Future<void> _handleMeetingRecorderStopped() async {
-    final completer = _meetingRecordingFinalizeCompleter;
-    final startedAt = _recordingStartedAt;
-    final chunks = List<html.Blob>.from(_meetingRecordingChunks);
-    final recorderMime = (_meetingRecorder?.mimeType ?? '').trim();
-    final mimeType = recorderMime.isNotEmpty
-        ? recorderMime
-        : _pickMeetingRecordingMimeType();
-    try {
-      if (chunks.isEmpty) {
-        _setStatus('录制已停止，但没有可上传的视频数据');
-        return;
-      }
-      final blob = html.Blob(chunks, mimeType);
-      final bytes = await _blobToBytes(blob);
-      final duration = startedAt == null
-          ? 0
-          : DateTime.now()
-              .difference(startedAt)
-              .inSeconds
-              .clamp(0, 864000)
-              .toInt();
-      final fileName = _buildRecordingFileName(mimeType);
-      final response = await _uploadMeetingRecordingMultipart(
-        bytes: bytes,
-        fileName: fileName,
-        durationSeconds: duration,
-      );
-      final payload = await _jsonOrThrow(response) as Map<String, dynamic>;
-      final savedName = (payload['file_name'] ?? fileName).toString();
-      _setStatus('会议录制已保存：$savedName');
-    } catch (e) {
-      _setStatus('会议录制上传失败：${_friendlyError(e)}');
-    } finally {
-      _meetingRecordingChunks.clear();
-      _recordingStartedAt = null;
-      _disposeMeetingRecorderState();
-      if (mounted) {
-        setState(() {
-          _recordingUploading = false;
-          _recordingActive = false;
-        });
-      }
-      if (completer != null && !completer.isCompleted) {
-        completer.complete();
-      }
-      if (identical(_meetingRecordingFinalizeCompleter, completer)) {
-        _meetingRecordingFinalizeCompleter = null;
-      }
-    }
-  }
-
-  Future<void> _startMeetingRecording() async {
-    if (_recordingActive || _recordingUploading) return;
-    if (!_connected) {
-      _setStatus('请先加入会议后再录制');
-      return;
-    }
-    if (!_hasPrivateMeetingApiScope) {
-      _setStatus('当前入口无法发起录制，请从控制台进入会议后重试');
-      return;
-    }
-    if (!_isModerator) {
-      _setStatus('仅主持人和联席主持人可以录制会议');
-      return;
-    }
-    if (!_allowRecording) {
-      _setStatus('当前会议已禁用录制');
-      return;
-    }
-
-    if (mounted) {
-      setState(() {
-        _recordingUploading = true;
-      });
-    }
-    try {
-      final res = await _request(
-        'POST',
-        _meetingRecordingEgressStartApiPath(),
-        body: {'layout': 'grid'},
-      );
-      final payload = await _jsonOrThrow(res);
-      if (payload is! Map<String, dynamic>) {
-        throw Exception('Invalid recording response');
-      }
-      final active = _boolFromJson(payload['active'], false);
-      if (active) {
-        _applyMeetingRecordingEgressPayload(payload, silent: true);
-        _setStatus('会议录制已开始（LiveKit 云端录制）');
-      } else {
-        _applyMeetingRecordingEgressPayload(payload, silent: false);
-      }
-    } catch (e) {
-      _setStatus('启动会议录制失败：${_friendlyError(e)}');
-    } finally {
-      if (mounted) {
-        setState(() {
-          _recordingUploading = false;
-        });
-      }
-    }
-    return;
-
-    if (_recordingActive || _recordingUploading) return;
-    if (!_connected) {
-      _setStatus('请先加入会议后再录制');
-      return;
-    }
-    if (!_hasPrivateMeetingApiScope) {
-      _setStatus('当前入口无法上传录制文件，请从控制台进入会议后再试');
-      return;
-    }
-    if (!_isModerator) {
-      _setStatus('仅主持人和联席主持人可以录制会议');
-      return;
-    }
-    if (!_allowRecording) {
-      _setStatus('当前会议已禁用录制');
-      return;
-    }
-
-    try {
-      await _ensureJwt();
-      final stream = await _requestDisplayMediaStream();
-      final mimeType = _pickMeetingRecordingMimeType();
-      html.MediaRecorder recorder;
-      try {
-        recorder = html.MediaRecorder(
-          stream,
-          <String, dynamic>{'mimeType': mimeType},
-        );
-      } catch (_) {
-        recorder = html.MediaRecorder(stream);
-      }
-
-      _meetingRecordingChunks.clear();
-      _meetingRecordingStream = stream;
-      _meetingRecorder = recorder;
-      _meetingRecordingDataSubscription?.cancel();
-      _meetingRecordingDataSubscription =
-          _mediaRecorderDataAvailableEvent.forTarget(recorder).listen((event) {
-        final data = event.data;
-        if (data != null && data.size > 0) {
-          _meetingRecordingChunks.add(data);
-        }
-      });
-      _meetingRecordingStopSubscription?.cancel();
-      _meetingRecordingStopSubscription =
-          _mediaRecorderStopEvent.forTarget(recorder).listen((_) {
-        unawaited(_handleMeetingRecorderStopped());
-      });
-      for (final track in stream.getTracks()) {
-        track.onEnded.first.then((_) {
-          if (_recordingActive) {
-            unawaited(_stopMeetingRecording());
-          }
-        });
-      }
-      recorder.start(1000);
-      if (!mounted) return;
-      setState(() {
-        _recordingActive = true;
-        _recordingUploading = false;
-        _recordingStartedAt = DateTime.now();
-      });
-      _setStatus('会议录制已开始（屏幕画面 + 浏览器音频）');
-    } catch (e) {
-      _disposeMeetingRecorderState(clearChunks: true);
-      _setStatus('启动会议录制失败：${_friendlyError(e)}');
-    }
-  }
-
-  Future<void> _stopMeetingRecording() async {
-    if (_recordingUploading) return;
-    if (!_hasPrivateMeetingApiScope || !_isModerator) return;
-    if (!_recordingActive && _activeEgressId.trim().isEmpty) {
-      await _syncMeetingRecordingEgressStatus(silent: true);
-      if (!_recordingActive && _activeEgressId.trim().isEmpty) {
-        _setStatus('当前没有进行中的会议录制');
-        return;
-      }
-    }
-
-    if (mounted) {
-      setState(() {
-        _recordingUploading = true;
-      });
-    }
-    try {
-      final res = await _request(
-        'POST',
-        _meetingRecordingEgressStopApiPath(),
-        body: <String, dynamic>{},
-      );
-      final payload = await _jsonOrThrow(res);
-      if (payload is! Map<String, dynamic>) {
-        throw Exception('Invalid recording response');
-      }
-      final active = _boolFromJson(payload['active'], false);
-      if (active) {
-        _applyMeetingRecordingEgressPayload(payload, silent: true);
-        _setStatus('录制停止请求已提交，正在收尾...');
-        await _syncMeetingRecordingEgressStatus(silent: false, waitSeconds: 20);
-      } else {
-        _applyMeetingRecordingEgressPayload(payload, silent: false);
-      }
-    } catch (e) {
-      _setStatus('停止会议录制失败：${_friendlyError(e)}');
-    } finally {
-      if (mounted) {
-        setState(() {
-          _recordingUploading = false;
-        });
-      }
-    }
-    return;
-
-    if (_recordingUploading) return;
-    if (!_recordingActive) return;
-    final recorder = _meetingRecorder;
-    if (recorder == null) {
-      if (mounted) {
-        setState(() {
-          _recordingActive = false;
-          _recordingUploading = false;
-        });
-      }
-      return;
-    }
-
-    final finalizeCompleter = Completer<void>();
-    _meetingRecordingFinalizeCompleter = finalizeCompleter;
-    if (mounted) {
-      setState(() {
-        _recordingActive = false;
-        _recordingUploading = true;
-      });
-    }
-    try {
-      if (recorder.state != 'inactive') {
-        recorder.stop();
-      } else {
-        unawaited(_handleMeetingRecorderStopped());
-      }
-      await finalizeCompleter.future.timeout(const Duration(seconds: 60));
-    } catch (_) {
-      if (mounted) {
-        setState(() {
-          _recordingUploading = false;
-        });
-      }
-    }
-  }
-
-  Future<void> _sendChat() async {
-    final localProfile = _localMemberProfile;
-    final canChat = _isModerator || (localProfile?.allowChat ?? _allowChat);
-    if (!canChat) {
-      _setStatus('当前会议已禁用聊天');
-      return;
-    }
-    if (_isShareEntry && _accessToken.isEmpty) {
-      try {
-        await _ensureJwt(force: true);
-      } catch (_) {
-        // Keep guest fallback when session is not available.
-      }
-    }
-    if (_isShareEntry && _localUserId == null && _accessToken.isEmpty) {
-      _setStatus('访客链接模式下暂不支持发送聊天消息');
-      return;
-    }
-    final content = _chatController.text.trim();
-    if (content.isEmpty) return;
-    final draftId = _localDraftMessageSequence;
-    _localDraftMessageSequence -= 1;
-    final localIdentity = _room?.localParticipant?.identity ?? '';
-    final draftDisplayName = _displayNameForIdentity(
-      localIdentity,
-      fallback: _meetingDisplayName.trim().isEmpty
-          ? (_defaultDisplayName.trim().isEmpty ? 'me' : _defaultDisplayName.trim())
-          : _meetingDisplayName.trim(),
-    );
-    final draftMessage = _ChatMessage(
-      id: draftId,
-      senderUserId: _localUserId ?? 0,
-      senderUsername: localIdentity.isEmpty ? 'local' : localIdentity,
-      senderDisplayName: draftDisplayName.trim().isEmpty ? 'me' : draftDisplayName,
-      isRealtimeBot: false,
-      audioMimeType: '',
-      audioBase64: '',
-      content: content,
-      createdAt: DateTime.now(),
-    );
-    _pendingLocalDraftMessages[draftId] = draftMessage;
-    if (mounted) {
-      setState(() {
-        _chatController.clear();
-        _messages.add(draftMessage);
-      });
-      _scrollChatToBottom();
-    }
-    try {
-      final path = _isShareEntry
-          ? '${_publicMeetingApiBase()}/messages'
-          : '${_privateMeetingApiBase()}/messages';
-      final res = await _request(
-        'POST',
-        path,
-        body: {'content': content},
-        requireAuth: _isShareEntry,
-      );
-      final data = await _jsonOrThrow(res) as Map<String, dynamic>;
-      final msg = _ChatMessage.fromJson(data);
-      _pendingLocalDraftMessages.remove(draftId);
-      if (!mounted) return;
-      setState(() {
-        final draftIdx = _messages.indexWhere((m) => m.id == draftId);
-        final exists = _messages.any((m) => m.id == msg.id);
-        if (draftIdx >= 0) {
-          _messages[draftIdx] = msg;
-        } else if (!exists) {
-          _messages.add(msg);
-        }
-        if (msg.id > _latestMessageId) {
-          _latestMessageId = msg.id;
-        }
-      });
-      if (_isRealtimeBotMessage(msg)) {
-        unawaited(_playRealtimeBotAudio(msg));
-      }
-      _scrollChatToBottom();
-    } catch (e) {
-      _pendingLocalDraftMessages.remove(draftId);
-      if (mounted) {
-        setState(() {
-          _messages.removeWhere((m) => m.id == draftId);
-          if (_chatController.text.trim().isEmpty) {
-            _chatController.text = content;
-            _chatController.selection = TextSelection.collapsed(
-              offset: _chatController.text.length,
-            );
-          }
-        });
-      }
-      _setStatus('发送消息失败：${_friendlyError(e)}');
     }
   }
 
@@ -7419,6 +7179,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
           avatarUrl: _avatarUrlForIdentity(local.identity),
           isLocal: true,
           isSpeaking: local.isSpeaking,
+          audioLevel: _normalizedAudioLevel(local.audioLevel),
           micEnabled: local.isMicrophoneEnabled(),
           cameraEnabled: local.isCameraEnabled(),
           videoTrack: localVideo.track,
@@ -7441,6 +7202,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
           avatarUrl: _avatarUrlForIdentity(p.identity),
           isLocal: false,
           isSpeaking: p.isSpeaking,
+          audioLevel: _normalizedAudioLevel(p.audioLevel),
           micEnabled: p.isMicrophoneEnabled(),
           cameraEnabled: p.isCameraEnabled(),
           videoTrack: remoteVideo.track,
@@ -7515,6 +7277,8 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
           avatarUrl: _avatarUrlForIdentity(local.identity),
           role: _roleLabel(roleKey),
           roleKey: roleKey,
+          isSpeaking: local.isSpeaking,
+          audioLevel: _normalizedAudioLevel(local.audioLevel),
           micEnabled: local.isMicrophoneEnabled(),
           cameraEnabled: local.isCameraEnabled(),
           mutedByHost: profile?.mutedByHost ?? !local.isMicrophoneEnabled(),
@@ -7596,6 +7360,8 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
           avatarUrl: _avatarUrlForIdentity(p.identity),
           role: _roleLabel(roleKey),
           roleKey: roleKey,
+          isSpeaking: p.isSpeaking,
+          audioLevel: _normalizedAudioLevel(p.audioLevel),
           micEnabled: p.isMicrophoneEnabled(),
           cameraEnabled: p.isCameraEnabled(),
           mutedByHost: profile?.mutedByHost ?? !p.isMicrophoneEnabled(),
@@ -7635,6 +7401,8 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
           avatarUrl: '',
           role: 'AI成员',
           roleKey: 'ai',
+          isSpeaking: false,
+          audioLevel: 0,
           micEnabled: !_realtimeBotMuted,
           cameraEnabled: false,
           mutedByHost: _realtimeBotMuted,
@@ -8149,7 +7917,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
           color: dark ? const Color(0x55D1E0FF) : const Color(0xFFCCDBFF),
         ),
       ),
-      child: Text(
+      child: MeetingMetaText(
         '$label: $value',
         style: TextStyle(
           color: dark ? const Color(0xFFD1E0FF) : const Color(0xFF175CD3),
@@ -8191,7 +7959,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                 color: dark ? const Color(0xFFD1E0FF) : const Color(0xFF175CD3),
               ),
               const SizedBox(width: 6),
-              Text(
+              MeetingTitleText(
                 'AI Debug',
                 style: TextStyle(
                   color:
@@ -8201,7 +7969,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                 ),
               ),
               const Spacer(),
-              Text(
+              MeetingMetaText(
                 _realtimeBotDebugLastEvent,
                 style: TextStyle(
                   color:
@@ -8369,7 +8137,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
             ),
           ),
           const SizedBox(height: 6),
-          Text(
+          MeetingDebugText(
             'preview: ${_clipDebugText(_realtimeBotDebugLastPreview)}',
             style: TextStyle(
               color: dark ? const Color(0xFFD1E0FF) : const Color(0xFF175CD3),
@@ -8377,7 +8145,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
             ),
           ),
           const SizedBox(height: 4),
-          Text(
+          MeetingDebugText(
             'last_process: ${_formatDebugTime(_realtimeBotDebugLastProcessAt)}',
             style: TextStyle(
               color: dark ? const Color(0xFFD1E0FF) : const Color(0xFF175CD3),
@@ -8385,7 +8153,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
             ),
           ),
           const SizedBox(height: 4),
-          Text(
+          MeetingDebugText(
             'blocker: ${_clipDebugText(blocker)}',
             style: TextStyle(
               color: dark ? const Color(0xFFD1E0FF) : const Color(0xFF175CD3),
@@ -8393,7 +8161,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
             ),
           ),
           const SizedBox(height: 4),
-          Text(
+          MeetingErrorText(
             'error: ${_clipDebugText(_realtimeBotDebugLastError)}',
             style: TextStyle(
               color: dark ? const Color(0xFFFDA29B) : const Color(0xFFB42318),
@@ -8407,91 +8175,128 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
 
   Widget _buildMobileMeetingScaffold() {
     return Scaffold(
-      body: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            colors: [Color(0xFFF5F8FF), Color(0xFFEEF4FF)],
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
+      body: MeetingSelectableRegion(
+        child: Container(
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              colors: [Color(0xFFF5F8FF), Color(0xFFEEF4FF)],
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+            ),
           ),
-        ),
-        child: SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(10, 10, 10, 8),
-            child: Column(
-              children: [
-                _buildMobileTopBar(),
-                const SizedBox(height: 8),
-                _buildMeetingMetricsStrip(),
-                const SizedBox(height: 8),
-                Container(
-                  width: double.infinity,
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFEFF4FF),
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: const Color(0xFFCCDBFF)),
-                  ),
-                  child: Text(
-                    _status,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style:
-                        const TextStyle(color: Color(0xFF175CD3), fontSize: 12),
-                  ),
-                ),
-                if (_showRealtimeBotDebugPanel) ...[
+          child: SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(10, 10, 10, 8),
+              child: Column(
+                children: [
+                  _buildMobileTopBar(),
                   const SizedBox(height: 8),
-                  _buildRealtimeBotDebugPanel(),
-                ],
-                if ((_permissionWarning ?? '').isNotEmpty) ...[
+                  _buildMeetingMetricsStrip(),
                   const SizedBox(height: 8),
-                  _buildPermissionBanner(),
-                ],
-                const SizedBox(height: 8),
-                Expanded(
-                  child: DefaultTabController(
-                    length: 3,
-                    child: Column(
-                      children: [
-                        Container(
-                          decoration: BoxDecoration(
-                            color: Colors.white,
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(color: const Color(0xFFDDE6FF)),
-                          ),
-                          child: const TabBar(
-                            tabs: [
-                              Tab(
-                                  icon: Icon(Icons.grid_view_rounded),
-                                  text: '舞台'),
-                              Tab(
-                                  icon: Icon(Icons.groups_outlined),
-                                  text: '成员'),
-                              Tab(
-                                  icon: Icon(Icons.chat_bubble_outline),
-                                  text: '聊天'),
-                            ],
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Expanded(
-                          child: TabBarView(
-                            children: [
-                              _buildStageCard(radius: 14),
-                              _buildParticipantPanel(),
-                              _buildChatPanel(),
-                            ],
-                          ),
-                        ),
-                      ],
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 8,
+                    ),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFEFF4FF),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: const Color(0xFFCCDBFF)),
+                    ),
+                    child: MeetingStatusText(
+                      _status,
+                      maxLines: 2,
+                      style: const TextStyle(
+                        color: Color(0xFF175CD3),
+                        fontSize: 12,
+                      ),
                     ),
                   ),
-                ),
-                const SizedBox(height: 8),
-                _buildMobileDock(),
-              ],
+                  if (_showRealtimeBotDebugPanel) ...[
+                    const SizedBox(height: 8),
+                    _buildRealtimeBotDebugPanel(),
+                  ],
+                  if ((_permissionWarning ?? '').isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    _buildPermissionBanner(),
+                  ],
+                  const SizedBox(height: 8),
+                  Expanded(
+                    child: DefaultTabController(
+                      length: 4,
+                      child: Column(
+                        children: [
+                          Container(
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                color: const Color(0xFFDDE6FF),
+                              ),
+                            ),
+                            child: const TabBar(
+                              tabs: [
+                                Tab(
+                                  icon: Icon(Icons.grid_view_rounded),
+                                  text: '舞台',
+                                ),
+                                Tab(
+                                  icon: Icon(Icons.groups_outlined),
+                                  text: '成员',
+                                ),
+                                Tab(
+                                  icon: Icon(Icons.chat_bubble_outline),
+                                  text: '聊天',
+                                ),
+                                Tab(
+                                  icon: Icon(Icons.hub_outlined),
+                                  text: '工作区',
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Expanded(
+                            child: TabBarView(
+                              children: [
+                                _buildStageCard(radius: 14),
+                                _buildParticipantPanel(),
+                                _buildChatPanel(
+                                  headerActions: [
+                                    MeetingPanelHeaderActionBar(
+                                      panelLabel: '聊天',
+                                      isFullscreen: false,
+                                      onToggleFullscreen: () =>
+                                          _openCommunicationPanelFullscreen(
+                                        forChat: true,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                _buildWorkspacePanel(
+                                  headerActions: [
+                                    MeetingPanelHeaderActionBar(
+                                      panelLabel: '工作区',
+                                      isFullscreen: false,
+                                      onToggleFullscreen: () =>
+                                          _openCommunicationPanelFullscreen(
+                                        forChat: false,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  _buildMobileDock(),
+                ],
+              ),
             ),
           ),
         ),
@@ -8601,10 +8406,9 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
+                    MeetingTitleText(
                       _meetingTitle,
                       maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
                         color: Colors.white,
                         fontWeight: FontWeight.w700,
@@ -8617,7 +8421,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                       runSpacing: 2,
                       crossAxisAlignment: WrapCrossAlignment.center,
                       children: [
-                        Text(
+                        MeetingMetaText(
                           '会议号：$_roomNumber',
                           style: const TextStyle(
                             color: Color(0xFFD1E0FF),
@@ -8626,7 +8430,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                         ),
                         GestureDetector(
                           onDoubleTap: _openMeetingDisplayNameDialog,
-                          child: Text(
+                          child: MeetingMetaText(
                             '显示名：$displayName',
                             style: const TextStyle(
                               color: Color(0xFFD1E0FF),
@@ -8754,10 +8558,9 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                 ),
                 const SizedBox(width: 6),
                 Expanded(
-                  child: Text(
+                  child: MeetingStatusText(
                     _status,
                     maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
                       color: Color(0xFFD1E0FF),
                       fontSize: 12,
@@ -8879,8 +8682,8 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
         ? 320.0
         : (constraints.maxWidth >= 1320 ? 286.0 : 250.0);
     final chatWidth = constraints.maxWidth >= 1560
-        ? 360.0
-        : (constraints.maxWidth >= 1320 ? 326.0 : 286.0);
+        ? 392.0
+        : (constraints.maxWidth >= 1320 ? 350.0 : 310.0);
     return Row(
       children: [
         _buildDesktopCollapsiblePanel(
@@ -8905,16 +8708,16 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
           collapsed: _desktopChatCollapsed,
           left: false,
           expandedWidth: chatWidth,
-          collapsedLabel: '聊天',
-          collapsedIcon: Icons.chat_bubble_outline,
-          collapseTooltip: '折叠会议聊天',
-          expandTooltip: '展开会议聊天',
+          collapsedLabel: '协作',
+          collapsedIcon: Icons.hub_outlined,
+          collapseTooltip: '折叠协作面板',
+          expandTooltip: '展开协作面板',
           onToggle: () {
             setState(() {
               _desktopChatCollapsed = !_desktopChatCollapsed;
             });
           },
-          child: _buildChatPanel(),
+          child: _buildCommunicationPanel(),
         ),
       ],
     );
@@ -9045,6 +8848,14 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                       color: tile.micEnabled
                           ? const Color(0xFF86EFAC)
                           : const Color(0xFFFCA5A5),
+                    ),
+                    const SizedBox(width: 6),
+                    ParticipantAudioLevelBar(
+                      level: tile.audioLevel,
+                      isActive: tile.micEnabled &&
+                          (tile.isSpeaking || tile.audioLevel > 0.02),
+                      width: 40,
+                      height: 4,
                     ),
                     const SizedBox(width: 4),
                     Icon(
@@ -10124,378 +9935,6 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     }
   }
 
-  Widget _buildParticipantExportButton() {
-    return Tooltip(
-      message: '导出当前在会成员（已注册成员与访客）',
-      child: TextButton.icon(
-        onPressed: _exportParticipantRosterCsv,
-        style: TextButton.styleFrom(
-          visualDensity: VisualDensity.compact,
-          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-          foregroundColor: const Color(0xFF175CD3),
-          backgroundColor: const Color(0xFFEAF1FF),
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(999),
-            side: const BorderSide(color: Color(0xFFCFE0FF)),
-          ),
-        ),
-        icon: const Icon(Icons.download_outlined, size: 15),
-        label: const Text(
-          '导出名单',
-          style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildParticipantPanel() {
-    final rows = _collectParticipantRows();
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFFDDE6FF)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            '参会成员',
-            style: TextStyle(
-                color: Color(0xFF101828), fontWeight: FontWeight.w700),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            '${rows.length} 人在线',
-            style: const TextStyle(color: Color(0xFF475467), fontSize: 12.5),
-          ),
-          const SizedBox(height: 2),
-          const Text(
-            '双击成员可放大对应画面',
-            style: TextStyle(color: Color(0xFF667085), fontSize: 11.5),
-          ),
-          const SizedBox(height: 8),
-          if (_canUseModeratorControls) ...[
-            Align(
-              alignment: Alignment.centerRight,
-              child: TextButton.icon(
-                onPressed: _exportParticipantRosterCsv,
-                style: TextButton.styleFrom(
-                  visualDensity: VisualDensity.compact,
-                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  foregroundColor: const Color(0xFF175CD3),
-                  backgroundColor: const Color(0xFFEAF1FF),
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(999),
-                    side: const BorderSide(color: Color(0xFFCFE0FF)),
-                  ),
-                ),
-                icon: const Icon(Icons.download_outlined, size: 15),
-                label: const Text('导出入会名单'),
-              ),
-            ),
-            const SizedBox(height: 8),
-          ],
-          if (_isModerator) ...[
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-              decoration: BoxDecoration(
-                color: _waitingRoomEntries.isEmpty
-                    ? const Color(0xFFF5F8FF)
-                    : const Color(0xFFFFF4E8),
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(
-                  color: _waitingRoomEntries.isEmpty
-                      ? const Color(0xFFDDE6FF)
-                      : const Color(0xFFFEC84B),
-                ),
-              ),
-              child: Row(
-                children: [
-                  Icon(
-                    _waitingRoomEntries.isEmpty
-                        ? Icons.meeting_room_outlined
-                        : Icons.notifications_active,
-                    size: 16,
-                    color: _waitingRoomEntries.isEmpty
-                        ? const Color(0xFF175CD3)
-                        : const Color(0xFFB54708),
-                  ),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text(
-                      _waitingRoomEntries.isEmpty
-                          ? '等候室暂无待审核成员'
-                          : '等候室有 ${_waitingRoomEntries.length} 人等待审核',
-                      style: const TextStyle(
-                        color: Color(0xFF475467),
-                        fontSize: 12.5,
-                      ),
-                    ),
-                  ),
-                  if (_waitingRoomEntries.isNotEmpty)
-                    TextButton(
-                      onPressed: _openModeratorControlDialog,
-                      child: const Text('立即处理'),
-                    ),
-                ],
-              ),
-            ),
-            if (_waitingRoomEntries.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              SizedBox(
-                height: _waitingRoomEntries.length > 2 ? 104 : 52,
-                child: ListView.builder(
-                  itemCount: _waitingRoomEntries.length,
-                  itemBuilder: (_, index) {
-                    final entry = _waitingRoomEntries[index];
-                    return Container(
-                      margin: const EdgeInsets.only(bottom: 6),
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 6,
-                      ),
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: const Color(0xFFDDE6FF)),
-                      ),
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              entry.displayName,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(fontSize: 12.5),
-                            ),
-                          ),
-                          TextButton(
-                            onPressed: () => unawaited(
-                              _quickReviewWaitingEntry(entry, 'rejected'),
-                            ),
-                            child: const Text('拒绝'),
-                          ),
-                          FilledButton(
-                            onPressed: () => unawaited(
-                              _quickReviewWaitingEntry(entry, 'approved'),
-                            ),
-                            child: const Text('通过'),
-                          ),
-                        ],
-                      ),
-                    );
-                  },
-                ),
-              ),
-              const SizedBox(height: 8),
-            ],
-          ],
-          Expanded(
-            child: rows.isEmpty
-                ? Center(
-                    child: Text(
-                      _waitingForAdmission ? '等候室等待中，主持人审核后自动入会' : '尚未连接',
-                      style: TextStyle(
-                        color: _waitingForAdmission
-                            ? const Color(0xFFB54708)
-                            : const Color(0xFF64748B),
-                      ),
-                    ),
-                  )
-                : ListView.separated(
-                    itemCount: rows.length,
-                    separatorBuilder: (_, __) =>
-                        const Divider(color: Color(0xFFDDE6FF), height: 12),
-                    itemBuilder: (_, i) {
-                      final row = rows[i];
-                      final highlighted = row.identity == _spotlightIdentity;
-                      final localIdentity = _room?.localParticipant?.identity;
-                      final isSelf = localIdentity != null &&
-                          localIdentity == row.identity;
-                      final menuItems =
-                          _participantMenuItemsRefined(row, isSelf);
-                      final pendingActionChips = <Widget>[];
-                      if (_isModerator && !isSelf && !row.isRealtimeBot) {
-                        if (row.micRequestPending && !row.allowSelfUnmute) {
-                          pendingActionChips.add(
-                            _buildPendingRequestChip(
-                              label: '开麦申请',
-                              onApprove: () => unawaited(
-                                _handleParticipantMenuAction(
-                                  row,
-                                  'mic_permission_allow',
-                                  isSelf,
-                                ),
-                              ),
-                            ),
-                          );
-                        }
-                        if (row.videoRequestPending && !row.allowMemberVideo) {
-                          pendingActionChips.add(
-                            _buildPendingRequestChip(
-                              label: '视频申请',
-                              onApprove: () => unawaited(
-                                _handleParticipantMenuAction(
-                                  row,
-                                  'video_permission_allow',
-                                  isSelf,
-                                ),
-                              ),
-                            ),
-                          );
-                        }
-                        if (row.screenShareRequestPending &&
-                            !row.allowScreenShare) {
-                          pendingActionChips.add(
-                            _buildPendingRequestChip(
-                              label: '共享申请',
-                              onApprove: () => unawaited(
-                                _handleParticipantMenuAction(
-                                  row,
-                                  'share_permission_allow',
-                                  isSelf,
-                                ),
-                              ),
-                            ),
-                          );
-                        }
-                      }
-                      return GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onDoubleTap: row.isRealtimeBot
-                            ? null
-                            : () => _focusParticipantTile(
-                                  row.identity,
-                                  allowToggle: false,
-                                ),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(vertical: 4),
-                          decoration: BoxDecoration(
-                            color: highlighted
-                                ? const Color(0xFFEFF4FF)
-                                : Colors.transparent,
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: Row(
-                            children: [
-                              _buildParticipantAvatar(
-                                displayName: row.displayName,
-                                avatarUrl: row.avatarUrl,
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Column(
-                                  mainAxisSize: MainAxisSize.min,
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      row.displayName,
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(
-                                          color: Color(0xFF101828),
-                                          fontSize: 13),
-                                    ),
-                                    if (pendingActionChips.isNotEmpty) ...[
-                                      const SizedBox(height: 3),
-                                      Wrap(
-                                        spacing: 4,
-                                        runSpacing: 3,
-                                        children: pendingActionChips,
-                                      ),
-                                    ],
-                                  ],
-                                ),
-                              ),
-                              Text(
-                                row.role,
-                                style: const TextStyle(
-                                    color: Color(0xFF93C5FD), fontSize: 11.5),
-                              ),
-                              if (menuItems.isNotEmpty)
-                                PopupMenuButton<String>(
-                                  tooltip: '成员菜单',
-                                  color: const Color(0xFFFCFDFF),
-                                  elevation: 10,
-                                  position: PopupMenuPosition.under,
-                                  offset: const Offset(-10, 8),
-                                  constraints: const BoxConstraints(
-                                    minWidth: 240,
-                                    maxWidth: 288,
-                                  ),
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(14),
-                                    side: const BorderSide(
-                                      color: Color(0xFFD6E4FF),
-                                    ),
-                                  ),
-                                  padding: EdgeInsets.zero,
-                                  icon: Container(
-                                    padding: const EdgeInsets.all(4),
-                                    decoration: BoxDecoration(
-                                      color: const Color(0xFFEAF1FF),
-                                      borderRadius: BorderRadius.circular(10),
-                                    ),
-                                    child: const Icon(
-                                      Icons.more_horiz,
-                                      size: 17,
-                                      color: Color(0xFF175CD3),
-                                    ),
-                                  ),
-                                  onSelected: (value) {
-                                    unawaited(
-                                      _handleParticipantMenuAction(
-                                        row,
-                                        value,
-                                        isSelf,
-                                      ),
-                                    );
-                                  },
-                                  itemBuilder: (context) => menuItems,
-                                ),
-                              const SizedBox(width: 8),
-                              Icon(
-                                row.micEnabled ? Icons.mic : Icons.mic_off,
-                                size: 13,
-                                color: row.micEnabled
-                                    ? const Color(0xFF86EFAC)
-                                    : const Color(0xFFFCA5A5),
-                              ),
-                              const SizedBox(width: 6),
-                              Icon(
-                                row.cameraEnabled
-                                    ? Icons.videocam
-                                    : Icons.videocam_off,
-                                size: 13,
-                                color: row.cameraEnabled
-                                    ? const Color(0xFF86EFAC)
-                                    : const Color(0xFFFCA5A5),
-                              ),
-                              if (row.isScreenSharing) ...[
-                                const SizedBox(width: 6),
-                                const Icon(
-                                  Icons.screen_share,
-                                  size: 13,
-                                  color: Color(0xFFF59E0B),
-                                ),
-                              ],
-                            ],
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-          ),
-        ],
-      ),
-    );
-  }
-
   Future<void> _copyChatMessage(_ChatMessage message) async {
     final text = message.content.trim();
     if (text.isEmpty) {
@@ -10575,510 +10014,6 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     );
   }
 
-  List<PopupMenuEntry<String>> _chatMessageMenuItems({
-    required bool canRecall,
-    required bool isRecalling,
-  }) {
-    final items = <PopupMenuEntry<String>>[
-      _chatMessageMenuActionItemRefined(
-        value: 'copy',
-        title: '复制消息',
-        subtitle: '复制该条聊天内容',
-        icon: Icons.content_copy_outlined,
-      ),
-    ];
-    if (canRecall || isRecalling) {
-      items.add(
-        _chatMessageMenuActionItemRefined(
-          value: 'recall',
-          title: isRecalling ? '撤回中...' : '撤回消息',
-          subtitle: '从会议聊天中撤回该条消息',
-          icon: Icons.undo_outlined,
-          enabled: !isRecalling,
-          danger: true,
-        ),
-      );
-    }
-    return items;
-  }
-
-  Widget _buildChatMessageBubble(_ChatMessage message) {
-    final isMine = _isMyMessage(message);
-    final senderName = _displayNameForMessage(message);
-    final canRecall = _canRecallMessage(message);
-    final isRecalling = _recallingMessageIds.contains(message.id);
-    final bubbleColor = isMine ? const Color(0xFF95EC69) : Colors.white;
-    final borderColor =
-        isMine ? const Color(0xFF7BD453) : const Color(0xFFDDE6FF);
-    final timeLabel = _messageTimeLabel(message.createdAt);
-    final nameColor =
-        isMine ? const Color(0xFF175CD3) : const Color(0xFF667085);
-    final avatarBg = isMine ? const Color(0xFFCFF8B1) : const Color(0xFFE8EEFF);
-    final avatarFg = isMine ? const Color(0xFF175CD3) : const Color(0xFF344054);
-
-    Widget buildAvatar() {
-      return CircleAvatar(
-        radius: 14,
-        backgroundColor: avatarBg,
-        foregroundColor: avatarFg,
-        child: Text(
-          _initialForName(senderName),
-          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
-        ),
-      );
-    }
-
-    Widget buildMessageMenu() {
-      return PopupMenuButton<String>(
-        tooltip: '消息菜单',
-        color: const Color(0xFFFCFDFF),
-        elevation: 10,
-        position: PopupMenuPosition.under,
-        offset: const Offset(-10, 8),
-        constraints: const BoxConstraints(minWidth: 220, maxWidth: 280),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(14),
-          side: const BorderSide(color: Color(0xFFD6E4FF)),
-        ),
-        padding: EdgeInsets.zero,
-        icon: Container(
-          padding: const EdgeInsets.all(4),
-          decoration: BoxDecoration(
-            color: const Color(0xFFEAF1FF),
-            borderRadius: BorderRadius.circular(10),
-          ),
-          child: Icon(
-            Icons.more_horiz,
-            size: 17,
-            color:
-                isRecalling ? const Color(0xFF98A2B3) : const Color(0xFF175CD3),
-          ),
-        ),
-        onSelected: (value) {
-          if (value == 'copy') {
-            unawaited(_copyChatMessage(message));
-            return;
-          }
-          if (value == 'recall') {
-            unawaited(_confirmRecallMessage(message));
-          }
-        },
-        itemBuilder: (context) => _chatMessageMenuItems(
-          canRecall: canRecall,
-          isRecalling: isRecalling,
-        ),
-      );
-    }
-
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.end,
-        mainAxisAlignment:
-            isMine ? MainAxisAlignment.end : MainAxisAlignment.start,
-        children: [
-          if (!isMine) ...[
-            buildAvatar(),
-            const SizedBox(width: 8),
-          ],
-          Flexible(
-            child: Column(
-              crossAxisAlignment:
-                  isMine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
-              children: [
-                if (!isMine)
-                  Padding(
-                    padding: const EdgeInsets.only(left: 2, bottom: 3),
-                    child: Text(
-                      senderName,
-                      style: TextStyle(
-                        color: nameColor,
-                        fontSize: 11.5,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    if (isMine) buildMessageMenu(),
-                    ConstrainedBox(
-                      constraints: const BoxConstraints(maxWidth: 240),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 12,
-                          vertical: 9,
-                        ),
-                        decoration: BoxDecoration(
-                          color: bubbleColor,
-                          borderRadius: BorderRadius.only(
-                            topLeft: const Radius.circular(14),
-                            topRight: const Radius.circular(14),
-                            bottomLeft: Radius.circular(isMine ? 14 : 4),
-                            bottomRight: Radius.circular(isMine ? 4 : 14),
-                          ),
-                          border: Border.all(color: borderColor),
-                          boxShadow: const [
-                            BoxShadow(
-                              color: Color(0x12000000),
-                              blurRadius: 8,
-                              offset: Offset(0, 3),
-                            ),
-                          ],
-                        ),
-                        child: Text(
-                          message.content,
-                          style: const TextStyle(
-                            color: Color(0xFF101828),
-                            fontSize: 13.5,
-                            height: 1.38,
-                          ),
-                        ),
-                      ),
-                    ),
-                    if (!isMine) buildMessageMenu(),
-                  ],
-                ),
-                if (timeLabel.isNotEmpty)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 3),
-                    child: Text(
-                      timeLabel,
-                      style: const TextStyle(
-                        color: Color(0xFF98A2B3),
-                        fontSize: 10.5,
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-          if (isMine) ...[
-            const SizedBox(width: 8),
-            buildAvatar(),
-          ],
-        ],
-      ),
-    );
-  }
-
-  // ignore: unused_element
-  Widget _buildChatPanelLegacy() {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFFDDE6FF)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            '会议聊天',
-            style: TextStyle(
-                color: Color(0xFF101828), fontWeight: FontWeight.w700),
-          ),
-          if (!_allowChat) ...[
-            const SizedBox(height: 4),
-            const Text(
-              '当前会议已禁用聊天',
-              style: TextStyle(color: Color(0xFF667085), fontSize: 12),
-            ),
-          ],
-          const SizedBox(height: 8),
-          Expanded(
-            child: ListView.builder(
-              controller: _chatScrollController,
-              itemCount: _messages.length,
-              itemBuilder: (_, i) {
-                final m = _messages[i];
-                return Container(
-                  margin: const EdgeInsets.only(bottom: 6),
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFF5F8FF),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: const Color(0xFFDDE6FF)),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        m.senderUsername,
-                        style: const TextStyle(
-                            color: Color(0xFF93C5FD), fontSize: 11.5),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        m.content,
-                        style: const TextStyle(
-                            color: Color(0xFF101828), fontSize: 13),
-                      ),
-                    ],
-                  ),
-                );
-              },
-            ),
-          ),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: _chatController,
-                  enabled: _connected && _chatWriteEnabled,
-                  style: const TextStyle(color: Color(0xFF101828)),
-                  decoration: const InputDecoration(
-                    labelText: '输入消息',
-                    labelStyle: TextStyle(color: Color(0xFF475467)),
-                    filled: true,
-                    fillColor: Color(0xFFF8FAFF),
-                    border: OutlineInputBorder(),
-                    isDense: true,
-                  ),
-                  onSubmitted: (_) {
-                    if (_chatWriteEnabled) {
-                      _sendChat();
-                    }
-                  },
-                ),
-              ),
-              const SizedBox(width: 8),
-              FilledButton(
-                onPressed: (_connected && _chatWriteEnabled) ? _sendChat : null,
-                child: const Text('发送'),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildChatPanel() {
-    final chatEnabled = _connected && _chatWriteEnabled;
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFFDDE6FF)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            '会议聊天',
-            style: TextStyle(
-              color: Color(0xFF101828),
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-          const SizedBox(height: 4),
-          const Text(
-            '成员可撤回 3 分钟内消息，主持人与联席主持人可撤回任意消息',
-            style: TextStyle(color: Color(0xFF667085), fontSize: 11.5),
-          ),
-          if (!_allowChat) ...[
-            const SizedBox(height: 4),
-            const Text(
-              '当前会议已禁用聊天',
-              style: TextStyle(color: Color(0xFF667085), fontSize: 12),
-            ),
-          ],
-          const SizedBox(height: 8),
-          Expanded(
-            child: Container(
-              decoration: BoxDecoration(
-                color: const Color(0xFFF7FAFF),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: const Color(0xFFDDE6FF)),
-              ),
-              padding: const EdgeInsets.fromLTRB(10, 10, 10, 4),
-              child: _messages.isEmpty
-                  ? const Center(
-                      child: Text(
-                        '暂无聊天消息',
-                        style:
-                            TextStyle(color: Color(0xFF98A2B3), fontSize: 12.5),
-                      ),
-                    )
-                  : ListView.builder(
-                      controller: _chatScrollController,
-                      itemCount: _messages.length,
-                      itemBuilder: (_, index) =>
-                          _buildChatMessageBubble(_messages[index]),
-                    ),
-            ),
-          ),
-          const SizedBox(height: 8),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              PopupMenuButton<String>(
-                tooltip: '发送表情',
-                enabled: chatEnabled,
-                onSelected: _appendEmoji,
-                color: const Color(0xFFFCFDFF),
-                surfaceTintColor: Colors.transparent,
-                elevation: 8,
-                shadowColor: const Color(0x1A101828),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  side: const BorderSide(color: Color(0xFFD6E4FF)),
-                ),
-                constraints: const BoxConstraints(minWidth: 186, maxWidth: 220),
-                itemBuilder: (context) => _chatEmojiMenuItems(),
-                icon: Container(
-                  width: 36,
-                  height: 36,
-                  alignment: Alignment.center,
-                  decoration: BoxDecoration(
-                    color: chatEnabled
-                        ? const Color(0xFFEAF1FF)
-                        : const Color(0xFFF2F4F7),
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(
-                      color: chatEnabled
-                          ? const Color(0xFFD6E4FF)
-                          : const Color(0xFFE4E7EC),
-                    ),
-                  ),
-                  child: Icon(
-                    Icons.emoji_emotions_outlined,
-                    color: chatEnabled
-                        ? const Color(0xFF175CD3)
-                        : const Color(0xFF98A2B3),
-                    size: 20,
-                  ),
-                ),
-              ),
-              const SizedBox(width: 6),
-              Expanded(
-                child: TextField(
-                  controller: _chatController,
-                  enabled: chatEnabled,
-                  style: const TextStyle(color: Color(0xFF101828)),
-                  minLines: 1,
-                  maxLines: 4,
-                  textInputAction: TextInputAction.send,
-                  decoration: const InputDecoration(
-                    hintText: '输入消息，支持表情',
-                    hintStyle:
-                        TextStyle(color: Color(0xFF98A2B3), fontSize: 12.5),
-                    filled: true,
-                    fillColor: Color(0xFFF8FAFF),
-                    border: OutlineInputBorder(),
-                    isDense: true,
-                  ),
-                  onSubmitted: (_) {
-                    if (chatEnabled) {
-                      _sendChat();
-                    }
-                  },
-                ),
-              ),
-              const SizedBox(width: 8),
-              FilledButton(
-                onPressed: chatEnabled ? _sendChat : null,
-                child: const Text('发送'),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildDock() {
-    final canSelfUnmute = _localCanSelfUnmute;
-    final canOpenVideo = _localCanMemberVideo;
-    final canShareScreen = _localCanScreenShare;
-    final canRecord = _canRecordMeeting && !_recordingUploading;
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFFDDE6FF)),
-      ),
-      child: Wrap(
-        spacing: 10,
-        runSpacing: 10,
-        alignment: WrapAlignment.center,
-        children: [
-          FilledButton.icon(
-            onPressed: (_connected && (_micEnabled || canSelfUnmute))
-                ? _toggleMic
-                : null,
-            icon: Icon(_micEnabled ? Icons.mic : Icons.mic_off),
-            label: Text(_micEnabled ? '静音' : '取消静音'),
-          ),
-          FilledButton.icon(
-            onPressed: (_connected && (_cameraEnabled || canOpenVideo))
-                ? _toggleCamera
-                : null,
-            icon: Icon(_cameraEnabled ? Icons.videocam : Icons.videocam_off),
-            label: Text(_cameraEnabled ? '关闭摄像头' : '开启摄像头'),
-          ),
-          FilledButton.icon(
-            onPressed:
-                (_connected && canShareScreen) ? _toggleScreenShare : null,
-            icon: Icon(
-                _screenShareEnabled
-                    ? Icons.stop_screen_share
-                    : Icons.screen_share,
-                color: (_screenShareEnabled && _screenShareAudioEnabled)
-                    ? const Color(0xFF12B76A)
-                    : null),
-            label: Text(
-              canShareScreen
-                  ? (_screenShareEnabled ? '停止共享' : '共享屏幕')
-                  : '共享已禁用',
-            ),
-          ),
-          FilledButton.icon(
-            style: FilledButton.styleFrom(
-              backgroundColor: _recordingActive
-                  ? const Color(0xFFB42318)
-                  : const Color(0xFF155EEF),
-            ),
-            onPressed: canRecord
-                ? (_recordingActive
-                    ? _stopMeetingRecording
-                    : _startMeetingRecording)
-                : null,
-            icon: Icon(
-              _recordingUploading
-                  ? Icons.cloud_upload_outlined
-                  : (_recordingActive
-                      ? Icons.stop_circle_outlined
-                      : Icons.fiber_manual_record),
-              color: _recordingActive ? Colors.white : null,
-            ),
-            label: Text(
-              _recordingUploading
-                  ? '上传录制中...'
-                  : (_recordingActive
-                      ? '停止录制'
-                      : (_allowRecording ? '开始录制' : '录制已禁用')),
-            ),
-          ),
-          FilledButton.icon(
-            style: FilledButton.styleFrom(
-                backgroundColor: const Color(0xFFB42318)),
-            onPressed: _connected ? _handleLeaveButtonPressed : null,
-            icon: const Icon(Icons.call_end),
-            label: Text(_isHost && _requiresAuth ? '结束会议' : '离开会议'),
-          ),
-        ],
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     if (_isTileFullscreenActive) {
@@ -11090,424 +10025,41 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
       return _buildMobileMeetingScaffold();
     }
     return Scaffold(
-      body: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            colors: [Color(0xFFF5F8FF), Color(0xFFEEF4FF)],
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
+      body: MeetingSelectableRegion(
+        child: Container(
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              colors: [Color(0xFFF5F8FF), Color(0xFFEEF4FF)],
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+            ),
           ),
-        ),
-        child: SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.all(14),
-            child: Column(
-              children: [
-                _buildDesktopCompactHeader(),
-                if ((_permissionWarning ?? '').isNotEmpty) ...[
-                  const SizedBox(height: 8),
-                  _buildPermissionBanner(),
-                ],
-                const SizedBox(height: 10),
-                Expanded(
-                  child: LayoutBuilder(
-                    builder: (context, constraints) {
-                      return _buildDesktopMeetingContent(constraints);
-                    },
+          child: SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Column(
+                children: [
+                  _buildDesktopCompactHeader(),
+                  if ((_permissionWarning ?? '').isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    _buildPermissionBanner(),
+                  ],
+                  const SizedBox(height: 10),
+                  Expanded(
+                    child: LayoutBuilder(
+                      builder: (context, constraints) {
+                        return _buildDesktopMeetingContent(constraints);
+                      },
+                    ),
                   ),
-                ),
-                const SizedBox(height: 10),
-                _buildDock(),
-              ],
+                  const SizedBox(height: 10),
+                  _buildDock(),
+                ],
+              ),
             ),
           ),
         ),
       ),
-    );
-  }
-}
-
-class _ApiException implements Exception {
-  final int statusCode;
-  final String detail;
-  final Map<String, dynamic>? payload;
-
-  const _ApiException({
-    required this.statusCode,
-    required this.detail,
-    required this.payload,
-  });
-
-  @override
-  String toString() => 'ApiException($statusCode): $detail';
-}
-
-enum _CameraResolutionPreset {
-  p720,
-  p1080,
-  p1440,
-  p2160,
-}
-
-enum _ScreenShareResolutionPreset {
-  p720,
-  p1080,
-  p1440,
-  p2160,
-}
-
-enum _RemoteShareViewMode {
-  stretch,
-  original,
-}
-
-class _ChatMessage {
-  final int id;
-  final int senderUserId;
-  final String senderUsername;
-  final String senderDisplayName;
-  final bool isRealtimeBot;
-  final String audioMimeType;
-  final String audioBase64;
-  final String content;
-  final DateTime? createdAt;
-
-  const _ChatMessage({
-    required this.id,
-    required this.senderUserId,
-    required this.senderUsername,
-    required this.senderDisplayName,
-    required this.isRealtimeBot,
-    required this.audioMimeType,
-    required this.audioBase64,
-    required this.content,
-    required this.createdAt,
-  });
-
-  static int _asInt(dynamic value, int fallback) {
-    if (value is int) return value;
-    if (value is num) return value.toInt();
-    if (value is String) {
-      final parsed = int.tryParse(value.trim());
-      if (parsed != null) return parsed;
-    }
-    return fallback;
-  }
-
-  static DateTime? _asDateTime(dynamic value) {
-    if (value == null) return null;
-    final raw = value.toString().trim();
-    if (raw.isEmpty) return null;
-    final parsed = DateTime.tryParse(raw);
-    if (parsed == null) return null;
-    return parsed.toLocal();
-  }
-
-  factory _ChatMessage.fromJson(Map<String, dynamic> json) {
-    final senderUsername = (json['sender_username'] ?? '-').toString();
-    final senderDisplayName =
-        (json['sender_display_name'] ?? senderUsername).toString();
-    return _ChatMessage(
-      id: _asInt(json['id'], 0),
-      senderUserId: _asInt(json['sender_user_id'], 0),
-      senderUsername: senderUsername,
-      senderDisplayName: senderDisplayName,
-      isRealtimeBot: _asBool(json['is_realtime_bot'], false),
-      audioMimeType: (json['audio_mime_type'] ?? '').toString(),
-      audioBase64: (json['audio_base64'] ?? '').toString(),
-      content: (json['content'] ?? '').toString(),
-      createdAt: _asDateTime(json['created_at']),
-    );
-  }
-
-  static bool _asBool(dynamic value, bool fallback) {
-    if (value is bool) return value;
-    if (value is num) return value != 0;
-    if (value is String) {
-      final normalized = value.trim().toLowerCase();
-      if (normalized == 'true' || normalized == '1') return true;
-      if (normalized == 'false' || normalized == '0') return false;
-    }
-    return fallback;
-  }
-}
-
-class _ParticipantTileData {
-  final String identity;
-  final String displayName;
-  final String avatarUrl;
-  final bool isLocal;
-  final bool isSpeaking;
-  final bool micEnabled;
-  final bool cameraEnabled;
-  final lk.VideoTrack? videoTrack;
-  final bool isScreenShare;
-
-  const _ParticipantTileData({
-    required this.identity,
-    required this.displayName,
-    required this.avatarUrl,
-    required this.isLocal,
-    required this.isSpeaking,
-    required this.micEnabled,
-    required this.cameraEnabled,
-    required this.videoTrack,
-    required this.isScreenShare,
-  });
-}
-
-class _PreferredVideoSelection {
-  final lk.VideoTrack? track;
-  final bool isScreenShare;
-
-  const _PreferredVideoSelection({
-    required this.track,
-    required this.isScreenShare,
-  });
-}
-
-class _RequestPendingFlags {
-  final bool micPending;
-  final bool videoPending;
-  final bool screenSharePending;
-
-  const _RequestPendingFlags({
-    required this.micPending,
-    required this.videoPending,
-    required this.screenSharePending,
-  });
-}
-
-class _ParticipantRowData {
-  final String identity;
-  final int? userId;
-  final bool isRealtimeBot;
-  final String displayName;
-  final String avatarUrl;
-  final String role;
-  final String roleKey;
-  final bool micEnabled;
-  final bool cameraEnabled;
-  final bool mutedByHost;
-  final bool videoBlockedByHost;
-  final bool allowSelfUnmute;
-  final bool allowMemberVideo;
-  final bool allowChat;
-  final bool allowScreenShare;
-  final bool micRequestPending;
-  final bool videoRequestPending;
-  final bool screenShareRequestPending;
-  final bool isScreenSharing;
-
-  const _ParticipantRowData({
-    required this.identity,
-    required this.userId,
-    required this.isRealtimeBot,
-    required this.displayName,
-    required this.avatarUrl,
-    required this.role,
-    required this.roleKey,
-    required this.micEnabled,
-    required this.cameraEnabled,
-    required this.mutedByHost,
-    required this.videoBlockedByHost,
-    required this.allowSelfUnmute,
-    required this.allowMemberVideo,
-    required this.allowChat,
-    required this.allowScreenShare,
-    required this.micRequestPending,
-    required this.videoRequestPending,
-    required this.screenShareRequestPending,
-    required this.isScreenSharing,
-  });
-}
-
-class _MeetingMemberProfile {
-  final int userId;
-  final String username;
-  final String displayName;
-  final int displayNameVersion;
-  final String avatarUrl;
-  final String role;
-  final bool mutedByHost;
-  final bool videoBlockedByHost;
-  final bool allowSelfUnmute;
-  final bool allowMemberVideo;
-  final bool allowChat;
-  final bool allowScreenShare;
-  final bool micRequestPending;
-  final bool videoRequestPending;
-
-  const _MeetingMemberProfile({
-    required this.userId,
-    required this.username,
-    required this.displayName,
-    required this.displayNameVersion,
-    required this.avatarUrl,
-    required this.role,
-    required this.mutedByHost,
-    required this.videoBlockedByHost,
-    required this.allowSelfUnmute,
-    required this.allowMemberVideo,
-    required this.allowChat,
-    required this.allowScreenShare,
-    required this.micRequestPending,
-    required this.videoRequestPending,
-  });
-
-  static int _asInt(dynamic value, int fallback) {
-    if (value is int) return value;
-    if (value is num) return value.toInt();
-    if (value is String) {
-      final parsed = int.tryParse(value.trim());
-      if (parsed != null) return parsed;
-    }
-    return fallback;
-  }
-
-  static bool _asBool(dynamic value, bool fallback) {
-    if (value is bool) return value;
-    if (value is num) return value != 0;
-    if (value is String) {
-      final normalized = value.trim().toLowerCase();
-      if (normalized == 'true' || normalized == '1') return true;
-      if (normalized == 'false' || normalized == '0') return false;
-    }
-    return fallback;
-  }
-
-  factory _MeetingMemberProfile.fromJson(Map<String, dynamic> json) {
-    return _MeetingMemberProfile(
-      userId: _asInt(json['user_id'], 0),
-      username: (json['username'] ?? '').toString(),
-      displayName: (json['display_name'] ?? json['username'] ?? '').toString(),
-      displayNameVersion: _asInt(json['display_name_version'], 1),
-      avatarUrl: (json['avatar_url'] ?? '').toString(),
-      role: (json['role'] ?? 'participant').toString(),
-      mutedByHost: _asBool(json['muted_by_host'], false),
-      videoBlockedByHost: _asBool(json['video_blocked_by_host'], false),
-      allowSelfUnmute: _asBool(json['allow_self_unmute'], true),
-      allowMemberVideo: _asBool(json['allow_member_video'], true),
-      allowChat: _asBool(json['allow_chat'], true),
-      allowScreenShare: _asBool(json['allow_screen_share'], true),
-      micRequestPending: _asBool(json['mic_request_pending'], false),
-      videoRequestPending: _asBool(json['video_request_pending'], false),
-    );
-  }
-}
-
-class _JoinTokenPayload {
-  final String meetingRef;
-  final String roomName;
-  final String livekitUrl;
-  final String token;
-  final bool waitingRoomEnabled;
-  final int maxParticipants;
-  final DateTime? actualStartedAt;
-  final bool muteOnEntry;
-  final bool allowGuestLinkJoin;
-  final bool allowRecording;
-  final bool allowScreenShare;
-  final bool allowChat;
-  final bool allowSelfUnmute;
-  final bool allowMemberVideo;
-  final bool canPublish;
-
-  const _JoinTokenPayload({
-    required this.meetingRef,
-    required this.roomName,
-    required this.livekitUrl,
-    required this.token,
-    required this.waitingRoomEnabled,
-    required this.maxParticipants,
-    required this.actualStartedAt,
-    required this.muteOnEntry,
-    required this.allowGuestLinkJoin,
-    required this.allowRecording,
-    required this.allowScreenShare,
-    required this.allowChat,
-    required this.allowSelfUnmute,
-    required this.allowMemberVideo,
-    required this.canPublish,
-  });
-
-  static bool _asBool(dynamic value, bool fallback) {
-    if (value is bool) return value;
-    if (value is num) return value != 0;
-    if (value is String) {
-      final normalized = value.trim().toLowerCase();
-      if (normalized == 'true' || normalized == '1') return true;
-      if (normalized == 'false' || normalized == '0') return false;
-    }
-    return fallback;
-  }
-
-  static int _asInt(dynamic value, int fallback) {
-    if (value is int) return value;
-    if (value is num) return value.toInt();
-    if (value is String) {
-      final parsed = int.tryParse(value.trim());
-      if (parsed != null) return parsed;
-    }
-    return fallback;
-  }
-
-  static DateTime? _asDateTime(dynamic value) {
-    if (value == null) return null;
-    final raw = value.toString().trim();
-    if (raw.isEmpty) return null;
-    final parsed = DateTime.tryParse(raw);
-    if (parsed == null) return null;
-    return parsed.toLocal();
-  }
-
-  factory _JoinTokenPayload.fromJson(Map<String, dynamic> json) {
-    return _JoinTokenPayload(
-      meetingRef: (json['meeting_ref'] ?? '').toString().trim(),
-      roomName: (json['room_name'] ?? '').toString(),
-      livekitUrl: (json['livekit_url'] ?? '').toString(),
-      token: (json['token'] ?? '').toString(),
-      waitingRoomEnabled: _asBool(json['waiting_room_enabled'], false),
-      maxParticipants: _asInt(json['max_participants'], 100),
-      actualStartedAt: _asDateTime(json['actual_started_at']),
-      muteOnEntry: _asBool(json['mute_on_entry'], false),
-      allowGuestLinkJoin: _asBool(json['allow_guest_link_join'], true),
-      allowRecording: _asBool(json['allow_recording'], true),
-      allowScreenShare: _asBool(json['allow_screen_share'], true),
-      allowChat: _asBool(json['allow_chat'], true),
-      allowSelfUnmute: _asBool(json['allow_self_unmute'], true),
-      allowMemberVideo: _asBool(json['allow_member_video'], true),
-      canPublish: _asBool(json['can_publish'], true),
-    );
-  }
-}
-
-class _WaitingRoomEntry {
-  final int userId;
-  final String username;
-  final String displayName;
-
-  const _WaitingRoomEntry({
-    required this.userId,
-    required this.username,
-    required this.displayName,
-  });
-
-  static int _asInt(dynamic value, int fallback) {
-    if (value is int) return value;
-    if (value is num) return value.toInt();
-    if (value is String) {
-      final parsed = int.tryParse(value.trim());
-      if (parsed != null) return parsed;
-    }
-    return fallback;
-  }
-
-  factory _WaitingRoomEntry.fromJson(Map<String, dynamic> json) {
-    return _WaitingRoomEntry(
-      userId: _asInt(json['user_id'], 0),
-      username: (json['username'] ?? '').toString(),
-      displayName: (json['display_name'] ?? json['username'] ?? '').toString(),
     );
   }
 }

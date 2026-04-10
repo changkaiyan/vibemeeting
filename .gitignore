@@ -4,6 +4,7 @@ __pycache__/
 
 .idea/
 app/static
+app/static/flutter_dashboard/
 .certs/
 
 .env
@@ -12,6 +13,7 @@ app/static
 livekit-keys.yaml
 
 *.log
+.runlogs/
 
 smart_meeting.db
 

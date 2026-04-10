@@ -219,7 +219,7 @@ pre {
 .meeting-main {
   min-height: 0;
   display: grid;
-  grid-template-columns: 1fr 290px;
+  grid-template-columns: 1fr 380px;
   gap: 12px;
 }
 
@@ -296,7 +296,8 @@ pre {
 
 .meeting-side {
   display: grid;
-  grid-template-rows: 1fr auto 1fr;
+  align-content: start;
+  grid-auto-rows: min-content;
   gap: 10px;
 }
 
@@ -389,6 +390,124 @@ pre {
   color: #f8fafc;
 }
 
+.agent-panel,
+.context-panel,
+.transcript-list,
+.artifact-list {
+  display: grid;
+  gap: 8px;
+}
+
+.transcript-live-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.agent-card,
+.artifact-item,
+.transcript-item,
+.context-block {
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(17, 24, 39, 0.7);
+}
+
+.agent-card-header,
+.artifact-head,
+.transcript-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+}
+
+.agent-title,
+.artifact-title,
+.transcript-speaker {
+  color: #f8fafc;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.presence-badge,
+.artifact-type,
+.transcript-badge {
+  font-size: 11px;
+  color: #93c5fd;
+}
+
+.agent-meta,
+.artifact-meta,
+.transcript-meta {
+  color: #9ca3af;
+  font-size: 12px;
+}
+
+.agent-actions,
+.transcript-actions,
+.workspace-action-form,
+.transcript-form {
+  display: grid;
+  gap: 6px;
+}
+
+.agent-actions-row,
+.transcript-actions-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.agent-actions input,
+.workspace-action-form input,
+.workspace-action-form select,
+.transcript-form input,
+.transcript-form textarea {
+  background: rgba(15, 23, 42, 0.8);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: #f8fafc;
+}
+
+.transcript-form textarea {
+  min-height: 90px;
+  resize: vertical;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 14px;
+}
+
+.transcript-text,
+.artifact-content,
+.context-summary {
+  color: #e5e7eb;
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.empty-text {
+  margin: 0;
+  color: #9ca3af;
+  font-size: 13px;
+}
+
+.check-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.context-list {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: #cbd5e1;
+  font-size: 13px;
+}
+
 .meeting-dock {
   display: flex;
   justify-content: center;
@@ -429,7 +548,7 @@ pre {
 
   .meeting-side {
     grid-template-columns: 1fr 1fr;
-    grid-template-rows: 1fr;
+    grid-auto-rows: min-content;
   }
 }
 
