@@ -17,6 +17,7 @@ class FasterWhisperRealtimeProvider(RealtimeTranscriptionProvider):
         model_size: str = "small",
         compute_type: str = "int8",
         language: str = "zh",
+        local_files_only: bool = False,
     ):
         self._buffer = bytearray()
         self.speaker_name = (speaker_name or "").strip()
@@ -24,15 +25,17 @@ class FasterWhisperRealtimeProvider(RealtimeTranscriptionProvider):
         self.model_size = (model_size or "small").strip()
         self.compute_type = (compute_type or "int8").strip()
         self.language = (language or "zh").strip()
+        self.local_files_only = local_files_only
         self.chunk_count = 0
         self.byte_count = 0
-        self.container_extension = "mp3"
+        self.container_extension = "webm"
 
-    def push_chunk(self, payload: bytes) -> TranscriptDelta:
+    def push_chunk(self, payload: bytes, *, mime_type: str = "") -> TranscriptDelta:
         raw = payload or b""
         self._buffer.extend(raw)
         self.chunk_count += 1
         self.byte_count += len(raw)
+        self._update_container_extension(mime_type)
         speaker = self.speaker_name or self.speaker_identity or "Speaker"
         return TranscriptDelta(
             message_type="partial_transcript",
@@ -76,7 +79,22 @@ class FasterWhisperRealtimeProvider(RealtimeTranscriptionProvider):
                 device="cpu",
                 compute_type=self.compute_type,
                 cpu_threads=4,
-                local_files_only=True,
+                local_files_only=self.local_files_only,
             )
             self._model_cache[key] = model
         return model
+
+    def _update_container_extension(self, mime_type: str) -> None:
+        normalized = (mime_type or "").strip().lower()
+        if "webm" in normalized:
+            self.container_extension = "webm"
+        elif "wav" in normalized:
+            self.container_extension = "wav"
+        elif "mpeg" in normalized or "mp3" in normalized:
+            self.container_extension = "mp3"
+        elif "ogg" in normalized:
+            self.container_extension = "ogg"
+        elif "aiff" in normalized or "aif" in normalized:
+            self.container_extension = "aiff"
+        elif "mp4" in normalized or "aac" in normalized:
+            self.container_extension = "mp4"

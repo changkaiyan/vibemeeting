@@ -12,7 +12,7 @@ class MockRealtimeTranscriptionSession:
         self.chunk_count = 0
         self.byte_count = 0
 
-    def push_chunk(self, payload: bytes) -> TranscriptDelta:
+    def push_chunk(self, payload: bytes, *, mime_type: str = "") -> TranscriptDelta:
         raw = payload or b""
         self.chunk_count += 1
         self.byte_count += len(raw)
@@ -53,5 +53,6 @@ def build_realtime_session(
             model_size=config.model_size,
             compute_type=config.compute_type,
             language=config.language,
+            local_files_only=config.local_files_only,
         )
     raise ValueError(f"Unsupported STT worker provider: {config.provider}")

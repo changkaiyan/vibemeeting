@@ -15,6 +15,7 @@ from conference.meeting_context.serializers import (
     MeetingTranscriptChunkSerializer,
 )
 from conference.meeting_context.services import (
+    agent_session_is_busy,
     build_current_context,
     connect_agent_session,
     dispatch_agent_action,
@@ -156,6 +157,16 @@ def meeting_agent_actions(request, meeting_id: int):
     instruction = serializer.validated_data.get("instruction", "").strip()
     chunk_ids = serializer.validated_data.get("chunk_ids") or []
     session = ensure_agent_session(meeting, request.user, agent_type)
+    if agent_session_is_busy(session):
+        return Response(
+            {
+                "detail": (
+                    f"Agent action is already running for {session.agent_type}. "
+                    "Wait for the current run to finish before starting another one."
+                )
+            },
+            status=status.HTTP_409_CONFLICT,
+        )
     try:
         ensure_bridge_available(session.agent_type)
     except MeetingAgentBridgeError as exc:

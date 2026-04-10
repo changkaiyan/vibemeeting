@@ -51,7 +51,7 @@ class FasterWhisperRealtimeProviderTests(unittest.TestCase):
     def test_push_chunk_buffers_audio_and_returns_partial(self):
         provider = FasterWhisperRealtimeProvider(speaker_name="Owner", speaker_identity="owner-1")
 
-        partial = provider.push_chunk(b"abc")
+        partial = provider.push_chunk(b"abc", mime_type="audio/webm")
 
         self.assertEqual(partial.message_type, "partial_transcript")
         self.assertIn("Owner", partial.text)
@@ -70,9 +70,10 @@ class FasterWhisperRealtimeProviderTests(unittest.TestCase):
             model_size="tiny",
             compute_type="int8",
             language="zh",
+            local_files_only=False,
         )
-        provider.push_chunk(b"abc")
-        provider.push_chunk(b"def")
+        provider.push_chunk(b"abc", mime_type="audio/webm")
+        provider.push_chunk(b"def", mime_type="audio/webm")
 
         final = provider.finalize()
 
@@ -85,9 +86,10 @@ class FasterWhisperRealtimeProviderTests(unittest.TestCase):
             device="cpu",
             compute_type="int8",
             cpu_threads=4,
-            local_files_only=True,
+            local_files_only=False,
         )
         mock_model.transcribe.assert_called_once()
+        self.assertEqual(provider.container_extension, "webm")
 
     @patch("services.stt_worker.stt_worker.providers.faster_whisper_provider.WhisperModel")
     def test_build_realtime_session_can_return_faster_whisper_provider(self, mock_model_cls):

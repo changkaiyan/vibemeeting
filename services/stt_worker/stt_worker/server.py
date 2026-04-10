@@ -38,6 +38,10 @@ async def handle_realtime_connection(websocket, config: SttWorkerConfig) -> None
         return
 
     state = WorkerConnectionState()
+    print(
+        f"stt-worker connection opened path={websocket.request.path} provider={config.provider}",
+        flush=True,
+    )
     async for raw_message in websocket:
         try:
             payload = json.loads(raw_message)
@@ -68,17 +72,37 @@ async def handle_realtime_connection(websocket, config: SttWorkerConfig) -> None
                     "provider": config.provider,
                 },
             )
+            print(
+                "stt-worker session started "
+                f"speaker_name={state.speaker_name or '-'} "
+                f"speaker_identity={state.speaker_identity or '-'} "
+                f"provider={config.provider}",
+                flush=True,
+            )
             continue
 
         if message_type == "audio_chunk":
             if state.session is None:
                 await _send_error(websocket, "Session not started")
                 continue
+            raw = _decode_audio_chunk(payload.get("data_base64") or "")
+            mime_type = (payload.get("mime_type") or "").strip()
             try:
-                delta = state.session.push_chunk(_decode_audio_chunk(payload.get("data_base64") or ""))
+                delta = state.session.push_chunk(
+                    raw,
+                    mime_type=mime_type,
+                )
             except Exception as exc:
                 await _send_error(websocket, str(exc))
                 continue
+            print(
+                "stt-worker audio chunk "
+                f"mime={mime_type or '-'} "
+                f"payload_bytes={len(raw)} "
+                f"chunk_count={delta.chunk_count} "
+                f"byte_count={delta.byte_count}",
+                flush=True,
+            )
             await _send_json(
                 websocket,
                 {
@@ -99,6 +123,13 @@ async def handle_realtime_connection(websocket, config: SttWorkerConfig) -> None
             except Exception as exc:
                 await _send_error(websocket, str(exc))
                 continue
+            print(
+                "stt-worker session finalized "
+                f"chunk_count={delta.chunk_count} "
+                f"byte_count={delta.byte_count} "
+                f"text={delta.text!r}",
+                flush=True,
+            )
             await _send_json(
                 websocket,
                 {
@@ -114,6 +145,8 @@ async def handle_realtime_connection(websocket, config: SttWorkerConfig) -> None
             continue
 
         await _send_error(websocket, f"Unsupported message type: {message_type or 'unknown'}")
+
+    print("stt-worker connection closed", flush=True)
 
 
 async def start_server(config: SttWorkerConfig):

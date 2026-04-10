@@ -1,12 +1,13 @@
 import os
 
-from django.core.asgi import get_asgi_application
-
-from conference.speech_to_text.realtime import realtime_stt_application
-
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "smart_meeting.settings")
 
-django_asgi_app = get_asgi_application()
+from django.contrib.staticfiles.handlers import ASGIStaticFilesHandler
+from django.core.asgi import get_asgi_application
+
+django_asgi_app = ASGIStaticFilesHandler(get_asgi_application())
+
+from conference.speech_to_text.realtime import realtime_stt_application
 
 
 async def application(scope, receive, send):

@@ -4,6 +4,7 @@ __pycache__/
 
 .idea/
 app/static
+app/static/flutter_dashboard/
 .certs/
 
 .env

@@ -81,12 +81,15 @@ USE_I18N = True
 USE_TZ = False
 
 STATIC_URL = "/static/"
-STATICFILES_DIRS = [BASE_DIR / "app" / "static"]
+STATICFILES_DIRS = []
 if (
     FLUTTER_DASHBOARD_BUILD_DIR.exists()
     and FLUTTER_DASHBOARD_BUILD_DIR != _APP_STATIC_FLUTTER_DASHBOARD_BUILD_DIR
 ):
+    # Put generated Flutter assets ahead of app/static so /static/flutter_dashboard/*
+    # resolves to the latest build instead of the checked-in fallback bundle.
     STATICFILES_DIRS.append(("flutter_dashboard", FLUTTER_DASHBOARD_BUILD_DIR))
+STATICFILES_DIRS.append(BASE_DIR / "app" / "static")
 STATIC_ROOT = BASE_DIR / "staticfiles"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"

@@ -102,6 +102,12 @@ def connect_agent_session(session: MeetingAgentSession) -> MeetingAgentSession:
     return session
 
 
+def agent_session_is_busy(session: MeetingAgentSession) -> bool:
+    if session.current_task_status.strip().lower() == "running":
+        return True
+    return session.queue_size > 0 and session.presence_status == MeetingAgentPresence.WORKING
+
+
 def mark_agent_session_error(session: MeetingAgentSession, message: str) -> MeetingAgentSession:
     session.display_name = session.display_name or agent_display_name(session.agent_type)
     session.bridge_online = False
@@ -257,7 +263,7 @@ def store_agent_result(
     session.latest_short_reply = result.short_reply
     session.latest_result_artifact = artifact
     session.current_task_status = "done"
-    session.presence_status = MeetingAgentPresence.DONE
+    session.presence_status = MeetingAgentPresence.IDLE
     session.queue_size = 0
     session.last_latency_ms = result.latency_ms
     session.last_error = ""

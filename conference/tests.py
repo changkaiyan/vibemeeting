@@ -27,6 +27,7 @@ from rest_framework_simplejwt.tokens import AccessToken
 from conference.models import (
     BillingPlan,
     Meeting,
+    MeetingAgentPresence,
     MeetingAgentSession,
     MeetingArtifact,
     MeetingArtifactType,
@@ -2002,7 +2003,7 @@ class MeetingRecordingTests(TestCase):
         )
         self.assertEqual(response.status_code, 200)
         payload = response.json()
-        self.assertEqual(payload.get("storage_root"), str(new_root))
+        self.assertEqual(payload.get("storage_root"), str(Path(new_root).resolve()))
 
     def test_non_super_admin_cannot_update_recording_storage_root(self):
         client = self._auth_client(self.host)
@@ -2791,7 +2792,7 @@ class MeetingContextWorkspaceApiTests(TestCase):
         self.assertIn("Current topic", action_payload["artifact"]["content"])
 
         session.refresh_from_db()
-        self.assertEqual(session.presence_status, "done")
+        self.assertEqual(session.presence_status, "idle")
         self.assertEqual(session.current_task_status, "done")
         self.assertEqual(session.queue_size, 0)
         self.assertTrue(session.latest_short_reply)
@@ -2803,6 +2804,66 @@ class MeetingContextWorkspaceApiTests(TestCase):
         self.assertEqual(len(artifacts_payload), 1)
         self.assertEqual(artifacts_payload[0]["id"], session.latest_result_artifact_id)
         self.assertEqual(MeetingArtifact.objects.filter(meeting=self.meeting).count(), 1)
+
+    def test_connect_agent_reuses_same_session_row(self):
+        client = self._auth_client(self.owner)
+
+        first = client.post(
+            f"/api/meetings/{self.meeting.id}/agents",
+            {"agent_type": "codex"},
+            format="json",
+        )
+        second = client.post(
+            f"/api/meetings/{self.meeting.id}/agents",
+            {"agent_type": "codex"},
+            format="json",
+        )
+
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 201)
+        self.assertEqual(
+            MeetingAgentSession.objects.filter(
+                meeting=self.meeting,
+                owner_user=self.owner,
+                agent_type="codex",
+            ).count(),
+            1,
+        )
+        self.assertEqual(first.json()["id"], second.json()["id"])
+
+    def test_agent_action_rejects_concurrent_run_for_same_session(self):
+        client = self._auth_client(self.owner)
+        session = MeetingAgentSession.objects.create(
+            meeting=self.meeting,
+            owner_user=self.owner,
+            agent_type="codex",
+            display_name="Alice / Codex",
+            bridge_online=True,
+            presence_status=MeetingAgentPresence.WORKING,
+            current_task_title="Summarize",
+            current_task_status="running",
+            queue_size=1,
+        )
+        MeetingTranscriptChunk.objects.create(
+            meeting=self.meeting,
+            speaker_name="Owner",
+            text="Please summarize the current architecture decisions.",
+            source="manual",
+            is_final=True,
+            sequence_no=1,
+        )
+
+        response = client.post(
+            f"/api/meetings/{self.meeting.id}/agent-actions",
+            {"agent_type": "codex", "task_type": "summarize"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("already running", response.json()["detail"].lower())
+        session.refresh_from_db()
+        self.assertEqual(session.current_task_status, "running")
+        self.assertEqual(session.queue_size, 1)
 
     def test_workspace_api_forbids_non_member_non_owner(self):
         client = self._auth_client(self.other_user)
@@ -3065,6 +3126,7 @@ class MeetingRealtimeSpeechToTextTests(TestCase):
         event = async_to_sync(runner)()
         self.assertEqual(event["type"], "websocket.close")
 
+    @override_settings(MEETING_REALTIME_STT_WORKER_URL="")
     def test_realtime_stt_websocket_returns_error_when_worker_is_not_configured(self):
         token = str(AccessToken.for_user(self.owner))
 
