@@ -264,8 +264,9 @@ flutter run -d chrome
 说明：
 
 - 这里走的是 Flutter 自己的开发服务器
-- 当前默认 API 地址写在 `flutter_app/lib/main.dart`
-- 如果你联调本地 Django，确保 Django 已在 `127.0.0.1:8000` 上启动
+- 当前前端主要通过 `Uri.base.resolve(...)` 访问同源 API
+- 如果你直接用 `flutter run -d chrome` 单独起前端，很多依赖 Django 会话和同源路径的功能并不适合在这个模式下完整验证
+- 如果你要联调真实业务流程，优先使用 `flutter build web` 后接入 Django
 
 ### 7.4 让 Django 使用新的 Flutter 页面
 
@@ -286,6 +287,12 @@ rsync -av --delete build/web/ ../artifacts/flutter_app_web/
 - Django 会优先读取 `artifacts/flutter_app_web/`
 - 这也是当前推荐的集成目录
 - 不要手改 `artifacts/flutter_app_web` 下的文件
+- 当前 Flutter 源码结构已经按 feature 拆分，核心目录包括：
+  - `flutter_app/lib/app/`
+  - `flutter_app/lib/core/`
+  - `flutter_app/lib/features/dashboard/`
+  - `flutter_app/lib/features/billing/`
+  - `flutter_app/lib/meeting_room/`
 
 ### 7.5 如何确认改动真的生效
 

@@ -15,7 +15,7 @@
 - `app/static/`
   - 手写静态资源
 - `flutter_app/`
-  - Flutter Dashboard 源码
+  - Flutter Web 前端源码
 - `artifacts/flutter_app_web/`
   - Flutter Web 构建产物，供 Django 作为静态文件挂载
   - 不应手工编辑，应由 Flutter Web 构建结果同步过来
@@ -67,7 +67,7 @@ uv run --python .venv/bin/python manage.py runserver 127.0.0.1:8000 --noreload
 
 完整的本地开发部署说明见 [docs/development.md](./docs/development.md)。
 
-如果需要刷新 Flutter Dashboard 静态产物：
+如果需要刷新 Flutter Web 静态产物：
 
 ```bash
 cd flutter_app
