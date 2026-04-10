@@ -4,7 +4,7 @@ __pycache__/
 
 .idea/
 app/static
-app/static/flutter_dashboard/
+app/static/flutter_app/
 .certs/
 
 .env
@@ -17,9 +17,9 @@ livekit-keys.yaml
 
 smart_meeting.db
 
-flutter_dashboard/.dart_tool/
-flutter_dashboard/build/
-artifacts/flutter_dashboard_web/
+flutter_app/.dart_tool/
+flutter_app/build/
+artifacts/flutter_app_web/
 !artifacts/README.md
 staticfiles/
 tools/

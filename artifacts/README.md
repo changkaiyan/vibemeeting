@@ -4,17 +4,17 @@
 
 Current usage:
 
-- `artifacts/flutter_dashboard_web/`
+- `artifacts/flutter_app_web/`
   - Flutter Web build output consumed by Django static serving
-  - Generated from the source project in [`flutter_dashboard/`](../flutter_dashboard)
+  - Generated from the source project in [`flutter_app/`](../flutter_app)
 
-Do not edit files under `artifacts/flutter_dashboard_web/` manually.
+Do not edit files under `artifacts/flutter_app_web/` manually.
 Regenerate them from the Flutter source project with:
 
 ```bash
-cd flutter_dashboard
+cd flutter_app
 flutter pub get
 flutter build web
 ```
 
-Then copy the contents of `flutter_dashboard/build/web/` into `artifacts/flutter_dashboard_web/`.
+Then copy the contents of `flutter_app/build/web/` into `artifacts/flutter_app_web/`.

@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:smart_meeting_dashboard/meeting_room/debug_flags.dart';
-import 'package:smart_meeting_dashboard/meeting_room/media_test_widgets.dart';
-import 'package:smart_meeting_dashboard/meeting_room/panel_widgets.dart';
-import 'package:smart_meeting_dashboard/meeting_room/selectable_region.dart';
+import 'package:smart_meeting_app/meeting_room/debug/debug_flags.dart';
+import 'package:smart_meeting_app/meeting_room/widgets/media_test_widgets.dart';
+import 'package:smart_meeting_app/meeting_room/widgets/panel_widgets.dart';
+import 'package:smart_meeting_app/meeting_room/widgets/selectable_region.dart';
 
 void main() {
   testWidgets('panel fullscreen button toggles label and icon', (tester) async {

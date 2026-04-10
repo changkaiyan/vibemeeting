@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:smart_meeting_dashboard/meeting_room/audio_level.dart';
+import 'package:smart_meeting_app/meeting_room/utils/audio_level.dart';
 
 void main() {
   group('computeNormalizedMicTestLevel', () {
