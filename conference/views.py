@@ -1,12 +1,18 @@
+import base64
+import gzip
 import json
+import io
+import math
 import os
 import re
 import threading
 import time
 import csv
+import wave
+from array import array
 from datetime import timedelta, timezone as dt_timezone
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 from typing import Iterable
 from uuid import uuid4
@@ -51,6 +57,7 @@ from conference.models import (
     MeetingRecording,
     MeetingOrganization,
     MeetingRole,
+    RealtimeBotProvider,
     RecordingStorageConfig,
     SystemAuthConfig,
     UserBillingProfile,
@@ -73,6 +80,7 @@ from conference.serializers import (
     MeetingMemberDisplayNameControlSerializer,
     MeetingHostLeaveSerializer,
     MeetingRealtimeBotConnectivityTestSerializer,
+    MeetingRealtimeBotAudioIngressSerializer,
     MeetingRealtimeBotControlSerializer,
     MeetingPermissionControlSerializer,
     MeetingRaiseHandSerializer,
@@ -133,14 +141,45 @@ _MEETING_ROOM_LIMIT_TIMERS: dict[int, threading.Timer] = {}
 _MEETING_ROOM_LIMIT_TIMERS_LOCK = threading.Lock()
 _TECHCLOUD_OAUTH_STATE_KEY = "techcloud_oauth_state"
 _TECHCLOUD_OAUTH_NEXT_KEY = "techcloud_oauth_next"
+_TECHCLOUD_AUTHENTICATED_SESSION_KEY = "techcloud_oauth_authenticated"
 _REALTIME_BOT_SYSTEM_USERNAME = "__meeting_realtime_bot__"
 _REALTIME_BOT_SYSTEM_EMAIL = "meeting-realtime-bot@local.invalid"
 _REALTIME_BOT_DEFAULT_BASE_URL = "https://api.openai.com"
 _REALTIME_BOT_DEFAULT_MODEL = "gpt-realtime"
 _REALTIME_BOT_DEFAULT_VOICE = "marin"
+_REALTIME_BOT_DEFAULT_PROVIDER = RealtimeBotProvider.OPENAI
+_REALTIME_BOT_DEFAULT_VOLC_WS_URL = "wss://openspeech.bytedance.com/api/v3/realtime/dialogue"
+_REALTIME_BOT_DEFAULT_VOLC_RESOURCE_ID = "volc.speech.dialog"
+_REALTIME_BOT_DEFAULT_VOLC_APP_KEY = "PlgvMymc7f3tQnJ6"
+_REALTIME_BOT_DEFAULT_VOLC_SPEAKER = "zh_female_vv_jupiter_bigtts"
 _REALTIME_BOT_DEFAULT_DISPLAY_NAME = "实时语音助手"
 _REALTIME_BOT_WS_CONNECT_TIMEOUT_SECONDS = 10
 _REALTIME_BOT_RESPONSE_TIMEOUT_SECONDS = 20
+
+_VOLCENGINE_PROTOCOL_VERSION = 0b0001
+_VOLCENGINE_CLIENT_FULL_REQUEST = 0b0001
+_VOLCENGINE_CLIENT_AUDIO_ONLY_REQUEST = 0b0010
+_VOLCENGINE_SERVER_FULL_RESPONSE = 0b1001
+_VOLCENGINE_SERVER_ACK = 0b1011
+_VOLCENGINE_SERVER_ERROR_RESPONSE = 0b1111
+_VOLCENGINE_SEQUENCE_FLAGS = 0b0011
+_VOLCENGINE_MSG_WITH_EVENT = 0b0100
+_VOLCENGINE_SERIALIZATION_NONE = 0b0000
+_VOLCENGINE_SERIALIZATION_JSON = 0b0001
+_VOLCENGINE_COMPRESSION_GZIP = 0b0001
+_VOLCENGINE_EVENT_START_CONNECTION = 1
+_VOLCENGINE_EVENT_FINISH_CONNECTION = 2
+_VOLCENGINE_EVENT_START_SESSION = 100
+_VOLCENGINE_EVENT_FINISH_SESSION = 102
+_VOLCENGINE_EVENT_AUDIO_REQUEST = 200
+_VOLCENGINE_EVENT_CHAT_TEXT_QUERY_LEGACY = 300
+_VOLCENGINE_EVENT_CHAT_TEXT_QUERY = 501
+_VOLCENGINE_EVENT_TEXT_DELTA = 550
+_VOLCENGINE_EVENT_TEXT_DONE = 559
+_VOLCENGINE_EVENT_TTS_AUDIO = 352
+_VOLCENGINE_EVENT_TTS_DONE = 359
+_VOLCENGINE_EVENT_DIALOG_DONE = 459
+_VOLCENGINE_MAX_SESSION_ID_BYTES = 512
 
 
 def _host_without_port(host: str) -> str:
@@ -332,6 +371,11 @@ class ControlledLoginView(auth_views.LoginView):
             return self.render_to_response(context)
         return super().post(request, *args, **kwargs)
 
+    def form_valid(self, form):
+        response = super().form_valid(form)
+        self.request.session.pop(_TECHCLOUD_AUTHENTICATED_SESSION_KEY, None)
+        return response
+
 
 def _techcloud_authorize_url(state: str) -> str:
     params = {
@@ -349,6 +393,32 @@ def _techcloud_authorize_url(state: str) -> str:
 
 def _techcloud_login_error_redirect(message: str):
     return redirect(f"/accounts/login?{urlencode({'oauth_error': message})}")
+
+
+def _techcloud_logout_url(request, *, next_path: str = "/") -> str:
+    logout_url = (
+        getattr(settings, "TECHCLOUD_OAUTH_LOGOUT_URL", "")
+        or "https://passport.escience.cn/logout"
+    ).strip()
+    if not logout_url:
+        return ""
+    redirect_param = (
+        getattr(settings, "TECHCLOUD_OAUTH_LOGOUT_REDIRECT_PARAM", "")
+        or "WebServerURL"
+    ).strip() or "WebServerURL"
+    parsed = urlsplit(logout_url)
+    query_items = parse_qsl(parsed.query, keep_blank_values=True)
+    if not any(key == redirect_param for key, _ in query_items):
+        query_items.append((redirect_param, request.build_absolute_uri(next_path)))
+    return urlunsplit(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            urlencode(query_items),
+            parsed.fragment,
+        )
+    )
 
 
 def _techcloud_exchange_code_for_token(code: str) -> dict:
@@ -1878,6 +1948,7 @@ def register_page_view(request):
                 ip_address=client_ip(request),
             )
             auth_login(request, user)
+            request.session.pop(_TECHCLOUD_AUTHENTICATED_SESSION_KEY, None)
             return redirect("/dashboard")
     else:
         form = MeetingRegisterForm()
@@ -1943,6 +2014,7 @@ def techcloud_oauth_callback(request):
         return _techcloud_login_error_redirect(str(exc))
 
     auth_login(request, user)
+    request.session[_TECHCLOUD_AUTHENTICATED_SESSION_KEY] = True
     log_audit(
         user=user,
         action="auth.login_techcloud",
@@ -1965,9 +2037,16 @@ def session_jwt(request):
     return JsonResponse({"access_token": token, "token_type": "bearer"})
 
 
-@login_required(login_url="/accounts/login")
 def session_logout(request):
-    auth_logout(request)
+    is_techcloud_session = bool(
+        request.session.get(_TECHCLOUD_AUTHENTICATED_SESSION_KEY, False)
+    )
+    if request.user.is_authenticated:
+        auth_logout(request)
+    if is_techcloud_session:
+        techcloud_logout = _techcloud_logout_url(request, next_path="/")
+        if techcloud_logout:
+            return redirect(techcloud_logout)
     return redirect("/")
 
 
@@ -2927,14 +3006,34 @@ def _apply_meeting_payload(meeting, payload: dict):
             setattr(meeting, key, (value or "").strip() or None)
         elif key == "meeting_timezone":
             setattr(meeting, key, (value or "").strip() or "Asia/Shanghai")
+        elif key == "realtime_bot_provider":
+            setattr(meeting, key, _normalized_realtime_provider(value))
         elif key == "realtime_bot_api_key":
             setattr(meeting, key, (value or "").strip())
         elif key == "realtime_bot_base_url":
             setattr(meeting, key, _normalized_realtime_base_url(value))
+        elif key == "realtime_bot_volc_ws_url":
+            setattr(meeting, key, _normalized_realtime_volc_ws_url(value))
+        elif key == "realtime_bot_volc_resource_id":
+            setattr(meeting, key, _normalized_realtime_volc_resource_id(value))
+        elif key in {
+            "realtime_bot_volc_app_id",
+            "realtime_bot_volc_app_key",
+            "realtime_bot_volc_access_key",
+            "realtime_bot_volc_uid",
+        }:
+            setattr(meeting, key, (value or "").strip())
         elif key in {"realtime_bot_model", "realtime_bot_voice", "realtime_bot_display_name"}:
             setattr(meeting, key, (value or "").strip())
         else:
             setattr(meeting, key, value)
+
+
+def _normalized_realtime_provider(raw_value: str) -> str:
+    value = (raw_value or "").strip().lower()
+    if value == RealtimeBotProvider.VOLCENGINE:
+        return RealtimeBotProvider.VOLCENGINE
+    return RealtimeBotProvider.OPENAI
 
 
 def _normalized_realtime_base_url(raw_value: str) -> str:
@@ -2946,13 +3045,75 @@ def _normalized_realtime_base_url(raw_value: str) -> str:
     return value.rstrip("/")
 
 
+def _normalized_realtime_volc_ws_url(raw_value: str) -> str:
+    value = (raw_value or "").strip()
+    if not value:
+        return _REALTIME_BOT_DEFAULT_VOLC_WS_URL
+    if "://" not in value:
+        value = f"wss://{value}"
+    parsed = urlsplit(value)
+    scheme = parsed.scheme.lower()
+    if scheme == "http":
+        scheme = "ws"
+    elif scheme == "https":
+        scheme = "wss"
+    elif scheme not in {"ws", "wss"}:
+        scheme = "wss"
+    path = (parsed.path or "").strip() or "/api/v3/realtime/dialogue"
+    if not path.startswith("/"):
+        path = f"/{path}"
+    return urlunsplit((scheme, parsed.netloc, path, parsed.query, parsed.fragment)).rstrip("/")
+
+
+def _normalized_realtime_volc_resource_id(raw_value: str) -> str:
+    value = (raw_value or "").strip()
+    if not value:
+        return _REALTIME_BOT_DEFAULT_VOLC_RESOURCE_ID
+    return value
+
+
+def _meeting_realtime_bot_provider(meeting) -> str:
+    return _normalized_realtime_provider(getattr(meeting, "realtime_bot_provider", ""))
+
+
+def _meeting_realtime_bot_volc_uid(meeting) -> str:
+    value = (getattr(meeting, "realtime_bot_volc_uid", "") or "").strip()
+    if value:
+        return value
+    return f"meeting-{getattr(meeting, 'id', '0')}"
+
+
+def _meeting_realtime_bot_volc_app_key(meeting) -> str:
+    value = (getattr(meeting, "realtime_bot_volc_app_key", "") or "").strip()
+    return value or _REALTIME_BOT_DEFAULT_VOLC_APP_KEY
+
+
+def _meeting_realtime_bot_volc_speaker(meeting) -> str:
+    value = (getattr(meeting, "realtime_bot_voice", "") or "").strip()
+    if not value or value == _REALTIME_BOT_DEFAULT_VOICE:
+        return _REALTIME_BOT_DEFAULT_VOLC_SPEAKER
+    return value
+
+
 def _meeting_realtime_bot_display_name(meeting) -> str:
     value = (meeting.realtime_bot_display_name or "").strip()
     return value or _REALTIME_BOT_DEFAULT_DISPLAY_NAME
 
 
 def _meeting_realtime_bot_ready(meeting) -> bool:
-    return bool(meeting.realtime_bot_enabled and (meeting.realtime_bot_api_key or "").strip())
+    if not meeting.realtime_bot_enabled:
+        return False
+    provider = _meeting_realtime_bot_provider(meeting)
+    if provider == RealtimeBotProvider.VOLCENGINE:
+        ws_url = _normalized_realtime_volc_ws_url(getattr(meeting, "realtime_bot_volc_ws_url", ""))
+        app_id = (getattr(meeting, "realtime_bot_volc_app_id", "") or "").strip()
+        app_key = _meeting_realtime_bot_volc_app_key(meeting)
+        access_key = (getattr(meeting, "realtime_bot_volc_access_key", "") or "").strip()
+        resource_id = _normalized_realtime_volc_resource_id(
+            getattr(meeting, "realtime_bot_volc_resource_id", "")
+        )
+        return bool(ws_url and app_id and app_key and access_key and resource_id)
+    return bool((meeting.realtime_bot_api_key or "").strip())
 
 
 def _meeting_realtime_bot_identity(meeting) -> str:
@@ -3076,7 +3237,131 @@ def _extract_audio_from_model_payload(payload) -> tuple[str, str]:
     return candidates[0]
 
 
-def _realtime_ws_url(base_url: str, model: str) -> str:
+def _decode_base64_audio_delta(delta: str) -> bytes:
+    value = (delta or "").strip()
+    if not value:
+        return b""
+    missing_padding = len(value) % 4
+    if missing_padding:
+        value = f"{value}{'=' * (4 - missing_padding)}"
+    return base64.b64decode(value)
+
+
+def _pcm16le_to_wav_base64(
+    pcm_bytes: bytes,
+    *,
+    sample_rate: int = 24000,
+    channels: int = 1,
+) -> str:
+    if not pcm_bytes:
+        return ""
+    if len(pcm_bytes) % 2 != 0:
+        pcm_bytes = pcm_bytes[: len(pcm_bytes) - 1]
+    if not pcm_bytes:
+        return ""
+    with io.BytesIO() as buffer:
+        with wave.open(buffer, "wb") as wav_file:
+            wav_file.setnchannels(max(1, int(channels)))
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(max(8000, int(sample_rate)))
+            wav_file.writeframes(pcm_bytes)
+        return base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
+def _coerce_sample_rate(raw_value, default: int = 16000) -> int:
+    try:
+        parsed = int(raw_value)
+    except (TypeError, ValueError):
+        return default
+    return max(8000, min(parsed, 96000))
+
+
+def _coerce_channels(raw_value, default: int = 1) -> int:
+    try:
+        parsed = int(raw_value)
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(parsed, 2))
+
+
+def _downmix_pcm16_to_mono(pcm_bytes: bytes, channels: int) -> bytes:
+    if channels <= 1:
+        return pcm_bytes
+    frame_bytes = 2 * channels
+    if frame_bytes <= 0:
+        return pcm_bytes
+    usable = len(pcm_bytes) - (len(pcm_bytes) % frame_bytes)
+    if usable <= 0:
+        return b""
+    raw = array("h")
+    raw.frombytes(pcm_bytes[:usable])
+    mono = array("h")
+    for idx in range(0, len(raw), channels):
+        frame = raw[idx : idx + channels]
+        if not frame:
+            continue
+        mixed = int(sum(int(sample) for sample in frame) / len(frame))
+        mixed = max(-32768, min(32767, mixed))
+        mono.append(mixed)
+    return mono.tobytes()
+
+
+def _resample_pcm16_mono(
+    pcm_bytes: bytes,
+    *,
+    source_rate: int,
+    target_rate: int,
+) -> bytes:
+    if not pcm_bytes:
+        return b""
+    source_rate = _coerce_sample_rate(source_rate)
+    target_rate = _coerce_sample_rate(target_rate)
+    if source_rate == target_rate:
+        return pcm_bytes
+    samples = array("h")
+    samples.frombytes(pcm_bytes[: len(pcm_bytes) - (len(pcm_bytes) % 2)])
+    if not samples:
+        return b""
+    output_length = int(len(samples) * target_rate / source_rate)
+    output_length = max(1, output_length)
+    resampled = array("h")
+    for i in range(output_length):
+        source_pos = i * source_rate / target_rate
+        left_index = int(source_pos)
+        right_index = min(left_index + 1, len(samples) - 1)
+        fraction = source_pos - left_index
+        left_value = int(samples[left_index])
+        right_value = int(samples[right_index])
+        mixed = int(left_value + (right_value - left_value) * fraction)
+        mixed = max(-32768, min(32767, mixed))
+        resampled.append(mixed)
+    return resampled.tobytes()
+
+
+def _decode_and_normalize_pcm16_audio(
+    *,
+    audio_base64: str,
+    sample_rate: int,
+    channels: int,
+    target_sample_rate: int = 16000,
+) -> bytes:
+    raw = _decode_base64_audio_delta(audio_base64)
+    if len(raw) % 2 != 0:
+        raw = raw[: len(raw) - 1]
+    if not raw:
+        return b""
+    normalized_channels = _coerce_channels(channels, default=1)
+    pcm_mono = _downmix_pcm16_to_mono(raw, normalized_channels)
+    if not pcm_mono:
+        return b""
+    return _resample_pcm16_mono(
+        pcm_mono,
+        source_rate=_coerce_sample_rate(sample_rate, 16000),
+        target_rate=_coerce_sample_rate(target_sample_rate, 16000),
+    )
+
+
+def _openai_realtime_ws_url(base_url: str, model: str) -> str:
     normalized_base = _normalized_realtime_base_url(base_url)
     parsed = urlsplit(normalized_base)
     scheme = "wss" if parsed.scheme.lower() == "https" else "ws"
@@ -3088,15 +3373,28 @@ def _realtime_ws_url(base_url: str, model: str) -> str:
     return urlunsplit((scheme, parsed.netloc, ws_path, query, ""))
 
 
-def _realtime_http_base_url(base_url: str) -> str:
-    parsed = urlsplit(_normalized_realtime_base_url(base_url))
-    path = (parsed.path or "").rstrip("/")
-    if path.endswith("/v1"):
-        path = path[:-3]
-    return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
+def _decode_ws_json_message(raw_message):
+    raw_text = raw_message
+    if isinstance(raw_message, bytes):
+        try:
+            raw_text = raw_message.decode("utf-8", errors="ignore")
+        except Exception:
+            return None
+    if not isinstance(raw_text, str):
+        return None
+    text = raw_text.strip()
+    if not text:
+        return None
+    try:
+        payload = json.loads(text)
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
 
 
-def _call_realtime_bot_via_websocket(
+def _call_realtime_bot_via_openai_websocket(
     *,
     base_url: str,
     model: str,
@@ -3104,17 +3402,22 @@ def _call_realtime_bot_via_websocket(
     voice: str,
     prompt: str,
     request_audio: bool,
+    ws_url_override: str | None = None,
+    extra_headers: list[str] | None = None,
 ) -> tuple[str, str, str]:
     try:
         import websocket  # type: ignore
     except Exception as exc:
         raise RuntimeError("websocket client library is not available") from exc
 
-    ws_url = _realtime_ws_url(base_url, model)
+    ws_url = ws_url_override or _openai_realtime_ws_url(base_url, model)
     headers = [
         f"Authorization: Bearer {api_key}",
         "Content-Type: application/json",
+        "OpenAI-Beta: realtime=v1",
     ]
+    if extra_headers:
+        headers.extend(extra_headers)
     ws = websocket.create_connection(
         ws_url,
         header=headers,
@@ -3124,6 +3427,7 @@ def _call_realtime_bot_via_websocket(
         if hasattr(ws, "settimeout"):
             ws.settimeout(1)
 
+        output_modalities = ["audio", "text"] if request_audio else ["text"]
         session_payload = {
             "type": "session.update",
             "session": {
@@ -3133,9 +3437,14 @@ def _call_realtime_bot_via_websocket(
                     "You are a concise realtime meeting assistant. "
                     "Always answer in Chinese and keep replies brief and clear."
                 ),
+                "output_modalities": output_modalities,
                 "audio": {
                     "output": {
                         "voice": voice,
+                        "format": {
+                            "type": "audio/pcm",
+                            "rate": 24000,
+                        },
                     },
                 },
             },
@@ -3165,7 +3474,7 @@ def _call_realtime_bot_via_websocket(
                 {
                     "type": "response.create",
                     "response": {
-                        "modalities": ["text", "audio"] if request_audio else ["text"],
+                        "output_modalities": output_modalities,
                     },
                 },
                 ensure_ascii=False,
@@ -3174,9 +3483,10 @@ def _call_realtime_bot_via_websocket(
         )
 
         text_chunks: list[str] = []
-        audio_chunks: list[str] = []
+        audio_pcm_bytes = bytearray()
+        audio_base64_chunks: list[str] = []
         audio_mime = "audio/wav" if request_audio else ""
-        deadline = time.time() + _REALTIME_BOT_RESPONSE_TIMEOUT_SECONDS
+        deadline = time.time() + max(_REALTIME_BOT_RESPONSE_TIMEOUT_SECONDS, 35)
         timeout_error = getattr(websocket, "WebSocketTimeoutException", Exception)
         while time.time() < deadline:
             try:
@@ -3185,8 +3495,8 @@ def _call_realtime_bot_via_websocket(
                 continue
             if not raw:
                 continue
-            event = json.loads(raw)
-            if not isinstance(event, dict):
+            event = _decode_ws_json_message(raw)
+            if event is None:
                 continue
             event_type = str(event.get("type") or "").strip().lower()
             if event_type == "error":
@@ -3196,23 +3506,57 @@ def _call_realtime_bot_via_websocket(
             delta = event.get("delta")
             if isinstance(delta, str) and delta:
                 if "audio" in event_type and "transcript" not in event_type:
-                    audio_chunks.append(delta)
+                    try:
+                        audio_pcm_bytes.extend(_decode_base64_audio_delta(delta))
+                    except Exception:
+                        audio_base64_chunks.append(delta)
                 elif "text" in event_type or "transcript" in event_type:
                     text_chunks.append(delta)
 
+            if event_type == "response.output_item.done":
+                item_text = _extract_text_from_model_payload(event)
+                if item_text:
+                    text_chunks.append(item_text)
+                item_audio, item_audio_mime = _extract_audio_from_model_payload(event)
+                if item_audio:
+                    audio_base64_chunks.append(item_audio)
+                    if item_audio_mime:
+                        audio_mime = item_audio_mime
+
             if event_type in {"response.done", "response.completed"}:
-                done_text = _extract_text_from_model_payload(event)
+                response_obj = event.get("response")
+                if isinstance(response_obj, dict):
+                    status_value = str(response_obj.get("status") or "").strip().lower()
+                    if status_value and status_value != "completed":
+                        detail = response_obj.get("status_details") or response_obj.get("error") or response_obj
+                        raise RuntimeError(f"realtime response status={status_value}: {detail}")
+                done_text = _extract_text_from_model_payload(
+                    response_obj if isinstance(response_obj, dict) else event
+                )
                 if done_text:
                     text_chunks.append(done_text)
-                done_audio, done_audio_mime = _extract_audio_from_model_payload(event)
+                done_audio, done_audio_mime = _extract_audio_from_model_payload(
+                    response_obj if isinstance(response_obj, dict) else event
+                )
                 if done_audio:
-                    audio_chunks.append(done_audio)
+                    audio_base64_chunks.append(done_audio)
                     if done_audio_mime:
                         audio_mime = done_audio_mime
                 break
 
         text = "".join(text_chunks).strip()
-        audio_base64 = "".join(audio_chunks).strip()
+        audio_base64 = ""
+        if request_audio:
+            if audio_pcm_bytes:
+                wav_base64 = _pcm16le_to_wav_base64(bytes(audio_pcm_bytes), sample_rate=24000, channels=1)
+                if wav_base64:
+                    audio_base64 = wav_base64
+                    audio_mime = "audio/wav"
+                else:
+                    audio_base64 = base64.b64encode(bytes(audio_pcm_bytes)).decode("ascii")
+                    audio_mime = "audio/pcm"
+            elif audio_base64_chunks:
+                audio_base64 = "".join(chunk.strip() for chunk in audio_base64_chunks if chunk.strip())
         if not text:
             text = _extract_text_from_model_payload({"output": [{"text": text}]})
         if not text:
@@ -3228,57 +3572,979 @@ def _call_realtime_bot_via_websocket(
             pass
 
 
-def _call_realtime_bot_via_responses(
+def _call_realtime_bot_via_openai_audio_websocket(
     *,
     base_url: str,
     model: str,
     api_key: str,
     voice: str,
+    audio_pcm16: bytes,
+    input_sample_rate: int = 16000,
+    request_audio: bool,
+    ws_url_override: str | None = None,
+    extra_headers: list[str] | None = None,
+) -> tuple[str, str, str]:
+    try:
+        import websocket  # type: ignore
+    except Exception as exc:
+        raise RuntimeError("websocket client library is not available") from exc
+
+    if not audio_pcm16:
+        raise RuntimeError("input audio is empty")
+
+    ws_url = ws_url_override or _openai_realtime_ws_url(base_url, model)
+    headers = [
+        f"Authorization: Bearer {api_key}",
+        "Content-Type: application/json",
+        "OpenAI-Beta: realtime=v1",
+    ]
+    if extra_headers:
+        headers.extend(extra_headers)
+    ws = websocket.create_connection(
+        ws_url,
+        header=headers,
+        timeout=_REALTIME_BOT_WS_CONNECT_TIMEOUT_SECONDS,
+    )
+    try:
+        if hasattr(ws, "settimeout"):
+            ws.settimeout(1)
+
+        output_modalities = ["audio", "text"] if request_audio else ["text"]
+        ws.send(
+            json.dumps(
+                {
+                    "type": "session.update",
+                    "session": {
+                        "type": "realtime",
+                        "model": model,
+                        "instructions": (
+                            "You are a concise realtime meeting assistant. "
+                            "Always answer in Chinese and keep replies brief and clear."
+                        ),
+                        "output_modalities": output_modalities,
+                        "audio": {
+                            "input": {
+                                "format": {
+                                    "type": "audio/pcm",
+                                    "rate": _coerce_sample_rate(input_sample_rate, 16000),
+                                },
+                            },
+                            "output": {
+                                "voice": voice,
+                                "format": {
+                                    "type": "audio/pcm",
+                                    "rate": 24000,
+                                },
+                            },
+                        },
+                    },
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        )
+
+        chunk_size = 6400
+        for idx in range(0, len(audio_pcm16), chunk_size):
+            chunk = audio_pcm16[idx : idx + chunk_size]
+            if not chunk:
+                continue
+            ws.send(
+                json.dumps(
+                    {
+                        "type": "input_audio_buffer.append",
+                        "audio": base64.b64encode(chunk).decode("ascii"),
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            )
+        ws.send(json.dumps({"type": "input_audio_buffer.commit"}, separators=(",", ":")))
+        ws.send(
+            json.dumps(
+                {
+                    "type": "response.create",
+                    "response": {
+                        "output_modalities": output_modalities,
+                    },
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        )
+
+        text_chunks: list[str] = []
+        audio_pcm_bytes = bytearray()
+        audio_base64_chunks: list[str] = []
+        audio_mime = "audio/wav" if request_audio else ""
+        deadline = time.time() + max(_REALTIME_BOT_RESPONSE_TIMEOUT_SECONDS, 35)
+        timeout_error = getattr(websocket, "WebSocketTimeoutException", Exception)
+        while time.time() < deadline:
+            try:
+                raw = ws.recv()
+            except timeout_error:
+                continue
+            if not raw:
+                continue
+            event = _decode_ws_json_message(raw)
+            if event is None:
+                continue
+            event_type = str(event.get("type") or "").strip().lower()
+            if event_type == "error":
+                error_detail = event.get("error") or event.get("message") or event
+                raise RuntimeError(f"realtime ws error: {error_detail}")
+
+            delta = event.get("delta")
+            if isinstance(delta, str) and delta:
+                if "audio" in event_type and "transcript" not in event_type:
+                    try:
+                        audio_pcm_bytes.extend(_decode_base64_audio_delta(delta))
+                    except Exception:
+                        audio_base64_chunks.append(delta)
+                elif "text" in event_type or "transcript" in event_type:
+                    text_chunks.append(delta)
+
+            transcript = event.get("transcript")
+            if isinstance(transcript, str) and transcript.strip():
+                text_chunks.append(transcript.strip())
+
+            if event_type == "response.output_item.done":
+                item_text = _extract_text_from_model_payload(event)
+                if item_text:
+                    text_chunks.append(item_text)
+                item_audio, item_audio_mime = _extract_audio_from_model_payload(event)
+                if item_audio:
+                    audio_base64_chunks.append(item_audio)
+                    if item_audio_mime:
+                        audio_mime = item_audio_mime
+
+            if event_type in {"response.done", "response.completed"}:
+                response_obj = event.get("response")
+                if isinstance(response_obj, dict):
+                    status_value = str(response_obj.get("status") or "").strip().lower()
+                    if status_value and status_value != "completed":
+                        detail = response_obj.get("status_details") or response_obj.get("error") or response_obj
+                        raise RuntimeError(f"realtime response status={status_value}: {detail}")
+                done_text = _extract_text_from_model_payload(
+                    response_obj if isinstance(response_obj, dict) else event
+                )
+                if done_text:
+                    text_chunks.append(done_text)
+                done_audio, done_audio_mime = _extract_audio_from_model_payload(
+                    response_obj if isinstance(response_obj, dict) else event
+                )
+                if done_audio:
+                    audio_base64_chunks.append(done_audio)
+                    if done_audio_mime:
+                        audio_mime = done_audio_mime
+                break
+
+        text = "".join(text_chunks).strip()
+        audio_base64 = ""
+        if request_audio:
+            if audio_pcm_bytes:
+                wav_base64 = _pcm16le_to_wav_base64(bytes(audio_pcm_bytes), sample_rate=24000, channels=1)
+                if wav_base64:
+                    audio_base64 = wav_base64
+                    audio_mime = "audio/wav"
+                else:
+                    audio_base64 = base64.b64encode(bytes(audio_pcm_bytes)).decode("ascii")
+                    audio_mime = "audio/pcm"
+            elif audio_base64_chunks:
+                audio_base64 = "".join(chunk.strip() for chunk in audio_base64_chunks if chunk.strip())
+        if not text:
+            raise RuntimeError("realtime ws did not return text output")
+        if request_audio and not audio_base64:
+            audio_mime = ""
+        return text, audio_base64, audio_mime
+    finally:
+        try:
+            ws.close()
+        except Exception:
+            pass
+
+
+def _extract_text_from_volcengine_ws_event(payload) -> str:
+    text = _extract_text_from_model_payload(payload)
+    if text:
+        return text
+    candidates: list[str] = []
+    for node in _iter_json_nodes(payload):
+        if not isinstance(node, dict):
+            continue
+        for key in (
+            "text",
+            "answer",
+            "reply",
+            "message",
+            "sentence",
+            "transcript",
+            "final_text",
+            "utterance",
+        ):
+            value = node.get(key)
+            if isinstance(value, str) and value.strip():
+                lowered_key = key.lower()
+                # Avoid echoing user input/query payloads as assistant output.
+                if lowered_key in {"text", "message"}:
+                    role = str(node.get("role") or node.get("speaker") or "").strip().lower()
+                    if role in {"user", "human", "client"}:
+                        continue
+                if lowered_key == "text" and node.get("query") and not node.get("answer"):
+                    continue
+                candidates.append(value.strip())
+            elif isinstance(value, (list, tuple)):
+                for item in value:
+                    if isinstance(item, str) and item.strip():
+                        candidates.append(item.strip())
+    return " ".join(candidates).strip()
+
+
+def _normalized_realtime_reply_text(text: str, *, audio_base64: str = "") -> str:
+    normalized = (text or "").strip()
+    if normalized:
+        return normalized
+    if (audio_base64 or "").strip():
+        # Some volcengine realtime turns may only return TTS audio chunks.
+        return "（语音回复）"
+    return ""
+
+
+def _volcengine_ws_headers(
+    *,
+    app_id: str,
+    app_key: str,
+    access_key: str,
+    resource_id: str,
+    connect_id: str,
+) -> list[str]:
+    return [
+        "Content-Type: application/json",
+        f"X-Api-App-ID: {app_id}",
+        f"X-Api-App-Key: {app_key}",
+        f"X-Api-Access-Key: {access_key}",
+        f"X-Api-Resource-Id: {resource_id}",
+        f"X-Api-Connect-Id: {connect_id}",
+    ]
+
+
+def _volcengine_protocol_header(
+    *,
+    message_type: int = _VOLCENGINE_CLIENT_FULL_REQUEST,
+    message_type_flags: int = _VOLCENGINE_MSG_WITH_EVENT,
+    serialization: int = _VOLCENGINE_SERIALIZATION_JSON,
+    compression: int = _VOLCENGINE_COMPRESSION_GZIP,
+) -> bytearray:
+    header_size = 1
+    header = bytearray()
+    header.append((_VOLCENGINE_PROTOCOL_VERSION << 4) | header_size)
+    header.append((message_type << 4) | message_type_flags)
+    header.append((serialization << 4) | compression)
+    header.append(0x00)
+    return header
+
+
+def _volcengine_encode_json_payload(payload: dict) -> bytes:
+    raw = json.dumps(payload or {}, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return gzip.compress(raw)
+
+
+def _volcengine_build_request(
+    *,
+    event: int,
+    payload: dict,
+    session_id: str | None = None,
+) -> bytes:
+    request = _volcengine_protocol_header()
+    request.extend(int(event).to_bytes(4, "big", signed=False))
+    if session_id is not None:
+        session_bytes = session_id.encode("utf-8")
+        request.extend(len(session_bytes).to_bytes(4, "big", signed=False))
+        request.extend(session_bytes)
+    payload_bytes = _volcengine_encode_json_payload(payload)
+    request.extend(len(payload_bytes).to_bytes(4, "big", signed=False))
+    request.extend(payload_bytes)
+    return bytes(request)
+
+
+def _volcengine_build_audio_request(
+    *,
+    event: int,
+    session_id: str,
+    audio_payload: bytes,
+) -> bytes:
+    request = _volcengine_protocol_header(
+        message_type=_VOLCENGINE_CLIENT_AUDIO_ONLY_REQUEST,
+        message_type_flags=_VOLCENGINE_MSG_WITH_EVENT,
+        serialization=_VOLCENGINE_SERIALIZATION_NONE,
+        compression=_VOLCENGINE_COMPRESSION_GZIP,
+    )
+    request.extend(int(event).to_bytes(4, "big", signed=False))
+    session_bytes = session_id.encode("utf-8")
+    request.extend(len(session_bytes).to_bytes(4, "big", signed=False))
+    request.extend(session_bytes)
+    payload_bytes = gzip.compress(audio_payload or b"")
+    request.extend(len(payload_bytes).to_bytes(4, "big", signed=False))
+    request.extend(payload_bytes)
+    return bytes(request)
+
+
+def _volcengine_parse_ws_response(raw_message):
+    if isinstance(raw_message, str):
+        payload = _decode_ws_json_message(raw_message)
+        if payload is None:
+            return None
+        event_name = str(payload.get("event") or payload.get("type") or "").strip().lower()
+        return {"event_name": event_name, "payload_msg": payload}
+    if not isinstance(raw_message, (bytes, bytearray)) or len(raw_message) < 4:
+        return None
+
+    res = bytes(raw_message)
+    header_size = res[0] & 0x0F
+    message_type = res[1] >> 4
+    message_type_flags = res[1] & 0x0F
+    serialization = res[2] >> 4
+    compression = res[2] & 0x0F
+    payload = res[header_size * 4 :]
+    result: dict[str, object] = {}
+    payload_msg: bytes | None = None
+
+    if message_type in {_VOLCENGINE_SERVER_FULL_RESPONSE, _VOLCENGINE_SERVER_ACK}:
+        result["message_type"] = (
+            "SERVER_ACK" if message_type == _VOLCENGINE_SERVER_ACK else "SERVER_FULL_RESPONSE"
+        )
+        start = 0
+        if message_type_flags & _VOLCENGINE_SEQUENCE_FLAGS:
+            if len(payload) < start + 4:
+                return result
+            result["seq"] = int.from_bytes(payload[start : start + 4], "big", signed=False)
+            start += 4
+        if message_type_flags & _VOLCENGINE_MSG_WITH_EVENT:
+            if len(payload) < start + 4:
+                return result
+            result["event"] = int.from_bytes(payload[start : start + 4], "big", signed=False)
+            start += 4
+        payload = payload[start:]
+        if len(payload) < 4:
+            return result
+        session_size = int.from_bytes(payload[:4], "big", signed=True)
+        has_session_id = (
+            0 <= session_size <= _VOLCENGINE_MAX_SESSION_ID_BYTES
+            and len(payload) >= 4 + session_size + 4
+        )
+        if has_session_id:
+            session_id = payload[4 : 4 + session_size]
+            result["session_id"] = session_id.decode("utf-8", errors="ignore")
+            payload = payload[4 + session_size :]
+            payload_size = int.from_bytes(payload[:4], "big", signed=False) if len(payload) >= 4 else 0
+            payload_msg = payload[4:]
+        else:
+            payload_size = int.from_bytes(payload[:4], "big", signed=False)
+            payload_msg = payload[4:]
+        result["payload_size"] = payload_size
+    elif message_type == _VOLCENGINE_SERVER_ERROR_RESPONSE:
+        if len(payload) >= 4:
+            result["code"] = int.from_bytes(payload[:4], "big", signed=False)
+        payload_msg = payload[8:] if len(payload) >= 8 else b""
+    else:
+        return result
+
+    if payload_msg is None:
+        return result
+    if compression == _VOLCENGINE_COMPRESSION_GZIP and payload_msg:
+        try:
+            payload_msg = gzip.decompress(payload_msg)
+        except Exception:
+            return result
+    if serialization == _VOLCENGINE_SERIALIZATION_JSON:
+        try:
+            result["payload_msg"] = json.loads(payload_msg.decode("utf-8"))
+        except Exception:
+            result["payload_msg"] = {}
+    elif serialization == _VOLCENGINE_SERIALIZATION_NONE:
+        result["payload_msg"] = payload_msg
+    else:
+        result["payload_msg"] = payload_msg.decode("utf-8", errors="replace")
+    return result
+
+
+def _volcengine_float32_audio_to_pcm16_bytes(raw_audio) -> bytes:
+    if not isinstance(raw_audio, (bytes, bytearray)):
+        return b""
+    if len(raw_audio) < 4:
+        return b""
+    raw_bytes = bytes(raw_audio)
+    sample_bytes = raw_bytes[: len(raw_bytes) - (len(raw_bytes) % 4)]
+    if not sample_bytes:
+        return b""
+
+    samples = array("f")
+    try:
+        samples.frombytes(sample_bytes)
+    except Exception:
+        return b""
+
+    pcm = bytearray()
+    for sample in samples:
+        value = max(-1.0, min(1.0, float(sample)))
+        pcm_value = int(value * 32767.0)
+        pcm.extend(int(pcm_value).to_bytes(2, "little", signed=True))
+    return bytes(pcm)
+
+
+def _volcengine_looks_like_float32_audio(raw_audio: bytes) -> bool:
+    if not isinstance(raw_audio, (bytes, bytearray)):
+        return False
+    raw = bytes(raw_audio)
+    if len(raw) < 32 or len(raw) % 4 != 0:
+        return False
+    sample_bytes = raw[: min(len(raw), 4 * 256)]
+    samples = array("f")
+    try:
+        samples.frombytes(sample_bytes)
+    except Exception:
+        return False
+    if not samples:
+        return False
+    finite_count = 0
+    in_range_count = 0
+    for sample in samples:
+        value = float(sample)
+        if math.isfinite(value):
+            finite_count += 1
+            if -1.5 <= value <= 1.5:
+                in_range_count += 1
+    if finite_count <= 0:
+        return False
+    ratio = in_range_count / finite_count
+    return ratio >= 0.9
+
+
+def _volcengine_extract_tts_pcm16_bytes(payload_msg) -> bytes:
+    if isinstance(payload_msg, (bytes, bytearray)):
+        raw = bytes(payload_msg)
+        if not raw:
+            return b""
+        if _volcengine_looks_like_float32_audio(raw):
+            converted = _volcengine_float32_audio_to_pcm16_bytes(raw)
+            if converted:
+                return converted
+        if len(raw) % 2 == 0:
+            return raw
+        converted = _volcengine_float32_audio_to_pcm16_bytes(raw)
+        return converted if converted else b""
+
+    if isinstance(payload_msg, dict):
+        for key in (
+            "audio",
+            "data",
+            "tts_audio",
+            "pcm",
+            "pcm_data",
+            "audio_data",
+            "payload",
+        ):
+            value = payload_msg.get(key)
+            if isinstance(value, (bytes, bytearray)):
+                return _volcengine_extract_tts_pcm16_bytes(value)
+            if isinstance(value, str):
+                try:
+                    decoded = _decode_base64_audio_delta(value)
+                except Exception:
+                    decoded = b""
+                if decoded:
+                    return _volcengine_extract_tts_pcm16_bytes(decoded)
+            if isinstance(value, list):
+                try:
+                    packed = bytes(int(v) & 0xFF for v in value)
+                except Exception:
+                    packed = b""
+                if packed:
+                    return _volcengine_extract_tts_pcm16_bytes(packed)
+    return b""
+
+
+def _call_realtime_bot_via_volcengine_dialog_websocket(
+    *,
+    ws_url: str,
+    app_id: str,
+    app_key: str,
+    access_key: str,
+    resource_id: str,
+    uid: str,
+    prompt: str,
+    bot_name: str,
+    speaker: str,
+    request_audio: bool,
+) -> tuple[str, str, str]:
+    try:
+        import websocket  # type: ignore
+    except Exception as exc:
+        raise RuntimeError("websocket client library is not available") from exc
+
+    connect_id = str(uuid4())
+    session_id = str(uuid4())
+    headers = _volcengine_ws_headers(
+        app_id=app_id,
+        app_key=app_key,
+        access_key=access_key,
+        resource_id=resource_id,
+        connect_id=connect_id,
+    )
+    ws = websocket.create_connection(
+        ws_url,
+        header=headers,
+        timeout=_REALTIME_BOT_WS_CONNECT_TIMEOUT_SECONDS,
+    )
+    try:
+        if hasattr(ws, "settimeout"):
+            ws.settimeout(1)
+
+        ws.send_binary(
+            _volcengine_build_request(
+                event=_VOLCENGINE_EVENT_START_CONNECTION,
+                payload={},
+            )
+        )
+        _ = ws.recv()
+
+        ws.send_binary(
+            _volcengine_build_request(
+                event=_VOLCENGINE_EVENT_START_SESSION,
+                session_id=session_id,
+                payload={
+                    "asr": {"extra": {"end_smooth_window_ms": 500}},
+                    "tts": {
+                        "audio_config": {
+                            "channel": 1,
+                            "format": "pcm_s16le",
+                            "sample_rate": 24000,
+                        },
+                        "speaker": speaker,
+                    },
+                    "dialog": {
+                        "bot_name": bot_name,
+                        "dialog_id": session_id,
+                        "extra": {
+                            "strict_audit": False,
+                            "recv_timeout": 15,
+                            "input_mod": "text",
+                        },
+                    },
+                    "user": {"uid": uid},
+                },
+            )
+        )
+        _ = ws.recv()
+
+        ws.send_binary(
+            _volcengine_build_request(
+                event=_VOLCENGINE_EVENT_CHAT_TEXT_QUERY,
+                session_id=session_id,
+                payload={"content": prompt},
+            )
+        )
+        sent_legacy_text_query = False
+        text_query_sent_at = time.time()
+
+        text_chunks: list[str] = []
+        audio_pcm_bytes = bytearray()
+        audio_mime = "audio/wav" if request_audio else ""
+        text_done = False
+        audio_done = not request_audio
+        ack_audio_chunks = 0
+        event_audio_chunks = 0
+        deadline = time.time() + max(_REALTIME_BOT_RESPONSE_TIMEOUT_SECONDS, 35)
+        timeout_error = getattr(websocket, "WebSocketTimeoutException", Exception)
+        while time.time() < deadline:
+            try:
+                raw = ws.recv()
+            except timeout_error:
+                continue
+            if not raw:
+                continue
+            event = _volcengine_parse_ws_response(raw)
+            if event is None:
+                continue
+            if "code" in event:
+                detail = event.get("payload_msg") or event.get("code") or event
+                raise RuntimeError(f"volcengine realtime ws error: {detail}")
+
+            event_code = int(event.get("event") or 0)
+            payload_msg = event.get("payload_msg")
+            message_type = str(event.get("message_type") or "").strip().upper()
+
+            if request_audio and message_type == "SERVER_ACK":
+                audio_chunk = _volcengine_extract_tts_pcm16_bytes(payload_msg)
+                if audio_chunk:
+                    audio_pcm_bytes.extend(audio_chunk)
+                    ack_audio_chunks += 1
+
+            if event_code in {_VOLCENGINE_EVENT_TEXT_DONE, _VOLCENGINE_EVENT_DIALOG_DONE}:
+                text_done = True
+            elif event_code == _VOLCENGINE_EVENT_TTS_DONE:
+                audio_done = True
+            elif event_code == _VOLCENGINE_EVENT_TTS_AUDIO and request_audio:
+                audio_chunk = _volcengine_extract_tts_pcm16_bytes(payload_msg)
+                # Prefer ACK binary audio stream. Fall back to event chunks only when ACK stream is absent.
+                if audio_chunk and ack_audio_chunks == 0:
+                    audio_pcm_bytes.extend(audio_chunk)
+                    event_audio_chunks += 1
+
+            chunk_text = _extract_text_from_volcengine_ws_event(payload_msg if payload_msg is not None else event)
+            if chunk_text and (not text_chunks or chunk_text != text_chunks[-1]):
+                text_chunks.append(chunk_text)
+
+            event_name = str(event.get("event_name") or "").strip().lower()
+            if event_name in {"chatended", "chat_ended", "response.done", "response.completed", "session.stop"}:
+                text_done = True
+            if (
+                not sent_legacy_text_query
+                and not text_chunks
+                and not audio_pcm_bytes
+                and time.time() - text_query_sent_at >= 3.0
+            ):
+                ws.send_binary(
+                    _volcengine_build_request(
+                        event=_VOLCENGINE_EVENT_CHAT_TEXT_QUERY_LEGACY,
+                        session_id=session_id,
+                        payload={"content": prompt},
+                    )
+                )
+                sent_legacy_text_query = True
+            if audio_done and (text_done or bool(audio_pcm_bytes)):
+                break
+            if text_done and audio_done:
+                break
+
+        text = "".join(part for part in text_chunks if part.strip()).strip()
+        audio_base64 = ""
+        if request_audio and audio_pcm_bytes:
+            audio_base64 = _pcm16le_to_wav_base64(bytes(audio_pcm_bytes), sample_rate=24000, channels=1)
+            audio_mime = "audio/wav" if audio_base64 else ""
+        text = _normalized_realtime_reply_text(text, audio_base64=audio_base64)
+        if not text:
+            raise RuntimeError(
+                "volcengine realtime ws did not return text output "
+                f"(audio_bytes={len(audio_pcm_bytes)}, text_chunks={len(text_chunks)}, "
+                f"text_done={int(text_done)}, audio_done={int(audio_done)}, "
+                f"ack_chunks={ack_audio_chunks}, event_chunks={event_audio_chunks})"
+            )
+        if request_audio and not audio_base64:
+            audio_mime = ""
+        return text, audio_base64, audio_mime
+    finally:
+        try:
+            ws.send_binary(
+                _volcengine_build_request(
+                    event=_VOLCENGINE_EVENT_FINISH_SESSION,
+                    session_id=session_id,
+                    payload={},
+                )
+            )
+        except Exception:
+            pass
+        try:
+            ws.send_binary(
+                _volcengine_build_request(
+                    event=_VOLCENGINE_EVENT_FINISH_CONNECTION,
+                    payload={},
+                )
+            )
+        except Exception:
+            pass
+        try:
+            ws.close()
+        except Exception:
+            pass
+
+
+def _iter_audio_chunks(audio_bytes: bytes, *, chunk_size: int = 3200):
+    size = max(320, int(chunk_size or 3200))
+    for offset in range(0, len(audio_bytes), size):
+        chunk = audio_bytes[offset : offset + size]
+        if chunk:
+            yield chunk
+
+
+def _call_realtime_bot_via_volcengine_audio_dialog_websocket(
+    *,
+    ws_url: str,
+    app_id: str,
+    app_key: str,
+    access_key: str,
+    resource_id: str,
+    uid: str,
+    audio_pcm16: bytes,
+    audio_sample_rate: int,
+    bot_name: str,
+    speaker: str,
+    request_audio: bool,
+) -> tuple[str, str, str]:
+    try:
+        import websocket  # type: ignore
+    except Exception as exc:
+        raise RuntimeError("websocket client library is not available") from exc
+
+    if not audio_pcm16:
+        raise RuntimeError("volcengine input audio is empty")
+
+    connect_id = str(uuid4())
+    session_id = str(uuid4())
+    headers = _volcengine_ws_headers(
+        app_id=app_id,
+        app_key=app_key,
+        access_key=access_key,
+        resource_id=resource_id,
+        connect_id=connect_id,
+    )
+    ws = websocket.create_connection(
+        ws_url,
+        header=headers,
+        timeout=_REALTIME_BOT_WS_CONNECT_TIMEOUT_SECONDS,
+    )
+    try:
+        if hasattr(ws, "settimeout"):
+            ws.settimeout(1)
+
+        ws.send_binary(
+            _volcengine_build_request(
+                event=_VOLCENGINE_EVENT_START_CONNECTION,
+                payload={},
+            )
+        )
+        _ = ws.recv()
+
+        ws.send_binary(
+            _volcengine_build_request(
+                event=_VOLCENGINE_EVENT_START_SESSION,
+                session_id=session_id,
+                payload={
+                    "asr": {
+                        "audio_config": {
+                            "channel": 1,
+                            "format": "pcm",
+                            "sample_rate": _coerce_sample_rate(audio_sample_rate, 16000),
+                        },
+                        "extra": {"end_smooth_window_ms": 1200},
+                    },
+                    "tts": {
+                        "audio_config": {
+                            "channel": 1,
+                            "format": "pcm_s16le",
+                            "sample_rate": 24000,
+                        },
+                        "speaker": speaker,
+                    },
+                    "dialog": {
+                        "bot_name": bot_name,
+                        "dialog_id": session_id,
+                        "extra": {
+                            "strict_audit": False,
+                            "recv_timeout": 20,
+                            "input_mod": "keep_alive",
+                        },
+                    },
+                    "user": {"uid": uid},
+                },
+            )
+        )
+        _ = ws.recv()
+
+        for audio_chunk in _iter_audio_chunks(audio_pcm16, chunk_size=6400):
+            ws.send_binary(
+                _volcengine_build_audio_request(
+                    event=_VOLCENGINE_EVENT_AUDIO_REQUEST,
+                    session_id=session_id,
+                    audio_payload=audio_chunk,
+                )
+            )
+            time.sleep(0.05)
+
+        # Ensure server-side VAD can close this turn when user stops speaking.
+        for _ in range(6):
+            ws.send_binary(
+                _volcengine_build_audio_request(
+                    event=_VOLCENGINE_EVENT_AUDIO_REQUEST,
+                    session_id=session_id,
+                    audio_payload=b"\x00" * 6400,
+                )
+            )
+            time.sleep(0.05)
+
+        text_chunks: list[str] = []
+        audio_pcm_bytes = bytearray()
+        audio_mime = "audio/wav" if request_audio else ""
+        text_done = False
+        audio_done = not request_audio
+        ack_audio_chunks = 0
+        event_audio_chunks = 0
+        deadline = time.time() + max(_REALTIME_BOT_RESPONSE_TIMEOUT_SECONDS, 35)
+        timeout_error = getattr(websocket, "WebSocketTimeoutException", Exception)
+        while time.time() < deadline:
+            try:
+                raw = ws.recv()
+            except timeout_error:
+                continue
+            if not raw:
+                continue
+            event = _volcengine_parse_ws_response(raw)
+            if event is None:
+                continue
+            if "code" in event:
+                detail = event.get("payload_msg") or event.get("code") or event
+                raise RuntimeError(f"volcengine realtime ws error: {detail}")
+
+            event_code = int(event.get("event") or 0)
+            payload_msg = event.get("payload_msg")
+            message_type = str(event.get("message_type") or "").strip().upper()
+
+            if request_audio and message_type == "SERVER_ACK":
+                audio_chunk = _volcengine_extract_tts_pcm16_bytes(payload_msg)
+                if audio_chunk:
+                    audio_pcm_bytes.extend(audio_chunk)
+                    ack_audio_chunks += 1
+
+            if event_code in {_VOLCENGINE_EVENT_TEXT_DONE, _VOLCENGINE_EVENT_DIALOG_DONE}:
+                text_done = True
+            elif event_code == _VOLCENGINE_EVENT_TTS_DONE:
+                audio_done = True
+            elif event_code == _VOLCENGINE_EVENT_TTS_AUDIO and request_audio:
+                audio_chunk = _volcengine_extract_tts_pcm16_bytes(payload_msg)
+                # Prefer ACK binary audio stream. Fall back to event chunks only when ACK stream is absent.
+                if audio_chunk and ack_audio_chunks == 0:
+                    audio_pcm_bytes.extend(audio_chunk)
+                    event_audio_chunks += 1
+
+            chunk_text = _extract_text_from_volcengine_ws_event(payload_msg if payload_msg is not None else event)
+            if chunk_text and (not text_chunks or chunk_text != text_chunks[-1]):
+                text_chunks.append(chunk_text)
+
+            event_name = str(event.get("event_name") or "").strip().lower()
+            if event_name in {"chatended", "chat_ended", "response.done", "response.completed", "session.stop"}:
+                text_done = True
+            if audio_done and (text_done or bool(audio_pcm_bytes)):
+                break
+            if text_done and audio_done:
+                break
+
+        text = "".join(part for part in text_chunks if part.strip()).strip()
+        audio_base64 = ""
+        if request_audio and audio_pcm_bytes:
+            audio_base64 = _pcm16le_to_wav_base64(bytes(audio_pcm_bytes), sample_rate=24000, channels=1)
+            if not audio_base64:
+                audio_mime = ""
+        text = _normalized_realtime_reply_text(text, audio_base64=audio_base64)
+        if not text:
+            raise RuntimeError(
+                "volcengine realtime ws did not return text output "
+                f"(audio_bytes={len(audio_pcm_bytes)}, text_chunks={len(text_chunks)}, "
+                f"text_done={int(text_done)}, audio_done={int(audio_done)}, "
+                f"ack_chunks={ack_audio_chunks}, event_chunks={event_audio_chunks})"
+            )
+        if request_audio and not audio_base64:
+            audio_mime = ""
+        return text, audio_base64, audio_mime
+    finally:
+        try:
+            ws.send_binary(
+                _volcengine_build_request(
+                    event=_VOLCENGINE_EVENT_FINISH_SESSION,
+                    session_id=session_id,
+                    payload={},
+                )
+            )
+        except Exception:
+            pass
+        try:
+            ws.send_binary(
+                _volcengine_build_request(
+                    event=_VOLCENGINE_EVENT_FINISH_CONNECTION,
+                    payload={},
+                )
+            )
+        except Exception:
+            pass
+        try:
+            ws.close()
+        except Exception:
+            pass
+
+
+def _call_realtime_bot_via_volcengine_websocket(
+    *,
+    meeting,
     prompt: str,
     request_audio: bool,
 ) -> tuple[str, str, str]:
-    endpoint = f"{_realtime_http_base_url(base_url)}/v1/responses"
-    payload: dict = {
-        "model": model,
-        "input": [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "input_text",
-                        "text": prompt,
-                    }
-                ],
-            }
-        ],
-        "modalities": ["text", "audio"] if request_audio else ["text"],
-    }
-    if request_audio:
-        payload["audio"] = {
-            "voice": voice,
-            "format": "wav",
-        }
-    request = Request(
-        endpoint,
-        data=json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-    )
+    ws_url = _normalized_realtime_volc_ws_url(getattr(meeting, "realtime_bot_volc_ws_url", ""))
+    app_id = (getattr(meeting, "realtime_bot_volc_app_id", "") or "").strip()
+    app_key = _meeting_realtime_bot_volc_app_key(meeting)
+    access_key = (getattr(meeting, "realtime_bot_volc_access_key", "") or "").strip()
+    resource_id = _normalized_realtime_volc_resource_id(getattr(meeting, "realtime_bot_volc_resource_id", ""))
+    uid = _meeting_realtime_bot_volc_uid(meeting)
+    speaker = _meeting_realtime_bot_volc_speaker(meeting)
+    if not app_id:
+        raise RuntimeError("Volcengine App ID is empty")
+    if not access_key:
+        raise RuntimeError("Volcengine Access Key is empty")
+    if not resource_id:
+        raise RuntimeError("Volcengine Resource ID is empty")
 
-    with urlopen(request, timeout=_REALTIME_BOT_RESPONSE_TIMEOUT_SECONDS) as response:
-        raw = response.read().decode("utf-8", errors="replace")
-    data = json.loads(raw or "{}")
-    text = _extract_text_from_model_payload(data)
-    if not text:
-        raise RuntimeError("responses API did not return text output")
-    audio_base64, audio_mime = _extract_audio_from_model_payload(data)
-    if not request_audio:
-        audio_base64 = ""
-        audio_mime = ""
-    return text, audio_base64, audio_mime
+    try:
+        return _call_realtime_bot_via_volcengine_dialog_websocket(
+            ws_url=ws_url,
+            app_id=app_id,
+            app_key=app_key,
+            access_key=access_key,
+            resource_id=resource_id,
+            uid=uid,
+            prompt=prompt,
+            bot_name=_meeting_realtime_bot_display_name(meeting),
+            speaker=speaker,
+            request_audio=request_audio,
+        )
+    except Exception as exc:
+        raise RuntimeError(f"volcengine websocket={exc}") from exc
+
+
+def _call_realtime_bot_via_volcengine_audio_websocket(
+    *,
+    meeting,
+    audio_pcm16: bytes,
+    audio_sample_rate: int,
+    request_audio: bool,
+) -> tuple[str, str, str]:
+    ws_url = _normalized_realtime_volc_ws_url(getattr(meeting, "realtime_bot_volc_ws_url", ""))
+    app_id = (getattr(meeting, "realtime_bot_volc_app_id", "") or "").strip()
+    app_key = _meeting_realtime_bot_volc_app_key(meeting)
+    access_key = (getattr(meeting, "realtime_bot_volc_access_key", "") or "").strip()
+    resource_id = _normalized_realtime_volc_resource_id(getattr(meeting, "realtime_bot_volc_resource_id", ""))
+    uid = _meeting_realtime_bot_volc_uid(meeting)
+    speaker = _meeting_realtime_bot_volc_speaker(meeting)
+    if not app_id:
+        raise RuntimeError("Volcengine App ID is empty")
+    if not access_key:
+        raise RuntimeError("Volcengine Access Key is empty")
+    if not resource_id:
+        raise RuntimeError("Volcengine Resource ID is empty")
+
+    try:
+        return _call_realtime_bot_via_volcengine_audio_dialog_websocket(
+            ws_url=ws_url,
+            app_id=app_id,
+            app_key=app_key,
+            access_key=access_key,
+            resource_id=resource_id,
+            uid=uid,
+            audio_pcm16=audio_pcm16,
+            audio_sample_rate=audio_sample_rate,
+            bot_name=_meeting_realtime_bot_display_name(meeting),
+            speaker=speaker,
+            request_audio=request_audio,
+        )
+    except Exception as exc:
+        raise RuntimeError(f"volcengine websocket={exc}") from exc
 
 
 def _call_realtime_bot(
@@ -3286,17 +4552,25 @@ def _call_realtime_bot(
     meeting,
     prompt: str,
 ) -> tuple[str, str, str]:
+    provider = _meeting_realtime_bot_provider(meeting)
+    request_audio = not bool(meeting.realtime_bot_muted)
+
+    if provider == RealtimeBotProvider.VOLCENGINE:
+        return _call_realtime_bot_via_volcengine_websocket(
+            meeting=meeting,
+            prompt=prompt,
+            request_audio=request_audio,
+        )
+
     base_url = _normalized_realtime_base_url(meeting.realtime_bot_base_url)
     model = (meeting.realtime_bot_model or "").strip() or _REALTIME_BOT_DEFAULT_MODEL
     api_key = (meeting.realtime_bot_api_key or "").strip()
     voice = (meeting.realtime_bot_voice or "").strip() or _REALTIME_BOT_DEFAULT_VOICE
-    request_audio = not bool(meeting.realtime_bot_muted)
     if not api_key:
         raise RuntimeError("Realtime bot API key is empty")
 
-    errors: list[str] = []
     try:
-        return _call_realtime_bot_via_websocket(
+        return _call_realtime_bot_via_openai_websocket(
             base_url=base_url,
             model=model,
             api_key=api_key,
@@ -3305,21 +4579,43 @@ def _call_realtime_bot(
             request_audio=request_audio,
         )
     except Exception as exc:
-        errors.append(f"websocket={exc}")
+        raise RuntimeError(f"openai websocket={exc}") from exc
 
+
+def _call_realtime_bot_with_audio(
+    *,
+    meeting,
+    audio_pcm16: bytes,
+    audio_sample_rate: int = 16000,
+) -> tuple[str, str, str]:
+    provider = _meeting_realtime_bot_provider(meeting)
+    request_audio = not bool(meeting.realtime_bot_muted)
+    if provider == RealtimeBotProvider.VOLCENGINE:
+        return _call_realtime_bot_via_volcengine_audio_websocket(
+            meeting=meeting,
+            audio_pcm16=audio_pcm16,
+            audio_sample_rate=audio_sample_rate,
+            request_audio=request_audio,
+        )
+
+    base_url = _normalized_realtime_base_url(meeting.realtime_bot_base_url)
+    model = (meeting.realtime_bot_model or "").strip() or _REALTIME_BOT_DEFAULT_MODEL
+    api_key = (meeting.realtime_bot_api_key or "").strip()
+    voice = (meeting.realtime_bot_voice or "").strip() or _REALTIME_BOT_DEFAULT_VOICE
+    if not api_key:
+        raise RuntimeError("Realtime bot API key is empty")
     try:
-        return _call_realtime_bot_via_responses(
+        return _call_realtime_bot_via_openai_audio_websocket(
             base_url=base_url,
             model=model,
             api_key=api_key,
             voice=voice,
-            prompt=prompt,
+            audio_pcm16=audio_pcm16,
+            input_sample_rate=audio_sample_rate,
             request_audio=request_audio,
         )
     except Exception as exc:
-        errors.append(f"responses={exc}")
-
-    raise RuntimeError("; ".join(errors) or "Realtime model request failed")
+        raise RuntimeError(f"openai websocket={exc}") from exc
 
 
 def _message_mentions_realtime_bot(meeting, content: str) -> bool:
@@ -3525,6 +4821,33 @@ _WAITING_ROOM_REJECTED_DETAIL = "Your waiting room request has been rejected by 
 _REMOVED_AND_BLOCKED_DETAIL = "You were removed by host/cohost and cannot rejoin this meeting."
 _GUEST_LINK_JOIN_DISABLED_DETAIL = "Guest link join is disabled for this meeting."
 _MESSAGE_RECALL_WINDOW = timedelta(minutes=3)
+_PUBLIC_GUEST_IDENTITY_SESSION_KEY_PREFIX = "public_guest_identity:"
+
+
+def _public_guest_identity_session_key(meeting) -> str:
+    return f"{_PUBLIC_GUEST_IDENTITY_SESSION_KEY_PREFIX}{meeting.id}"
+
+
+def _store_public_guest_identity_in_session(request, meeting, participant_identity: str) -> None:
+    identity = (participant_identity or "").strip()
+    if not identity:
+        return
+    try:
+        request.session[_public_guest_identity_session_key(meeting)] = identity
+        request.session.modified = True
+    except Exception:
+        # Session persistence is best effort for anonymous guest clients.
+        return
+
+
+def _public_guest_identity_from_session(request, meeting) -> str:
+    try:
+        return (
+            request.session.get(_public_guest_identity_session_key(meeting), "")
+            or ""
+        ).strip()
+    except Exception:
+        return ""
 
 
 def _meeting_role_for_user(meeting, user, membership=None):
@@ -3798,6 +5121,8 @@ _TRACK_SOURCE_TOKEN_TO_NAME = {
 }
 _HOST_FORCE_OPEN_MIC_METADATA_KEY = "host_force_open_mic_nonce"
 _HOST_FORCE_OPEN_VIDEO_METADATA_KEY = "host_force_open_video_nonce"
+_DISPLAY_NAME_METADATA_KEY = "meeting_display_name"
+_DISPLAY_NAME_VERSION_METADATA_KEY = "meeting_display_name_version"
 
 
 def _user_id_from_participant_identity(identity: str) -> int | None:
@@ -4098,6 +5423,31 @@ def _participant_metadata_map(meeting, participant_identity: str) -> dict:
             return {}
         return {str(key): value for key, value in payload.items()}
     return {}
+
+
+def _sync_participant_display_name_metadata(
+    meeting,
+    participant_identity: str,
+    *,
+    display_name: str,
+    display_name_version: int,
+) -> None:
+    identity = (participant_identity or "").strip()
+    normalized_name = (display_name or "").strip()[:80]
+    if not identity or not normalized_name:
+        return
+    version = max(1, int(display_name_version or 1))
+    payload = _participant_metadata_map(meeting, identity)
+    payload[_DISPLAY_NAME_METADATA_KEY] = normalized_name
+    payload[_DISPLAY_NAME_VERSION_METADATA_KEY] = version
+    try:
+        livekit_service.update_participant_metadata(
+            meeting.room_name,
+            identity,
+            metadata=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+        )
+    except Exception:
+        pass
 
 
 def _request_participant_device_open(
@@ -4842,6 +6192,7 @@ def public_meeting_join_token(request, share_code: str):
         can_publish_sources=can_publish_sources if can_publish_sources else None,
         can_update_own_metadata=True,
     )
+    _store_public_guest_identity_in_session(request, meeting, participant_identity)
     log_audit(
         action="meeting.public_join_token",
         resource_type="meeting",
@@ -4874,6 +6225,78 @@ def public_meeting_join_token(request, share_code: str):
             "allow_member_video": meeting.allow_member_video,
             "can_publish": can_publish,
             "token": token,
+        }
+    )
+
+
+@api_view(["PATCH"])
+@permission_classes([AllowAny])
+def public_meeting_my_display_name(request, share_code: str):
+    meeting = _meeting_by_share_code(share_code)
+    if not meeting:
+        return Response({"detail": "Meeting not found"}, status=status.HTTP_404_NOT_FOUND)
+    if request.user.is_authenticated:
+        return _my_meeting_display_name_impl(request, meeting)
+
+    participant_identity = _public_guest_identity_from_session(request, meeting)
+    if not participant_identity:
+        return Response(
+            {"detail": "Join meeting first before updating display name"},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    if _user_id_from_participant_identity(participant_identity) is not None:
+        return Response(
+            {"detail": "Registered members should use private display-name API"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    serializer = MeetingDisplayNameUpdateSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    next_display_name = serializer.validated_data["display_name"].strip()
+    expected_display_name_version = serializer.validated_data.get(
+        "expected_display_name_version"
+    )
+    guest, conflict = _update_guest_display_name_consistently(
+        meeting,
+        participant_identity,
+        next_display_name=next_display_name,
+        expected_display_name_version=expected_display_name_version,
+    )
+    if conflict is not None:
+        return _display_name_conflict_response(
+            current_display_name=conflict.display_name,
+            current_display_name_version=conflict.display_name_version,
+        )
+    try:
+        livekit_service.update_participant_name(
+            meeting.room_name,
+            participant_identity,
+            name=guest.display_name,
+        )
+    except Exception:
+        pass
+    _sync_participant_display_name_metadata(
+        meeting,
+        participant_identity,
+        display_name=guest.display_name,
+        display_name_version=guest.display_name_version,
+    )
+    log_audit(
+        action="meeting.public_guest_display_name_update",
+        resource_type="meeting",
+        resource_id=meeting.id,
+        detail=(
+            f"participant_identity={participant_identity}, "
+            f"display_name={guest.display_name}, "
+            f"display_name_version={guest.display_name_version}, "
+            f"share={share_code}"
+        ),
+        ip_address=client_ip(request),
+    )
+    return Response(
+        {
+            "display_name": guest.display_name,
+            "display_name_version": guest.display_name_version,
         }
     )
 
@@ -4917,15 +6340,21 @@ def _my_meeting_display_name_impl(request, meeting):
         )
     if membership is None:
         return Response({"detail": "Member not found"}, status=status.HTTP_404_NOT_FOUND)
+    identity = _stable_participant_identity(request.user)
     try:
-        identity = _stable_participant_identity(request.user)
         livekit_service.update_participant_name(
             meeting.room_name,
             identity,
-            name=display_name,
+            name=membership.display_name,
         )
     except Exception:
         pass
+    _sync_participant_display_name_metadata(
+        meeting,
+        identity,
+        display_name=membership.display_name,
+        display_name_version=membership.display_name_version,
+    )
     log_audit(
         user=request.user,
         action="meeting.display_name_update",
@@ -5304,21 +6733,31 @@ def _meeting_member_control_impl(request, meeting, target_user_id: int, action: 
             )
         if target is None:
             return Response({"detail": "Member not found"}, status=status.HTTP_404_NOT_FOUND)
+        identity = _stable_participant_identity(target.user)
         try:
-            identity = _stable_participant_identity(target.user)
             livekit_service.update_participant_name(
                 meeting.room_name,
                 identity,
-                name=next_display_name,
+                name=target.display_name,
             )
         except Exception:
             pass
+        _sync_participant_display_name_metadata(
+            meeting,
+            identity,
+            display_name=target.display_name,
+            display_name_version=target.display_name_version,
+        )
         log_audit(
             user=request.user,
             action="meeting.member_display_name_control",
             resource_type="meeting",
             resource_id=resource_id_for_log,
-            detail=f"target_user_id={target_user_id}, display_name={next_display_name}",
+            detail=(
+                f"target_user_id={target_user_id}, "
+                f"display_name={target.display_name}, "
+                f"display_name_version={target.display_name_version}"
+            ),
             ip_address=client_ip(request),
         )
         return Response(MeetingMemberSerializer(target, context={"meeting": meeting}).data)
@@ -5745,6 +7184,12 @@ def _meeting_participant_control_impl(
             )
         except Exception:
             pass
+        _sync_participant_display_name_metadata(
+            meeting,
+            identity,
+            display_name=guest.display_name,
+            display_name_version=guest.display_name_version,
+        )
         log_audit(
             user=request.user,
             action="meeting.participant_display_name_control",
@@ -6291,24 +7736,55 @@ def _meeting_ai_controls_impl(request, meeting, resource_id_for_log: int):
     if not payload:
         return Response(MeetingSerializer(meeting, context={"request": request}).data)
 
+    next_provider = _normalized_realtime_provider(
+        payload.get("realtime_bot_provider", getattr(meeting, "realtime_bot_provider", ""))
+    )
     next_enabled = payload.get("realtime_bot_enabled", meeting.realtime_bot_enabled)
     next_key = payload.get("realtime_bot_api_key", meeting.realtime_bot_api_key)
     next_base_url = payload.get("realtime_bot_base_url", meeting.realtime_bot_base_url)
     next_model = payload.get("realtime_bot_model", meeting.realtime_bot_model)
     next_voice = payload.get("realtime_bot_voice", meeting.realtime_bot_voice)
+    next_volc_ws_url = _normalized_realtime_volc_ws_url(
+        payload.get("realtime_bot_volc_ws_url", getattr(meeting, "realtime_bot_volc_ws_url", ""))
+    )
+    next_volc_app_id = (
+        payload.get("realtime_bot_volc_app_id", getattr(meeting, "realtime_bot_volc_app_id", "")) or ""
+    ).strip()
+    next_volc_access_key = (
+        payload.get("realtime_bot_volc_access_key", getattr(meeting, "realtime_bot_volc_access_key", "")) or ""
+    ).strip()
+    next_volc_resource_id = _normalized_realtime_volc_resource_id(
+        payload.get(
+            "realtime_bot_volc_resource_id",
+            getattr(meeting, "realtime_bot_volc_resource_id", ""),
+        )
+    )
     next_display_name = payload.get("realtime_bot_display_name", meeting.realtime_bot_display_name)
 
-    if next_enabled and not (next_key or "").strip():
-        return Response(
-            {"detail": "Realtime voice is enabled but API key is empty"},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-    if not (next_base_url or "").strip():
-        return Response({"detail": "Realtime base URL cannot be empty"}, status=status.HTTP_400_BAD_REQUEST)
-    if not (next_model or "").strip():
-        return Response({"detail": "Realtime model cannot be empty"}, status=status.HTTP_400_BAD_REQUEST)
-    if not (next_voice or "").strip():
-        return Response({"detail": "Realtime voice cannot be empty"}, status=status.HTTP_400_BAD_REQUEST)
+    if next_provider == RealtimeBotProvider.VOLCENGINE:
+        if not next_volc_ws_url:
+            return Response({"detail": "Volcengine WebSocket URL cannot be empty"}, status=status.HTTP_400_BAD_REQUEST)
+        if not next_volc_app_id:
+            return Response({"detail": "Volcengine App ID cannot be empty"}, status=status.HTTP_400_BAD_REQUEST)
+        if not next_volc_resource_id:
+            return Response({"detail": "Volcengine Resource ID cannot be empty"}, status=status.HTTP_400_BAD_REQUEST)
+        if next_enabled and not next_volc_access_key:
+            return Response(
+                {"detail": "Realtime voice is enabled but Volcengine Access Key is empty"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+    else:
+        if next_enabled and not (next_key or "").strip():
+            return Response(
+                {"detail": "Realtime voice is enabled but API key is empty"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not (next_base_url or "").strip():
+            return Response({"detail": "Realtime base URL cannot be empty"}, status=status.HTTP_400_BAD_REQUEST)
+        if not (next_model or "").strip():
+            return Response({"detail": "Realtime model cannot be empty"}, status=status.HTTP_400_BAD_REQUEST)
+        if not (next_voice or "").strip():
+            return Response({"detail": "Realtime voice cannot be empty"}, status=status.HTTP_400_BAD_REQUEST)
     if not (next_display_name or "").strip():
         return Response({"detail": "Realtime display name cannot be empty"}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -6353,22 +7829,62 @@ def _meeting_ai_controls_test_impl(request, meeting, resource_id_for_log: int):
     serializer.is_valid(raise_exception=True)
     payload = serializer.validated_data
 
+    provider = _normalized_realtime_provider(payload.get("provider") or meeting.realtime_bot_provider)
     base_url = _normalized_realtime_base_url(payload.get("base_url") or meeting.realtime_bot_base_url)
     model = (payload.get("model") or meeting.realtime_bot_model or _REALTIME_BOT_DEFAULT_MODEL).strip()
     api_key = (payload.get("api_key") or meeting.realtime_bot_api_key).strip()
     voice = (payload.get("voice") or meeting.realtime_bot_voice or _REALTIME_BOT_DEFAULT_VOICE).strip()
+    volc_ws_url = _normalized_realtime_volc_ws_url(
+        payload.get("volc_ws_url") or getattr(meeting, "realtime_bot_volc_ws_url", "")
+    )
+    volc_app_id = (payload.get("volc_app_id") or getattr(meeting, "realtime_bot_volc_app_id", "")).strip()
+    volc_app_key = (
+        payload.get("volc_app_key")
+        or getattr(meeting, "realtime_bot_volc_app_key", "")
+        or _REALTIME_BOT_DEFAULT_VOLC_APP_KEY
+    ).strip()
+    volc_access_key = (
+        payload.get("volc_access_key") or getattr(meeting, "realtime_bot_volc_access_key", "")
+    ).strip()
+    volc_resource_id = _normalized_realtime_volc_resource_id(
+        payload.get("volc_resource_id") or getattr(meeting, "realtime_bot_volc_resource_id", "")
+    )
+    volc_uid = (payload.get("volc_uid") or getattr(meeting, "realtime_bot_volc_uid", "")).strip()
     prompt = (payload.get("prompt") or "请简要回复：连接成功。").strip()
-    if not api_key:
-        return Response({"detail": "API key is required for connectivity test"}, status=status.HTTP_400_BAD_REQUEST)
+    if provider == RealtimeBotProvider.VOLCENGINE:
+        if not volc_app_id:
+            return Response({"detail": "Volcengine App ID is required for connectivity test"}, status=status.HTTP_400_BAD_REQUEST)
+        if not volc_access_key:
+            return Response(
+                {"detail": "Volcengine Access Key is required for connectivity test"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not volc_resource_id:
+            return Response(
+                {"detail": "Volcengine Resource ID is required for connectivity test"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+    else:
+        if not api_key:
+            return Response({"detail": "API key is required for connectivity test"}, status=status.HTTP_400_BAD_REQUEST)
 
     class _RealtimeMeetingConfig:
         pass
 
     test_meeting = _RealtimeMeetingConfig()
+    test_meeting.realtime_bot_provider = provider
     test_meeting.realtime_bot_base_url = base_url
     test_meeting.realtime_bot_model = model
     test_meeting.realtime_bot_api_key = api_key
     test_meeting.realtime_bot_voice = voice
+    test_meeting.realtime_bot_display_name = _meeting_realtime_bot_display_name(meeting)
+    test_meeting.realtime_bot_volc_ws_url = volc_ws_url
+    test_meeting.realtime_bot_volc_app_id = volc_app_id
+    test_meeting.realtime_bot_volc_app_key = volc_app_key
+    test_meeting.realtime_bot_volc_access_key = volc_access_key
+    test_meeting.realtime_bot_volc_resource_id = volc_resource_id
+    test_meeting.realtime_bot_volc_uid = volc_uid
+    test_meeting.id = meeting.id
     test_meeting.realtime_bot_muted = True
 
     started_at = time.time()
@@ -6426,6 +7942,107 @@ def meeting_ai_controls_test_ref(request, meeting_ref: str):
     if error:
         return error
     return _meeting_ai_controls_test_impl(request, meeting, meeting.id)
+
+
+def _meeting_ai_audio_ingress_impl(request, meeting, resource_id_for_log: int):
+    actor_membership = meeting_membership(meeting.id, request.user.id)
+    if not can_moderate(request.user, actor_membership):
+        return Response({"detail": "Only host/cohost can send AI realtime audio"}, status=status.HTTP_403_FORBIDDEN)
+    if not _meeting_realtime_bot_ready(meeting):
+        return Response({"detail": "Realtime bot is not enabled or not configured"}, status=status.HTTP_400_BAD_REQUEST)
+
+    serializer = MeetingRealtimeBotAudioIngressSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+    payload = serializer.validated_data
+    audio_base64 = (payload.get("audio_base64") or "").strip()
+    sample_rate = _coerce_sample_rate(payload.get("sample_rate"), default=16000)
+    channels = _coerce_channels(payload.get("channels"), default=1)
+
+    try:
+        audio_pcm16 = _decode_and_normalize_pcm16_audio(
+            audio_base64=audio_base64,
+            sample_rate=sample_rate,
+            channels=channels,
+            target_sample_rate=16000,
+        )
+    except Exception as exc:
+        return Response({"detail": f"Invalid audio payload: {exc}"}, status=status.HTTP_400_BAD_REQUEST)
+    if len(audio_pcm16) < 1600:
+        return Response({"detail": "Audio is too short"}, status=status.HTTP_400_BAD_REQUEST)
+
+    started_at = time.time()
+    try:
+        reply_text, reply_audio_base64, reply_audio_mime = _call_realtime_bot_with_audio(
+            meeting=meeting,
+            audio_pcm16=audio_pcm16,
+            audio_sample_rate=16000,
+        )
+        content = (reply_text or "").strip()
+        if not content:
+            return Response({"detail": "Realtime bot returned empty reply"}, status=status.HTTP_400_BAD_REQUEST)
+        bot_user = _realtime_bot_system_user()
+        msg = MeetingMessage.objects.create(
+            meeting=meeting,
+            sender_user=bot_user,
+            sender_display_name_override=_meeting_realtime_bot_display_name(meeting),
+            is_realtime_bot=True,
+            audio_mime_type=(reply_audio_mime or "").strip()[:120],
+            audio_base64=(reply_audio_base64 or "").strip(),
+            content=content[:2000],
+        )
+        latency_ms = int((time.time() - started_at) * 1000)
+        log_audit(
+            user=request.user,
+            action="meeting.ai_audio_ingress",
+            resource_type="meeting",
+            resource_id=resource_id_for_log,
+            detail=f"ok=1,latency_ms={latency_ms},provider={_meeting_realtime_bot_provider(meeting)}",
+            ip_address=client_ip(request),
+        )
+        return Response(
+            {
+                "ok": True,
+                "latency_ms": latency_ms,
+                "preview_text": content[:200],
+                "message": MeetingMessageSerializer(msg).data,
+            }
+        )
+    except Exception as exc:
+        latency_ms = int((time.time() - started_at) * 1000)
+        log_audit(
+            user=request.user,
+            action="meeting.ai_audio_ingress",
+            resource_type="meeting",
+            resource_id=resource_id_for_log,
+            detail=f"ok=0,latency_ms={latency_ms},error={exc}",
+            ip_address=client_ip(request),
+        )
+        return Response(
+            {
+                "ok": False,
+                "latency_ms": latency_ms,
+                "detail": str(exc),
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def meeting_ai_realtime_audio(request, meeting_id: int):
+    meeting, error = _meeting_for_user_or_403(request.user, meeting_id)
+    if error:
+        return error
+    return _meeting_ai_audio_ingress_impl(request, meeting, meeting_id)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def meeting_ai_realtime_audio_ref(request, meeting_ref: str):
+    meeting, error = _meeting_for_user_ref_or_404(request.user, meeting_ref)
+    if error:
+        return error
+    return _meeting_ai_audio_ingress_impl(request, meeting, meeting.id)
 
 
 def _meeting_mute_all_impl(request, meeting, resource_id_for_log: int):

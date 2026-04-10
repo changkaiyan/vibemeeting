@@ -100,6 +100,8 @@ Copy-Item .env.example .env
 - `TECHCLOUD_OAUTH_TOKEN_URL`：换取 Token 地址（默认 `https://passport.escience.cn/oauth2/token`）
 - `TECHCLOUD_OAUTH_THEME`：登录页风格（默认 `full`，可选 `simple` / `embed`）
 - `TECHCLOUD_OAUTH_SCOPE`：可选，按通行证平台要求填写
+- `TECHCLOUD_OAUTH_LOGOUT_URL`：通行证退出地址（默认 `https://passport.escience.cn/logout`）
+- `TECHCLOUD_OAUTH_LOGOUT_REDIRECT_PARAM`：退出回跳参数名（默认 `WebServerURL`）
 
 说明：
 

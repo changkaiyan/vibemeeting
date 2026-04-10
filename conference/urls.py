@@ -1,4 +1,3 @@
-from django.contrib.auth import views as auth_views
 from django.urls import include, path
 
 from conference import views
@@ -17,7 +16,7 @@ urlpatterns = [
         "accounts/login",
         views.ControlledLoginView.as_view(),
     ),
-    path("accounts/logout", auth_views.LogoutView.as_view(next_page="/")),
+    path("accounts/logout", views.session_logout),
     path("accounts/register", views.register_page_view),
     path("auth/techcloud/login", views.techcloud_oauth_start),
     path("callback", views.techcloud_oauth_callback),
@@ -46,6 +45,7 @@ urlpatterns = [
     path("api/meetings/<int:meeting_id>/outlook.ics", views.meeting_outlook_ics),
     path("api/meetings/<int:meeting_id>/ai-controls", views.meeting_ai_controls),
     path("api/meetings/<int:meeting_id>/ai-controls/test", views.meeting_ai_controls_test),
+    path("api/meetings/<int:meeting_id>/ai-controls/realtime-audio", views.meeting_ai_realtime_audio),
     path("api/meetings/<int:meeting_id>/join-token", views.meeting_join_token),
     path("api/meetings/<int:meeting_id>/my-display-name", views.my_meeting_display_name),
     path("api/meetings/<int:meeting_id>/members", views.meeting_members),
@@ -60,6 +60,7 @@ urlpatterns = [
     path("api/my/meetings/<str:meeting_ref>/outlook.ics", views.meeting_outlook_ics_ref),
     path("api/my/meetings/<str:meeting_ref>/ai-controls", views.meeting_ai_controls_ref),
     path("api/my/meetings/<str:meeting_ref>/ai-controls/test", views.meeting_ai_controls_test_ref),
+    path("api/my/meetings/<str:meeting_ref>/ai-controls/realtime-audio", views.meeting_ai_realtime_audio_ref),
     path("api/my/meetings/<str:meeting_ref>/join-token", views.meeting_join_token_ref),
     path("api/my/meetings/<str:meeting_ref>/my-display-name", views.my_meeting_display_name_ref),
     path("api/my/meetings/<str:meeting_ref>/members", views.meeting_members_ref),
@@ -75,6 +76,7 @@ urlpatterns = [
     path("api/public/meetings/share/<str:share_code>/messages", views.public_meeting_messages),
     path("api/public/meetings/share/<str:share_code>/messages/<int:message_id>", views.public_meeting_message_recall),
     path("api/public/meetings/share/<str:share_code>/join-token", views.public_meeting_join_token),
+    path("api/public/meetings/share/<str:share_code>/my-display-name", views.public_meeting_my_display_name),
     path("api/orgs/my", views.my_orgs),
     path("api/orgs/<int:org_id>/members", views.org_members),
     path("api/audit/logs", views.audit_logs),

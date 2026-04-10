@@ -15,6 +15,7 @@ from conference.models import (
     MeetingMessage,
     MeetingRecording,
     MeetingRole,
+    RealtimeBotProvider,
     MeetingWaitingRoomEntry,
     Organization,
     OrganizationMember,
@@ -202,21 +203,44 @@ class MeetingControlUpdateSerializer(serializers.Serializer):
 
 
 class MeetingRealtimeBotControlSerializer(serializers.Serializer):
+    realtime_bot_provider = serializers.ChoiceField(
+        required=False,
+        choices=RealtimeBotProvider.choices,
+    )
     realtime_bot_enabled = serializers.BooleanField(required=False)
     realtime_bot_muted = serializers.BooleanField(required=False)
     realtime_bot_base_url = serializers.CharField(required=False, allow_blank=False, max_length=255)
     realtime_bot_model = serializers.CharField(required=False, allow_blank=False, max_length=120)
     realtime_bot_api_key = serializers.CharField(required=False, allow_blank=True, max_length=255)
     realtime_bot_voice = serializers.CharField(required=False, allow_blank=False, max_length=40)
+    realtime_bot_volc_ws_url = serializers.CharField(required=False, allow_blank=False, max_length=255)
+    realtime_bot_volc_app_id = serializers.CharField(required=False, allow_blank=False, max_length=64)
+    realtime_bot_volc_app_key = serializers.CharField(required=False, allow_blank=True, max_length=255)
+    realtime_bot_volc_access_key = serializers.CharField(required=False, allow_blank=True, max_length=255)
+    realtime_bot_volc_resource_id = serializers.CharField(required=False, allow_blank=False, max_length=120)
+    realtime_bot_volc_uid = serializers.CharField(required=False, allow_blank=True, max_length=120)
     realtime_bot_display_name = serializers.CharField(required=False, allow_blank=False, max_length=80)
 
 
 class MeetingRealtimeBotConnectivityTestSerializer(serializers.Serializer):
+    provider = serializers.ChoiceField(required=False, choices=RealtimeBotProvider.choices)
     base_url = serializers.CharField(required=False, allow_blank=False, max_length=255)
     model = serializers.CharField(required=False, allow_blank=False, max_length=120)
     api_key = serializers.CharField(required=False, allow_blank=False, max_length=255)
     voice = serializers.CharField(required=False, allow_blank=False, max_length=40)
+    volc_ws_url = serializers.CharField(required=False, allow_blank=False, max_length=255)
+    volc_app_id = serializers.CharField(required=False, allow_blank=False, max_length=64)
+    volc_app_key = serializers.CharField(required=False, allow_blank=True, max_length=255)
+    volc_access_key = serializers.CharField(required=False, allow_blank=False, max_length=255)
+    volc_resource_id = serializers.CharField(required=False, allow_blank=False, max_length=120)
+    volc_uid = serializers.CharField(required=False, allow_blank=True, max_length=120)
     prompt = serializers.CharField(required=False, allow_blank=False, max_length=500)
+
+
+class MeetingRealtimeBotAudioIngressSerializer(serializers.Serializer):
+    audio_base64 = serializers.CharField(required=True, allow_blank=False, max_length=8_000_000)
+    sample_rate = serializers.IntegerField(required=False, min_value=8000, max_value=96000, default=16000)
+    channels = serializers.IntegerField(required=False, min_value=1, max_value=2, default=1)
 
 
 class MeetingSerializer(serializers.ModelSerializer):
@@ -231,6 +255,10 @@ class MeetingSerializer(serializers.ModelSerializer):
     share_url = serializers.SerializerMethodField()
     realtime_bot_api_key_set = serializers.SerializerMethodField()
     realtime_bot_api_key = serializers.SerializerMethodField()
+    realtime_bot_volc_app_key_set = serializers.SerializerMethodField()
+    realtime_bot_volc_access_key_set = serializers.SerializerMethodField()
+    realtime_bot_volc_app_key = serializers.SerializerMethodField()
+    realtime_bot_volc_access_key = serializers.SerializerMethodField()
     realtime_bot_user_id = serializers.SerializerMethodField()
     realtime_bot_identity = serializers.SerializerMethodField()
 
@@ -257,11 +285,20 @@ class MeetingSerializer(serializers.ModelSerializer):
             "allow_self_unmute",
             "allow_member_video",
             "mute_on_entry",
+            "realtime_bot_provider",
             "realtime_bot_enabled",
             "realtime_bot_muted",
             "realtime_bot_base_url",
             "realtime_bot_model",
             "realtime_bot_voice",
+            "realtime_bot_volc_ws_url",
+            "realtime_bot_volc_app_id",
+            "realtime_bot_volc_app_key_set",
+            "realtime_bot_volc_app_key",
+            "realtime_bot_volc_access_key_set",
+            "realtime_bot_volc_access_key",
+            "realtime_bot_volc_resource_id",
+            "realtime_bot_volc_uid",
             "realtime_bot_display_name",
             "realtime_bot_api_key_set",
             "realtime_bot_api_key",
@@ -358,6 +395,30 @@ class MeetingSerializer(serializers.ModelSerializer):
         if not self._can_manage_realtime_bot(obj, user):
             return ""
         return (obj.realtime_bot_api_key or "").strip()
+
+    def get_realtime_bot_volc_app_key_set(self, obj):
+        user = self._request_user()
+        if not self._can_manage_realtime_bot(obj, user):
+            return False
+        return bool((obj.realtime_bot_volc_app_key or "").strip())
+
+    def get_realtime_bot_volc_access_key_set(self, obj):
+        user = self._request_user()
+        if not self._can_manage_realtime_bot(obj, user):
+            return False
+        return bool((obj.realtime_bot_volc_access_key or "").strip())
+
+    def get_realtime_bot_volc_app_key(self, obj):
+        user = self._request_user()
+        if not self._can_manage_realtime_bot(obj, user):
+            return ""
+        return (obj.realtime_bot_volc_app_key or "").strip()
+
+    def get_realtime_bot_volc_access_key(self, obj):
+        user = self._request_user()
+        if not self._can_manage_realtime_bot(obj, user):
+            return ""
+        return (obj.realtime_bot_volc_access_key or "").strip()
 
     def get_realtime_bot_user_id(self, obj):
         if not obj.realtime_bot_enabled:

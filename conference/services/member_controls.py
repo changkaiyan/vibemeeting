@@ -259,20 +259,31 @@ def handle_display_name_action(request, meeting, actor_membership, target, resou
         )
     if target is None:
         return views.Response({"detail": "Member not found"}, status=views.status.HTTP_404_NOT_FOUND)
+    participant_identity = views._stable_participant_identity(target.user)
     try:
         views.livekit_service.update_participant_name(
             meeting.room_name,
-            views._stable_participant_identity(target.user),
-            name=next_display_name,
+            participant_identity,
+            name=target.display_name,
         )
     except Exception:
         pass
+    views._sync_participant_display_name_metadata(
+        meeting,
+        participant_identity,
+        display_name=target.display_name,
+        display_name_version=target.display_name_version,
+    )
     views.log_audit(
         user=request.user,
         action="meeting.member_display_name_control",
         resource_type="meeting",
         resource_id=resource_id_for_log,
-        detail=f"target_user_id={target.user_id}, display_name={next_display_name}",
+        detail=(
+            f"target_user_id={target.user_id}, "
+            f"display_name={target.display_name}, "
+            f"display_name_version={target.display_name_version}"
+        ),
         ip_address=views.client_ip(request),
     )
     return member_control_response(meeting, target)

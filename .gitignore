@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 
 .idea/
+app/static
 .certs/
 
 .env
