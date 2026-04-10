@@ -230,123 +230,31 @@ Browser Workspace Action
 
 ## 当前部署方式
 
-## 1. 依赖
+本仓库的本地开发部署说明已经统一收敛到：
 
-主 Django 应用依赖定义在 [requirements.txt](/home/zhaoyilun/vibemeeting/requirements.txt)。
+- [docs/development.md](/Users/zhaoyilun/workspace/vibemeeting/docs/development.md)
 
-独立 STT worker 依赖定义在 [services/stt_worker/requirements.txt](/home/zhaoyilun/vibemeeting/services/stt_worker/requirements.txt)。
-
-最小依赖分层：
-
-- Django 主应用
-  - `django`
-  - `djangorestframework`
-  - `djangorestframework-simplejwt`
-  - `livekit-api`
-  - `websockets`
-- STT worker
-  - `faster-whisper`
-  - `websockets`
-  - `av`
-  - `silero-vad`（当前未真正启用）
-
-## 2. 外部依赖
+这里不再重复完整的启动步骤，只保留和当前虚拟 agent / realtime STT 场景直接相关的说明。
 
 当前完整会议链路依赖：
 
-- LiveKit server
 - Django 主应用
 - STT worker
+- LiveKit server
 - 可选 agent bridge service
 
-如果只验证 STT worker，不需要 LiveKit 和 agent bridge。
+如果你只是要把仓库在本地跑起来，按 `docs/development.md` 先完成 Django 最小启动即可。
 
-## 3. 环境变量
+如果你要验证当前这份文档描述的实时 transcript / context / artifact 链路，再额外补：
 
-主应用关键配置：
-
-- `LIVEKIT_URL`
-- `LIVEKIT_API_KEY`
-- `LIVEKIT_API_SECRET`
-- `LIVEKIT_MEET_URL`
 - `MEETING_REALTIME_STT_WORKER_URL`
-- `MEETING_STT_PROVIDER`
 - `MEETING_AGENT_BRIDGE_MODE`
 - `MEETING_AGENT_BRIDGE_URL`
+- `STT_WORKER_*`
 
-worker 关键配置：
+真实 `faster-whisper` 模型下载和代理细节，继续参考：
 
-- `STT_WORKER_HOST`
-- `STT_WORKER_PORT`
-- `STT_WORKER_PROVIDER`
-- `STT_WORKER_MODEL_SIZE`
-- `STT_WORKER_COMPUTE_TYPE`
-- `STT_WORKER_LANGUAGE`
-
-## 4. 启动顺序
-
-### 4.1 启动 Django
-
-```bash
-python manage.py runserver 0.0.0.0:8000
-```
-
-### 4.2 启动 STT worker
-
-mock 模式：
-
-```bash
-STT_WORKER_PROVIDER=mock \
-STT_WORKER_HOST=127.0.0.1 \
-STT_WORKER_PORT=8765 \
-python -m services.stt_worker.stt_worker.server
-```
-
-真实 Whisper 模式：
-
-```bash
-STT_WORKER_PROVIDER=faster_whisper \
-STT_WORKER_MODEL_SIZE=tiny \
-STT_WORKER_COMPUTE_TYPE=int8 \
-STT_WORKER_HOST=127.0.0.1 \
-STT_WORKER_PORT=8765 \
-python -m services.stt_worker.stt_worker.server
-```
-
-### 4.3 主应用连接 worker
-
-```bash
-export MEETING_REALTIME_STT_WORKER_URL=ws://127.0.0.1:8765/ws/realtime-transcribe
-```
-
-### 4.4 可选：连接 agent bridge
-
-mock：
-
-```bash
-export MEETING_AGENT_BRIDGE_MODE=mock
-```
-
-或 http：
-
-```bash
-export MEETING_AGENT_BRIDGE_MODE=http
-export MEETING_AGENT_BRIDGE_URL=http://127.0.0.1:9000
-```
-
-## 5. 首次模型下载与代理
-
-首次跑 `faster-whisper` 时，可能需要从 HuggingFace 拉模型。
-
-如果网络受限，当前建议优先使用代理：
-
-```bash
-export ALL_PROXY=socks5://127.0.0.1:10808
-export HTTPS_PROXY=socks5://127.0.0.1:10808
-export HTTP_PROXY=socks5://127.0.0.1:10808
-```
-
-当前实践上，worker provider 已调整为优先使用本地缓存模型，避免每次启动都走网络探测。
+- [services/stt_worker/README.md](/Users/zhaoyilun/workspace/vibemeeting/services/stt_worker/README.md)
 
 ## 当前测试方法
 
