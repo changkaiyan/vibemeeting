@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../app/theme/meeting_theme.dart';
 import 'selectable_region.dart';
 
 class DeviceTestCard extends StatelessWidget {
@@ -33,14 +34,15 @@ class DeviceTestCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final palette = MeetingTheme.of(context);
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: palette.surface,
         borderRadius: BorderRadius.circular(14),
         border: Border.all(
-          color: isRunning ? const Color(0xFF84CAFF) : const Color(0xFFDDE6FF),
+          color: isRunning ? palette.primaryBorder : palette.panelBorder,
         ),
       ),
       child: Column(
@@ -52,17 +54,13 @@ class DeviceTestCard extends StatelessWidget {
                 width: 36,
                 height: 36,
                 decoration: BoxDecoration(
-                  color: isRunning
-                      ? const Color(0xFFE0F2FE)
-                      : const Color(0xFFF2F4F7),
+                  color: isRunning ? palette.primarySoft : palette.surfaceMuted,
                   borderRadius: BorderRadius.circular(10),
                 ),
                 child: Icon(
                   icon,
                   size: 18,
-                  color: isRunning
-                      ? const Color(0xFF175CD3)
-                      : const Color(0xFF667085),
+                  color: isRunning ? palette.primaryStrong : palette.textMuted,
                 ),
               ),
               const SizedBox(width: 10),
@@ -77,8 +75,8 @@ class DeviceTestCard extends StatelessWidget {
                     const SizedBox(height: 2),
                     Text(
                       description,
-                      style: const TextStyle(
-                        color: Color(0xFF667085),
+                      style: TextStyle(
+                        color: palette.textMuted,
                         fontSize: 12,
                       ),
                     ),
@@ -89,16 +87,17 @@ class DeviceTestCard extends StatelessWidget {
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                 decoration: BoxDecoration(
                   color: isRunning
-                      ? const Color(0xFFECFDF3)
-                      : const Color(0xFFF2F4F7),
+                      ? Color.alphaBlend(
+                          palette.success.withValues(alpha: 0.12),
+                          palette.surface,
+                        )
+                      : palette.surfaceMuted,
                   borderRadius: BorderRadius.circular(999),
                 ),
                 child: Text(
                   isRunning ? '测试中' : '空闲',
                   style: TextStyle(
-                    color: isRunning
-                        ? const Color(0xFF067647)
-                        : const Color(0xFF667085),
+                    color: isRunning ? palette.success : palette.textMuted,
                     fontSize: 11.5,
                     fontWeight: FontWeight.w600,
                   ),
@@ -110,16 +109,16 @@ class DeviceTestCard extends StatelessWidget {
           statusIsError
               ? MeetingErrorText(
                   statusText,
-                  style: const TextStyle(
-                    color: Color(0xFFB42318),
+                  style: TextStyle(
+                    color: palette.danger,
                     fontSize: 12.5,
                     fontWeight: FontWeight.w500,
                   ),
                 )
               : MeetingStatusText(
                   statusText,
-                  style: const TextStyle(
-                    color: Color(0xFF344054),
+                  style: TextStyle(
+                    color: palette.textSecondary,
                     fontSize: 12.5,
                     fontWeight: FontWeight.w500,
                   ),

@@ -11,20 +11,20 @@ extension _MeetingRoomWorkspaceWidgets on _MeetingRoomPageState {
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: _palette.surface,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFFDDE6FF)),
+        border: Border.all(color: _palette.panelBorder),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              const Expanded(
+              Expanded(
                 child: MeetingTitleText(
                   '会议工作区',
                   style: TextStyle(
-                    color: Color(0xFF101828),
+                    color: _palette.textPrimary,
                     fontWeight: FontWeight.w700,
                   ),
                 ),
@@ -47,26 +47,26 @@ extension _MeetingRoomWorkspaceWidgets on _MeetingRoomPageState {
             workspaceAvailable
                 ? '在真实会议页里查看实时字幕、Agent、上下文和输出'
                 : '访客分享页暂不支持会议工作区能力，请使用已登录成员入口',
-            style: const TextStyle(color: Color(0xFF667085), fontSize: 11.5),
+            style: TextStyle(color: _palette.textMuted, fontSize: 11.5),
           ),
           const SizedBox(height: 8),
           if (!workspaceAvailable)
-            const Expanded(
+            Expanded(
               child: Center(
                 child: MeetingMetaText(
                   '当前页面没有私有会议 API 访问范围，无法启用工作区。',
                   textAlign: TextAlign.center,
-                  style: TextStyle(color: Color(0xFF98A2B3), fontSize: 12.5),
+                  style: TextStyle(color: _palette.textMuted, fontSize: 12.5),
                 ),
               ),
             )
           else if (!_connected)
-            const Expanded(
+            Expanded(
               child: Center(
                 child: MeetingMetaText(
                   '先加入会议，然后再启用实时字幕和 Agent 工作区。',
                   textAlign: TextAlign.center,
-                  style: TextStyle(color: Color(0xFF98A2B3), fontSize: 12.5),
+                  style: TextStyle(color: _palette.textMuted, fontSize: 12.5),
                 ),
               ),
             )
@@ -105,14 +105,14 @@ extension _MeetingRoomWorkspaceWidgets on _MeetingRoomPageState {
                           margin: const EdgeInsets.only(bottom: 10),
                           padding: const EdgeInsets.all(10),
                           decoration: BoxDecoration(
-                            color: const Color(0xFFFFFAEB),
+                            color: _palette.warningSurface,
                             borderRadius: BorderRadius.circular(10),
-                            border: Border.all(color: const Color(0xFFF7D08A)),
+                            border: Border.all(color: _palette.warningBorder),
                           ),
-                          child: const MeetingMetaText(
+                          child: MeetingMetaText(
                             '当前实时字幕以停止后生成 final transcript 为主。点击“开始”后开始采集麦克风音频，点击“停止”后会把本轮识别结果刷新到 Live Transcript 和 Current Context。',
                             style: TextStyle(
-                              color: Color(0xFF7A2E0B),
+                              color: _palette.warning,
                               fontSize: 12,
                               height: 1.45,
                             ),
@@ -124,15 +124,14 @@ extension _MeetingRoomWorkspaceWidgets on _MeetingRoomPageState {
                             margin: const EdgeInsets.only(bottom: 10),
                             padding: const EdgeInsets.all(10),
                             decoration: BoxDecoration(
-                              color: const Color(0xFFF7FAFF),
+                              color: _palette.surfaceMuted,
                               borderRadius: BorderRadius.circular(10),
-                              border:
-                                  Border.all(color: const Color(0xFFDDE6FF)),
+                              border: Border.all(color: _palette.panelBorder),
                             ),
                             child: MeetingDebugText(
                               'Recorder debug: state=$_workspaceSttDebugState · action=$_workspaceSttDebugLastAction · start taps=$_workspaceSttDebugStartTapCount · stop taps=$_workspaceSttDebugStopTapCount · ws=$_workspaceSttDebugWsState · audio tracks=$_workspaceSttDebugAudioTrackCount · mime=${_workspaceSttDebugMimeType.isEmpty ? '-' : _workspaceSttDebugMimeType} · blob events=$_workspaceSttDebugBlobEventCount · last blob=$_workspaceSttDebugLastBlobSize bytes',
-                              style: const TextStyle(
-                                color: Color(0xFF344054),
+                              style: TextStyle(
+                                color: _palette.textSecondary,
                                 fontSize: 12,
                                 height: 1.45,
                               ),
@@ -144,15 +143,14 @@ extension _MeetingRoomWorkspaceWidgets on _MeetingRoomPageState {
                             margin: const EdgeInsets.only(bottom: 10),
                             padding: const EdgeInsets.all(10),
                             decoration: BoxDecoration(
-                              color: const Color(0xFFFFF1F3),
+                              color: _palette.dangerSurface,
                               borderRadius: BorderRadius.circular(10),
-                              border:
-                                  Border.all(color: const Color(0xFFFDA4AF)),
+                              border: Border.all(color: _palette.dangerSoft),
                             ),
                             child: MeetingErrorText(
                               'Last error: ${workspaceSttErrorLabel(_workspaceSttDebugLastError)}',
-                              style: const TextStyle(
-                                color: Color(0xFFB42318),
+                              style: TextStyle(
+                                color: _palette.danger,
                                 fontSize: 12,
                                 height: 1.45,
                               ),
@@ -164,10 +162,9 @@ extension _MeetingRoomWorkspaceWidgets on _MeetingRoomPageState {
                             margin: const EdgeInsets.only(bottom: 10),
                             padding: const EdgeInsets.all(10),
                             decoration: BoxDecoration(
-                              color: const Color(0xFFF7FAFF),
+                              color: _palette.surfaceMuted,
                               borderRadius: BorderRadius.circular(10),
-                              border:
-                                  Border.all(color: const Color(0xFFDDE6FF)),
+                              border: Border.all(color: _palette.panelBorder),
                             ),
                             child: MeetingStatusText(
                               '实时识别中: ${_workspacePartialText.trim()}',
@@ -276,9 +273,9 @@ extension _MeetingRoomWorkspaceWidgets on _MeetingRoomPageState {
     return Container(
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
-        color: const Color(0xFFF8FAFF),
+        color: _palette.surfaceMuted,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: const Color(0xFFDDE6FF)),
+        border: Border.all(color: _palette.panelBorder),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -292,16 +289,16 @@ extension _MeetingRoomWorkspaceWidgets on _MeetingRoomPageState {
                   children: [
                     MeetingTitleText(
                       title,
-                      style: const TextStyle(
-                        color: Color(0xFF101828),
+                      style: TextStyle(
+                        color: _palette.textPrimary,
                         fontWeight: FontWeight.w700,
                       ),
                     ),
                     const SizedBox(height: 2),
                     MeetingMetaText(
                       subtitle,
-                      style: const TextStyle(
-                        color: Color(0xFF667085),
+                      style: TextStyle(
+                        color: _palette.textMuted,
                         fontSize: 11.5,
                       ),
                     ),
@@ -333,9 +330,9 @@ extension _MeetingRoomWorkspaceWidgets on _MeetingRoomPageState {
       width: double.infinity,
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: _palette.surface,
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: const Color(0xFFDDE6FF)),
+        border: Border.all(color: _palette.panelBorder),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -351,13 +348,13 @@ extension _MeetingRoomWorkspaceWidgets on _MeetingRoomPageState {
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                 decoration: BoxDecoration(
-                  color: const Color(0xFFEAF1FF),
+                  color: _palette.primarySoft,
                   borderRadius: BorderRadius.circular(999),
                 ),
                 child: MeetingMetaText(
                   status,
-                  style: const TextStyle(
-                    color: Color(0xFF175CD3),
+                  style: TextStyle(
+                    color: _palette.primaryStrong,
                     fontSize: 11.5,
                     fontWeight: FontWeight.w600,
                   ),
@@ -369,14 +366,17 @@ extension _MeetingRoomWorkspaceWidgets on _MeetingRoomPageState {
             const SizedBox(height: 6),
             MeetingMetaText(
               '任务: $task',
-              style: const TextStyle(color: Color(0xFF667085), fontSize: 12),
+              style: TextStyle(color: _palette.textMuted, fontSize: 12),
             ),
           ],
           if (reply.isNotEmpty) ...[
             const SizedBox(height: 4),
             MeetingBodyText(
               reply,
-              style: const TextStyle(color: Color(0xFF344054), fontSize: 12.5),
+              style: TextStyle(
+                color: _palette.textSecondary,
+                fontSize: 12.5,
+              ),
             ),
           ],
           const SizedBox(height: 8),
@@ -401,17 +401,17 @@ extension _MeetingRoomWorkspaceWidgets on _MeetingRoomPageState {
   Widget _buildWorkspaceContextBody() {
     final context = _workspaceContext;
     if (context == null) {
-      return const MeetingMetaText(
+      return MeetingMetaText(
         'No context yet.',
-        style: TextStyle(color: Color(0xFF98A2B3), fontSize: 12.5),
+        style: TextStyle(color: _palette.textMuted, fontSize: 12.5),
       );
     }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const MeetingMetaText(
+        MeetingMetaText(
           '当前上下文会自动汇总最近的 transcript；点击下面按钮可直接把这份上下文发给 agent。',
-          style: TextStyle(color: Color(0xFF667085), fontSize: 12),
+          style: TextStyle(color: _palette.textMuted, fontSize: 12),
         ),
         const SizedBox(height: 8),
         MeetingBodyText(
@@ -475,9 +475,9 @@ extension _MeetingRoomWorkspaceWidgets on _MeetingRoomPageState {
 
   Widget _buildWorkspaceTranscriptBody() {
     if (_workspaceTranscripts.isEmpty) {
-      return const MeetingMetaText(
+      return MeetingMetaText(
         'No transcript yet.',
-        style: TextStyle(color: Color(0xFF98A2B3), fontSize: 12.5),
+        style: TextStyle(color: _palette.textMuted, fontSize: 12.5),
       );
     }
     return Column(
@@ -492,9 +492,9 @@ extension _MeetingRoomWorkspaceWidgets on _MeetingRoomPageState {
           margin: const EdgeInsets.only(bottom: 8),
           padding: const EdgeInsets.all(10),
           decoration: BoxDecoration(
-            color: Colors.white,
+            color: _palette.surface,
             borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: const Color(0xFFDDE6FF)),
+            border: Border.all(color: _palette.panelBorder),
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -509,8 +509,8 @@ extension _MeetingRoomWorkspaceWidgets on _MeetingRoomPageState {
                   ),
                   MeetingMetaText(
                     '${item.source}${item.isFinal ? '' : ' · partial'}',
-                    style: const TextStyle(
-                      color: Color(0xFF667085),
+                    style: TextStyle(
+                      color: _palette.textMuted,
                       fontSize: 11.5,
                     ),
                   ),
@@ -522,9 +522,9 @@ extension _MeetingRoomWorkspaceWidgets on _MeetingRoomPageState {
                 style: const TextStyle(fontSize: 12.5, height: 1.45),
               ),
               const SizedBox(height: 8),
-              const MeetingMetaText(
+              MeetingMetaText(
                 '可将这条 transcript 单独发给 agent；如果要发整段上下文，请用上面的 Current Context 区域。',
-                style: TextStyle(color: Color(0xFF667085), fontSize: 12),
+                style: TextStyle(color: _palette.textMuted, fontSize: 12),
               ),
               const SizedBox(height: 8),
               Wrap(
@@ -558,9 +558,9 @@ extension _MeetingRoomWorkspaceWidgets on _MeetingRoomPageState {
 
   Widget _buildWorkspaceArtifactBody() {
     if (_workspaceArtifacts.isEmpty) {
-      return const MeetingMetaText(
+      return MeetingMetaText(
         'No outputs yet.',
-        style: TextStyle(color: Color(0xFF98A2B3), fontSize: 12.5),
+        style: TextStyle(color: _palette.textMuted, fontSize: 12.5),
       );
     }
     return Column(
@@ -570,9 +570,9 @@ extension _MeetingRoomWorkspaceWidgets on _MeetingRoomPageState {
           margin: const EdgeInsets.only(bottom: 8),
           padding: const EdgeInsets.all(10),
           decoration: BoxDecoration(
-            color: Colors.white,
+            color: _palette.surface,
             borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: const Color(0xFFDDE6FF)),
+            border: Border.all(color: _palette.panelBorder),
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -589,8 +589,8 @@ extension _MeetingRoomWorkspaceWidgets on _MeetingRoomPageState {
                   ),
                   MeetingMetaText(
                     artifact.artifactType,
-                    style: const TextStyle(
-                      color: Color(0xFF667085),
+                    style: TextStyle(
+                      color: _palette.textMuted,
                       fontSize: 11.5,
                     ),
                   ),

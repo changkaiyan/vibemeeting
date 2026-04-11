@@ -645,7 +645,7 @@ extension _MeetingRoomSessionLogic on _MeetingRoomPageState {
                 const SizedBox(height: 6),
                 const Text(
                   '说明：部分浏览器或共享模式可能不支持系统声音。',
-                  style: TextStyle(color: Color(0xFF667085), fontSize: 12.5),
+                  style: TextStyle(fontSize: 12.5),
                 ),
               ],
             ),

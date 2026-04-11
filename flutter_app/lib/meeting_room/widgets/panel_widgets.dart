@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../app/theme/meeting_theme.dart';
 
 class MeetingPanelHeaderActionBar extends StatelessWidget {
   final String panelLabel;
@@ -14,6 +15,7 @@ class MeetingPanelHeaderActionBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final palette = MeetingTheme.of(context);
     return Tooltip(
       message: isFullscreen ? '退出全屏' : '放大$panelLabel',
       child: TextButton.icon(
@@ -21,12 +23,12 @@ class MeetingPanelHeaderActionBar extends StatelessWidget {
         style: TextButton.styleFrom(
           visualDensity: VisualDensity.compact,
           tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-          foregroundColor: const Color(0xFF175CD3),
-          backgroundColor: const Color(0xFFEAF1FF),
+          foregroundColor: palette.primary,
+          backgroundColor: palette.primarySoft,
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(999),
-            side: const BorderSide(color: Color(0xFFCFE0FF)),
+            side: BorderSide(color: palette.primaryBorder),
           ),
         ),
         icon: Icon(isFullscreen ? Icons.fullscreen_exit : Icons.fullscreen),
@@ -52,12 +54,13 @@ class ParticipantAudioLevelBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final palette = MeetingTheme.of(context);
     final normalized = level.clamp(0.0, 1.0);
     return Container(
       width: width,
       height: height,
       decoration: BoxDecoration(
-        color: const Color(0xFFE4E7EC),
+        color: palette.panelBorder,
         borderRadius: BorderRadius.circular(999),
       ),
       clipBehavior: Clip.antiAlias,
@@ -72,7 +75,7 @@ class ParticipantAudioLevelBar extends StatelessWidget {
           curve: Curves.easeOutCubic,
           height: height,
           decoration: BoxDecoration(
-            color: isActive ? const Color(0xFF12B76A) : const Color(0xFFD0D5DD),
+            color: isActive ? palette.success : palette.panelBorder,
             borderRadius: BorderRadius.circular(999),
           ),
         ),

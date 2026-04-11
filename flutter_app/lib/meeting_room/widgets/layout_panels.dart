@@ -9,12 +9,12 @@ extension _MeetingRoomLayoutPanels on _MeetingRoomPageState {
         style: TextButton.styleFrom(
           visualDensity: VisualDensity.compact,
           tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-          foregroundColor: const Color(0xFF175CD3),
-          backgroundColor: const Color(0xFFEAF1FF),
+          foregroundColor: _palette.primary,
+          backgroundColor: _palette.primarySoft,
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(999),
-            side: const BorderSide(color: Color(0xFFCFE0FF)),
+            side: BorderSide(color: _palette.primaryBorder),
           ),
         ),
         icon: const Icon(Icons.download_outlined, size: 15),
@@ -31,29 +31,29 @@ extension _MeetingRoomLayoutPanels on _MeetingRoomPageState {
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: _palette.surface,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFFDDE6FF)),
+        border: Border.all(color: _palette.panelBorder),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
+          Text(
             '参会成员',
             style: TextStyle(
-              color: Color(0xFF101828),
+              color: _palette.textPrimary,
               fontWeight: FontWeight.w700,
             ),
           ),
           const SizedBox(height: 4),
           Text(
             '${rows.length} 人在线',
-            style: const TextStyle(color: Color(0xFF475467), fontSize: 12.5),
+            style: TextStyle(color: _palette.textSecondary, fontSize: 12.5),
           ),
           const SizedBox(height: 2),
-          const Text(
+          Text(
             '双击成员可放大对应画面',
-            style: TextStyle(color: Color(0xFF667085), fontSize: 11.5),
+            style: TextStyle(color: _palette.textMuted, fontSize: 11.5),
           ),
           const SizedBox(height: 8),
           if (_canUseModeratorControls) ...[
@@ -64,13 +64,13 @@ extension _MeetingRoomLayoutPanels on _MeetingRoomPageState {
                 style: TextButton.styleFrom(
                   visualDensity: VisualDensity.compact,
                   tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  foregroundColor: const Color(0xFF175CD3),
-                  backgroundColor: const Color(0xFFEAF1FF),
+                  foregroundColor: _palette.primary,
+                  backgroundColor: _palette.primarySoft,
                   padding:
                       const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(999),
-                    side: const BorderSide(color: Color(0xFFCFE0FF)),
+                    side: BorderSide(color: _palette.primaryBorder),
                   ),
                 ),
                 icon: const Icon(Icons.download_outlined, size: 15),
@@ -85,13 +85,13 @@ extension _MeetingRoomLayoutPanels on _MeetingRoomPageState {
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
               decoration: BoxDecoration(
                 color: _waitingRoomEntries.isEmpty
-                    ? const Color(0xFFF5F8FF)
-                    : const Color(0xFFFFF4E8),
+                    ? _palette.primarySoft
+                    : _palette.warningSurface,
                 borderRadius: BorderRadius.circular(10),
                 border: Border.all(
                   color: _waitingRoomEntries.isEmpty
-                      ? const Color(0xFFDDE6FF)
-                      : const Color(0xFFFEC84B),
+                      ? _palette.panelBorder
+                      : _palette.warningBorder,
                 ),
               ),
               child: Row(
@@ -102,8 +102,8 @@ extension _MeetingRoomLayoutPanels on _MeetingRoomPageState {
                         : Icons.notifications_active,
                     size: 16,
                     color: _waitingRoomEntries.isEmpty
-                        ? const Color(0xFF175CD3)
-                        : const Color(0xFFB54708),
+                        ? _palette.primaryStrong
+                        : _palette.warning,
                   ),
                   const SizedBox(width: 6),
                   Expanded(
@@ -111,8 +111,8 @@ extension _MeetingRoomLayoutPanels on _MeetingRoomPageState {
                       _waitingRoomEntries.isEmpty
                           ? '等候室暂无待审核成员'
                           : '等候室有 ${_waitingRoomEntries.length} 人等待审核',
-                      style: const TextStyle(
-                        color: Color(0xFF475467),
+                      style: TextStyle(
+                        color: _palette.textSecondary,
                         fontSize: 12.5,
                       ),
                     ),
@@ -141,7 +141,7 @@ extension _MeetingRoomLayoutPanels on _MeetingRoomPageState {
                       ),
                       decoration: BoxDecoration(
                         borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: const Color(0xFFDDE6FF)),
+                        border: Border.all(color: _palette.panelBorder),
                       ),
                       child: Row(
                         children: [
@@ -181,15 +181,15 @@ extension _MeetingRoomLayoutPanels on _MeetingRoomPageState {
                       _waitingForAdmission ? '等候室等待中，主持人审核后自动入会' : '尚未连接',
                       style: TextStyle(
                         color: _waitingForAdmission
-                            ? const Color(0xFFB54708)
-                            : const Color(0xFF64748B),
+                            ? _palette.warning
+                            : _palette.textMuted,
                       ),
                     ),
                   )
                 : ListView.separated(
                     itemCount: rows.length,
                     separatorBuilder: (_, __) =>
-                        const Divider(color: Color(0xFFDDE6FF), height: 12),
+                        Divider(color: _palette.panelBorder, height: 12),
                     itemBuilder: (_, i) {
                       final row = rows[i];
                       final highlighted = row.identity == _spotlightIdentity;
@@ -256,7 +256,7 @@ extension _MeetingRoomLayoutPanels on _MeetingRoomPageState {
                           padding: const EdgeInsets.symmetric(vertical: 4),
                           decoration: BoxDecoration(
                             color: highlighted
-                                ? const Color(0xFFEFF4FF)
+                                ? _palette.primarySoft
                                 : Colors.transparent,
                             borderRadius: BorderRadius.circular(8),
                           ),
@@ -276,8 +276,8 @@ extension _MeetingRoomLayoutPanels on _MeetingRoomPageState {
                                       row.displayName,
                                       maxLines: 1,
                                       overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(
-                                        color: Color(0xFF101828),
+                                      style: TextStyle(
+                                        color: _palette.textPrimary,
                                         fontSize: 13,
                                       ),
                                     ),
@@ -299,9 +299,9 @@ extension _MeetingRoomLayoutPanels on _MeetingRoomPageState {
                                           size: 12,
                                           color: row.micEnabled
                                               ? (row.isSpeaking
-                                                  ? const Color(0xFF12B76A)
-                                                  : const Color(0xFF98A2B3))
-                                              : const Color(0xFFFCA5A5),
+                                                  ? _palette.success
+                                                  : _palette.textMuted)
+                                              : _palette.dangerSoft,
                                         ),
                                         const SizedBox(width: 6),
                                         ParticipantAudioLevelBar(
@@ -319,15 +319,15 @@ extension _MeetingRoomLayoutPanels on _MeetingRoomPageState {
                               ),
                               Text(
                                 row.role,
-                                style: const TextStyle(
-                                  color: Color(0xFF93C5FD),
+                                style: TextStyle(
+                                  color: _palette.heroMutedText,
                                   fontSize: 11.5,
                                 ),
                               ),
                               if (menuItems.isNotEmpty)
                                 PopupMenuButton<String>(
                                   tooltip: '成员菜单',
-                                  color: const Color(0xFFFCFDFF),
+                                  color: _palette.surfaceRaised,
                                   elevation: 10,
                                   position: PopupMenuPosition.under,
                                   offset: const Offset(-10, 8),
@@ -337,21 +337,21 @@ extension _MeetingRoomLayoutPanels on _MeetingRoomPageState {
                                   ),
                                   shape: RoundedRectangleBorder(
                                     borderRadius: BorderRadius.circular(14),
-                                    side: const BorderSide(
-                                      color: Color(0xFFD6E4FF),
+                                    side: BorderSide(
+                                      color: _palette.primaryBorder,
                                     ),
                                   ),
                                   padding: EdgeInsets.zero,
                                   icon: Container(
                                     padding: const EdgeInsets.all(4),
                                     decoration: BoxDecoration(
-                                      color: const Color(0xFFEAF1FF),
+                                      color: _palette.primarySoft,
                                       borderRadius: BorderRadius.circular(10),
                                     ),
-                                    child: const Icon(
+                                    child: Icon(
                                       Icons.more_horiz,
                                       size: 17,
-                                      color: Color(0xFF175CD3),
+                                      color: _palette.primaryStrong,
                                     ),
                                   ),
                                   onSelected: (value) {
@@ -370,8 +370,8 @@ extension _MeetingRoomLayoutPanels on _MeetingRoomPageState {
                                 row.micEnabled ? Icons.mic : Icons.mic_off,
                                 size: 13,
                                 color: row.micEnabled
-                                    ? const Color(0xFF86EFAC)
-                                    : const Color(0xFFFCA5A5),
+                                    ? _palette.success
+                                    : _palette.dangerSoft,
                               ),
                               const SizedBox(width: 6),
                               Icon(
@@ -380,15 +380,15 @@ extension _MeetingRoomLayoutPanels on _MeetingRoomPageState {
                                     : Icons.videocam_off,
                                 size: 13,
                                 color: row.cameraEnabled
-                                    ? const Color(0xFF86EFAC)
-                                    : const Color(0xFFFCA5A5),
+                                    ? _palette.success
+                                    : _palette.dangerSoft,
                               ),
                               if (row.isScreenSharing) ...[
                                 const SizedBox(width: 6),
-                                const Icon(
+                                Icon(
                                   Icons.screen_share,
                                   size: 13,
-                                  color: Color(0xFFF59E0B),
+                                  color: _palette.warning,
                                 ),
                               ],
                             ],
@@ -442,7 +442,7 @@ extension _MeetingRoomLayoutPanels on _MeetingRoomPageState {
           icon: Icon(
             targetExpanded ? Icons.fullscreen_exit : Icons.open_in_full,
             size: 18,
-            color: const Color(0xFF175CD3),
+            color: _palette.primaryStrong,
           ),
         ),
       ),
@@ -504,9 +504,9 @@ extension _MeetingRoomLayoutPanels on _MeetingRoomPageState {
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: _palette.surface,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFFDDE6FF)),
+        border: Border.all(color: _palette.panelBorder),
       ),
       child: Wrap(
         spacing: 10,
@@ -535,7 +535,7 @@ extension _MeetingRoomLayoutPanels on _MeetingRoomPageState {
                   ? Icons.stop_screen_share
                   : Icons.screen_share,
               color: (_screenShareEnabled && _screenShareAudioEnabled)
-                  ? const Color(0xFF12B76A)
+                  ? _palette.success
                   : null,
             ),
             label: Text(
@@ -546,9 +546,8 @@ extension _MeetingRoomLayoutPanels on _MeetingRoomPageState {
           ),
           FilledButton.icon(
             style: FilledButton.styleFrom(
-              backgroundColor: _recordingActive
-                  ? const Color(0xFFB42318)
-                  : const Color(0xFF155EEF),
+              backgroundColor:
+                  _recordingActive ? _palette.danger : _palette.primary,
             ),
             onPressed: canRecord
                 ? (_recordingActive
@@ -573,7 +572,7 @@ extension _MeetingRoomLayoutPanels on _MeetingRoomPageState {
           ),
           FilledButton.icon(
             style: FilledButton.styleFrom(
-              backgroundColor: const Color(0xFFB42318),
+              backgroundColor: _palette.danger,
             ),
             onPressed: _connected ? _handleLeaveButtonPressed : null,
             icon: const Icon(Icons.call_end),

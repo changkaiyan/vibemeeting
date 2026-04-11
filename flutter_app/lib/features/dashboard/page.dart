@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 
+import '../../app/theme/meeting_theme.dart';
 import '../../core/api_exception.dart';
 import '../../device_profile.dart';
 import '../billing/models.dart';
@@ -76,6 +77,8 @@ class _DashboardPageState extends State<DashboardPage> {
   String _recordingStorageRoot = '';
   String _recordingStorageUpdatedBy = '';
   String _recordingStorageUpdatedAt = '';
+
+  MeetingThemePalette get _palette => MeetingTheme.of(context);
 
   @override
   void initState() {
@@ -756,8 +759,8 @@ class _DashboardPageState extends State<DashboardPage> {
               const SizedBox(height: 6),
               Text(
                 value,
-                style: const TextStyle(
-                  color: Color(0xFF0F172A),
+                style: TextStyle(
+                  color: _palette.textStrong,
                   fontWeight: FontWeight.w700,
                 ),
               ),
@@ -769,8 +772,10 @@ class _DashboardPageState extends State<DashboardPage> {
       await showDialog<void>(
         context: context,
         builder: (dialogContext) => Dialog(
-          insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+          insetPadding:
+              const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 760),
             child: Column(
@@ -779,13 +784,17 @@ class _DashboardPageState extends State<DashboardPage> {
                 Container(
                   width: double.infinity,
                   padding: const EdgeInsets.fromLTRB(18, 16, 18, 14),
-                  decoration: const BoxDecoration(
+                  decoration: BoxDecoration(
                     gradient: LinearGradient(
-                      colors: [Color(0xFF155EEF), Color(0xFF175CD3)],
+                      colors: [
+                        _palette.heroGradientStart,
+                        _palette.heroGradientEnd,
+                      ],
                       begin: Alignment.topLeft,
                       end: Alignment.bottomRight,
                     ),
-                    borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+                    borderRadius:
+                        BorderRadius.vertical(top: Radius.circular(18)),
                   ),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -803,8 +812,8 @@ class _DashboardPageState extends State<DashboardPage> {
                         bill.isSuperuser
                             ? '当前身份：超级管理员（不受套餐限制）'
                             : '当前套餐：${bill.planName ?? '无套餐（不限制）'}',
-                        style: const TextStyle(
-                          color: Color(0xFFEFF4FF),
+                        style: TextStyle(
+                          color: _palette.heroMutedText,
                           fontWeight: FontWeight.w600,
                         ),
                       ),
@@ -833,37 +842,40 @@ class _DashboardPageState extends State<DashboardPage> {
                               title: '单房间人数上限使用',
                               value:
                                   '${usage['max_room_participants_used'] ?? 0}/${_formatBillingLimitInt(limits['max_room_participants'])}',
-                              isExceeded: exceeded.contains('max_room_participants'),
+                              isExceeded:
+                                  exceeded.contains('max_room_participants'),
                             ),
                             usageTile(
                               icon: Icons.event_note_outlined,
                               title: '会议总数',
                               value:
                                   '${usage['meeting_count'] ?? 0}/${_formatBillingLimitInt(limits['max_meeting_count'])}',
-                              isExceeded: exceeded.contains('max_meeting_count'),
+                              isExceeded:
+                                  exceeded.contains('max_meeting_count'),
                             ),
                             usageTile(
                               icon: Icons.av_timer_outlined,
                               title: '累计房间使用时长',
                               value:
                                   '${_formatBillingSeconds(usage['cumulative_room_used_seconds'] ?? usage['room_used_seconds'] ?? 0)}/${_formatBillingLimitSeconds(limits['max_room_used_seconds'])}',
-                              isExceeded: exceeded.contains('max_room_used_seconds'),
+                              isExceeded:
+                                  exceeded.contains('max_room_used_seconds'),
                             ),
                             usageTile(
                               icon: Icons.timer_outlined,
                               title: '当前单房间最大在会时长',
                               value:
                                   '${_formatBillingSeconds(usage['current_room_max_used_seconds'] ?? 0)}/${_formatBillingLimitSeconds(limits['max_current_room_used_seconds'])}',
-                              isExceeded:
-                                  exceeded.contains('max_current_room_used_seconds'),
+                              isExceeded: exceeded
+                                  .contains('max_current_room_used_seconds'),
                             ),
                             usageTile(
                               icon: Icons.storage_outlined,
                               title: '录制存储',
                               value:
                                   '${_formatRecordingSize(usage['recording_storage_used_bytes'] ?? 0)}/${_formatBillingLimitBytes(limits['max_recording_storage_bytes'])}',
-                              isExceeded:
-                                  exceeded.contains('max_recording_storage_bytes'),
+                              isExceeded: exceeded
+                                  .contains('max_recording_storage_bytes'),
                             ),
                             usageTile(
                               icon: Icons.stacked_line_chart_outlined,
@@ -879,7 +891,7 @@ class _DashboardPageState extends State<DashboardPage> {
                             '已超限项目',
                             style: TextStyle(
                               fontWeight: FontWeight.w700,
-                              color: Color(0xFFB42318),
+                              color: _palette.danger,
                             ),
                           ),
                           const SizedBox(height: 6),
@@ -892,15 +904,16 @@ class _DashboardPageState extends State<DashboardPage> {
                                     padding: const EdgeInsets.symmetric(
                                         horizontal: 8, vertical: 4),
                                     decoration: BoxDecoration(
-                                      color: const Color(0xFFFEE4E2),
+                                      color: _palette.dangerSurface,
                                       borderRadius: BorderRadius.circular(999),
                                       border: Border.all(
-                                          color: const Color(0xFFFECACA)),
+                                        color: _palette.dangerBorder,
+                                      ),
                                     ),
                                     child: Text(
                                       keyLabels[key] ?? key,
-                                      style: const TextStyle(
-                                        color: Color(0xFFB42318),
+                                      style: TextStyle(
+                                        color: _palette.danger,
                                         fontSize: 12,
                                         fontWeight: FontWeight.w700,
                                       ),
@@ -957,11 +970,11 @@ class _DashboardPageState extends State<DashboardPage> {
       'title': title.trim(),
       'description': description.trim().isEmpty ? null : description.trim(),
       'scheduled_start': scheduledStartValue,
-      'meeting_recurrence': meetingRecurrence.trim().isEmpty
-          ? 'once'
-          : meetingRecurrence.trim(),
-      'meeting_timezone':
-          meetingTimezone.trim().isEmpty ? 'Asia/Shanghai' : meetingTimezone.trim(),
+      'meeting_recurrence':
+          meetingRecurrence.trim().isEmpty ? 'once' : meetingRecurrence.trim(),
+      'meeting_timezone': meetingTimezone.trim().isEmpty
+          ? 'Asia/Shanghai'
+          : meetingTimezone.trim(),
       'duration_minutes': int.tryParse(duration.trim()) ?? 30,
       'max_participants': int.tryParse(maxParticipants.trim()) ?? 100,
       'meeting_password': password.trim().isEmpty ? null : password.trim(),
@@ -1127,7 +1140,8 @@ class _DashboardPageState extends State<DashboardPage> {
         }
       }
     }
-    final roomName = item.roomName.trim().isEmpty ? 'meeting' : item.roomName.trim();
+    final roomName =
+        item.roomName.trim().isEmpty ? 'meeting' : item.roomName.trim();
     final safe = roomName
         .replaceAll(RegExp(r'[^A-Za-z0-9_-]+'), '-')
         .replaceAll(RegExp(r'-+'), '-')
@@ -1253,9 +1267,8 @@ class _DashboardPageState extends State<DashboardPage> {
     final link = _meetingShareUrl(item);
     final meetingPassword = item.meetingPasswordForShare.trim();
     final info = _meetingShareText(item);
-    final linkCopyText = meetingPassword.isEmpty
-        ? link
-        : '$link\n会议密码：$meetingPassword';
+    final linkCopyText =
+        meetingPassword.isEmpty ? link : '$link\n会议密码：$meetingPassword';
     if (link.isEmpty) {
       _setStatus('当前会议暂时无法生成分享链接', isError: true);
       return;
@@ -1468,7 +1481,8 @@ class _DashboardPageState extends State<DashboardPage> {
                             final recurrenceField =
                                 DropdownButtonFormField<String>(
                               value: meetingRecurrence,
-                              decoration: const InputDecoration(labelText: '会议周期'),
+                              decoration:
+                                  const InputDecoration(labelText: '会议周期'),
                               items: _meetingRecurrenceLabels.entries
                                   .map(
                                     (entry) => DropdownMenuItem<String>(
@@ -1481,9 +1495,11 @@ class _DashboardPageState extends State<DashboardPage> {
                                 () => meetingRecurrence = value ?? 'once',
                               ),
                             );
-                            final timezoneField = DropdownButtonFormField<String>(
+                            final timezoneField =
+                                DropdownButtonFormField<String>(
                               value: meetingTimezone,
-                              decoration: const InputDecoration(labelText: '时区'),
+                              decoration:
+                                  const InputDecoration(labelText: '时区'),
                               items: _meetingTimezoneLabels.entries
                                   .map(
                                     (entry) => DropdownMenuItem<String>(
@@ -1493,7 +1509,8 @@ class _DashboardPageState extends State<DashboardPage> {
                                   )
                                   .toList(),
                               onChanged: (value) => setStateDialog(
-                                () => meetingTimezone = value ?? 'Asia/Shanghai',
+                                () =>
+                                    meetingTimezone = value ?? 'Asia/Shanghai',
                               ),
                             );
                             if (isNarrow) {
@@ -2584,9 +2601,10 @@ class _DashboardPageState extends State<DashboardPage> {
                             final owner = item.ownerDisplayName.trim().isEmpty
                                 ? item.ownerUsername
                                 : item.ownerDisplayName;
-                            final meetingTitle = item.meetingTitle.trim().isEmpty
-                                ? 'Untitled meeting'
-                                : item.meetingTitle.trim();
+                            final meetingTitle =
+                                item.meetingTitle.trim().isEmpty
+                                    ? 'Untitled meeting'
+                                    : item.meetingTitle.trim();
                             final meetingDisplayId = item.meetingDisplayId > 0
                                 ? item.meetingDisplayId.toString()
                                 : '-';
@@ -2619,7 +2637,8 @@ class _DashboardPageState extends State<DashboardPage> {
                                   Wrap(
                                     spacing: 8,
                                     runSpacing: 6,
-                                    crossAxisAlignment: WrapCrossAlignment.center,
+                                    crossAxisAlignment:
+                                        WrapCrossAlignment.center,
                                     children: [
                                       Text(
                                         '$meetingTitle (#$meetingDisplayId)',
@@ -2666,24 +2685,24 @@ class _DashboardPageState extends State<DashboardPage> {
                                     ),
                                   ),
                                   if (item.id < 0) ...[
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    '${item.meetingTitle}（会议号 ${item.meetingRoomName}）',
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                      color: Color(0xFF475467),
-                                      fontSize: 12.5,
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      '${item.meetingTitle}（会议号 ${item.meetingRoomName}）',
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        color: Color(0xFF475467),
+                                        fontSize: 12.5,
+                                      ),
                                     ),
-                                  ),
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    '录制人：$owner  大小：${_formatRecordingSize(item.sizeBytes)}  时长：${_formatRecordingDuration(item.durationSeconds)}',
-                                    style: const TextStyle(
-                                      color: Color(0xFF667085),
-                                      fontSize: 12,
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      '录制人：$owner  大小：${_formatRecordingSize(item.sizeBytes)}  时长：${_formatRecordingDuration(item.durationSeconds)}',
+                                      style: const TextStyle(
+                                        color: Color(0xFF667085),
+                                        fontSize: 12,
+                                      ),
                                     ),
-                                  ),
                                   ],
                                   const SizedBox(height: 4),
                                   Row(
@@ -2747,12 +2766,10 @@ class _DashboardPageState extends State<DashboardPage> {
   Widget _buildStatusBanner() {
     final icon =
         _statusIsError ? Icons.error_outline : Icons.check_circle_outline;
-    final bg =
-        _statusIsError ? const Color(0xFFFEE4E2) : const Color(0xFFEFF4FF);
-    final fg =
-        _statusIsError ? const Color(0xFFB42318) : const Color(0xFF175CD3);
+    final bg = _statusIsError ? _palette.dangerSurface : _palette.primarySoft;
+    final fg = _statusIsError ? _palette.danger : _palette.primaryStrong;
     final border =
-        _statusIsError ? const Color(0xFFFECACA) : const Color(0xFFCCDBFF);
+        _statusIsError ? _palette.dangerBorder : _palette.primaryBorder;
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
@@ -2844,29 +2861,32 @@ class _DashboardPageState extends State<DashboardPage> {
         toolbarHeight: 74,
         titleSpacing: 20,
         flexibleSpace: Container(
-          decoration: const BoxDecoration(
+          decoration: BoxDecoration(
             gradient: LinearGradient(
-              colors: [Color(0xFF155EEF), Color(0xFF175CD3)],
+              colors: [
+                _palette.heroGradientStart,
+                _palette.heroGradientEnd,
+              ],
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
             ),
           ),
         ),
-        title: const Column(
+        title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Text(
+            const Text(
               '智能会议控制台',
               style: TextStyle(
                   fontSize: 20,
                   fontWeight: FontWeight.w700,
                   color: Colors.white),
             ),
-            SizedBox(height: 2),
+            const SizedBox(height: 2),
             Text(
               '会议创建、入会、编辑与会控管理',
-              style: TextStyle(fontSize: 12.5, color: Color(0xFFD1E0FF)),
+              style: TextStyle(fontSize: 12.5, color: _palette.heroMutedText),
             ),
           ],
         ),
@@ -2919,9 +2939,9 @@ class _DashboardPageState extends State<DashboardPage> {
         ],
       ),
       body: Container(
-        decoration: const BoxDecoration(
+        decoration: BoxDecoration(
           gradient: LinearGradient(
-            colors: [Color(0xFFF5F8FF), Color(0xFFEEF4FF)],
+            colors: [_palette.pageBackground, _palette.primarySoft],
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
           ),
@@ -2988,9 +3008,9 @@ class _DashboardPageState extends State<DashboardPage> {
         children: [
           Container(
             decoration: BoxDecoration(
-              color: Colors.white,
+              color: _palette.surface,
               borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: const Color(0xFFDDE6FF)),
+              border: Border.all(color: _palette.panelBorder),
             ),
             child: const TabBar(
               indicatorSize: TabBarIndicatorSize.tab,
@@ -3035,9 +3055,9 @@ class _DashboardPageState extends State<DashboardPage> {
       padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFF9BB8FF)),
-        gradient: const LinearGradient(
-          colors: [Color(0xFF155EEF), Color(0xFF175CD3)],
+        border: Border.all(color: _palette.heroBorder),
+        gradient: LinearGradient(
+          colors: [_palette.heroGradientStart, _palette.heroGradientEnd],
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
         ),
@@ -3063,8 +3083,10 @@ class _DashboardPageState extends State<DashboardPage> {
                       : '欢迎，${profile.defaultDisplayName}',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style:
-                      const TextStyle(color: Color(0xFFD1E0FF), fontSize: 12.5),
+                  style: TextStyle(
+                    color: _palette.heroMutedText,
+                    fontSize: 12.5,
+                  ),
                 ),
               ],
             ),

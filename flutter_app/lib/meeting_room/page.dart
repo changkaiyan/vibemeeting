@@ -12,9 +12,12 @@ import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:livekit_client/livekit_client.dart' as lk;
 import 'package:web/web.dart' as web;
+import '../app/theme/meeting_theme.dart';
 import '../device_profile.dart';
+import 'chat_menu/chat_message_menu_builder.dart';
 import 'debug/debug_flags.dart';
 import 'debug/stt_debug.dart';
+import 'participant_menu/participant_menu_builder.dart';
 import 'utils/audio_level.dart';
 import 'widgets/media_test_widgets.dart';
 import 'widgets/panel_widgets.dart';
@@ -118,6 +121,8 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
   bool _isSuperAdminUser = false;
   bool _realtimeBotDebugPanelVisible = false;
   String _currentUserRole = '';
+
+  MeetingThemePalette get _palette => MeetingTheme.of(context);
   String _resolvedMeetingRef = '';
   int? _resolvedMeetingId;
   bool _recordingActive = false;
@@ -956,11 +961,11 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     await showDialog<void>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        backgroundColor: const Color(0xFFFCFDFF),
+        backgroundColor: _palette.surfaceRaised,
         surfaceTintColor: Colors.transparent,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(16),
-          side: const BorderSide(color: Color(0xFFD6E4FF)),
+          side: BorderSide(color: _palette.primaryBorder),
         ),
         titlePadding: const EdgeInsets.fromLTRB(18, 16, 18, 6),
         contentPadding: const EdgeInsets.fromLTRB(18, 8, 18, 12),
@@ -971,20 +976,20 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
               width: 28,
               height: 28,
               decoration: BoxDecoration(
-                color: const Color(0xFFEAF1FF),
+                color: _palette.primarySoft,
                 borderRadius: BorderRadius.circular(9),
               ),
-              child: const Icon(
+              child: Icon(
                 Icons.share_outlined,
                 size: 16,
-                color: Color(0xFF175CD3),
+                color: _palette.primaryStrong,
               ),
             ),
             const SizedBox(width: 10),
-            const Text(
+            Text(
               '会议分享',
               style: TextStyle(
-                color: Color(0xFF101828),
+                color: _palette.textPrimary,
                 fontWeight: FontWeight.w700,
                 fontSize: 17,
               ),
@@ -1001,27 +1006,27 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                 width: double.infinity,
                 padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
                 decoration: BoxDecoration(
-                  color: Colors.white,
+                  color: _palette.surface,
                   borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: const Color(0xFFDDE6FF)),
+                  border: Border.all(color: _palette.panelBorder),
                 ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Row(
                       children: [
-                        const Expanded(
+                        Expanded(
                           child: Text(
                             '邀请链接',
                             style: TextStyle(
-                              color: Color(0xFF101828),
+                              color: _palette.textPrimary,
                               fontWeight: FontWeight.w700,
                             ),
                           ),
                         ),
                         TextButton.icon(
                           style: TextButton.styleFrom(
-                            foregroundColor: const Color(0xFF175CD3),
+                            foregroundColor: _palette.primaryStrong,
                             visualDensity: VisualDensity.compact,
                             tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                           ),
@@ -1034,8 +1039,8 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                     ),
                     SelectableText(
                       shareUrl,
-                      style: const TextStyle(
-                        color: Color(0xFF344054),
+                      style: TextStyle(
+                        color: _palette.textSecondary,
                         fontSize: 12.5,
                         height: 1.35,
                       ),
@@ -1048,27 +1053,27 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                 width: double.infinity,
                 padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
                 decoration: BoxDecoration(
-                  color: Colors.white,
+                  color: _palette.surface,
                   borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: const Color(0xFFDDE6FF)),
+                  border: Border.all(color: _palette.panelBorder),
                 ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Row(
                       children: [
-                        const Expanded(
+                        Expanded(
                           child: Text(
                             '完整会议信息',
                             style: TextStyle(
-                              color: Color(0xFF101828),
+                              color: _palette.textPrimary,
                               fontWeight: FontWeight.w700,
                             ),
                           ),
                         ),
                         TextButton.icon(
                           style: TextButton.styleFrom(
-                            foregroundColor: const Color(0xFF175CD3),
+                            foregroundColor: _palette.primaryStrong,
                             visualDensity: VisualDensity.compact,
                             tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                           ),
@@ -1081,8 +1086,8 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                     ),
                     SelectableText(
                       shareInfo,
-                      style: const TextStyle(
-                        color: Color(0xFF344054),
+                      style: TextStyle(
+                        color: _palette.textSecondary,
                         fontSize: 12.5,
                         height: 1.35,
                       ),
@@ -1735,43 +1740,44 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
   }
 
   Color _networkQualityTint() {
-    if (!_connected) return const Color(0xFF98A2B3);
+    if (!_connected) return _palette.textMuted;
     final quality = _room?.localParticipant?.connectionQuality;
     switch (quality) {
       case lk.ConnectionQuality.excellent:
       case lk.ConnectionQuality.good:
-        return const Color(0xFF6CE9A6);
+        return _palette.success;
       case lk.ConnectionQuality.poor:
-        return const Color(0xFFFDB022);
+        return _palette.warning;
       case lk.ConnectionQuality.lost:
-        return const Color(0xFFF97066);
+        return _palette.dangerSoft;
       case lk.ConnectionQuality.unknown:
       case null:
-        return const Color(0xFFD1E0FF);
+        return _palette.heroMutedText;
     }
   }
 
   Widget _buildTopMetricChip({
     required IconData icon,
     required String text,
-    Color accent = const Color(0xFFD1E0FF),
+    Color? accent,
   }) {
+    final resolvedAccent = accent ?? _palette.heroMutedText;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        color: const Color(0xFFF8FAFF),
+        color: _palette.surfaceMuted,
         borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: const Color(0xFFCCDBFF)),
+        border: Border.all(color: _palette.primaryBorder),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 14, color: accent),
+          Icon(icon, size: 14, color: resolvedAccent),
           const SizedBox(width: 5),
           MeetingMetaText(
             text,
-            style: const TextStyle(
-              color: Color(0xFF175CD3),
+            style: TextStyle(
+              color: _palette.primaryStrong,
               fontSize: 12,
               fontWeight: FontWeight.w600,
             ),
@@ -2574,7 +2580,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                                   child: Text(
                                     '输入电平',
                                     style: TextStyle(
-                                      color: Color(0xFF667085),
+                                      color: _palette.textMuted,
                                       fontSize: 12,
                                     ),
                                   ),
@@ -2593,8 +2599,8 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                                   child: Text(
                                     '${(micTestLevel * 100).round()}%',
                                     textAlign: TextAlign.right,
-                                    style: const TextStyle(
-                                      color: Color(0xFF667085),
+                                    style: TextStyle(
+                                      color: _palette.textMuted,
                                       fontSize: 12,
                                     ),
                                   ),
@@ -2619,19 +2625,19 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                               height: 180,
                               width: double.infinity,
                               decoration: BoxDecoration(
-                                color: const Color(0xFF0F172A),
+                                color: _palette.textStrong,
                                 borderRadius: BorderRadius.circular(12),
                                 border: Border.all(
-                                  color: const Color(0xFFDDE6FF),
+                                  color: _palette.panelBorder,
                                 ),
                               ),
                               clipBehavior: Clip.antiAlias,
                               child: cameraPreviewViewType == null
-                                  ? const Center(
+                                  ? Center(
                                       child: Text(
                                         '开始测试后会在这里显示摄像头预览',
                                         style: TextStyle(
-                                          color: Color(0xFF98A2B3),
+                                          color: _palette.textMuted,
                                           fontSize: 12.5,
                                         ),
                                       ),
@@ -2744,10 +2750,12 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                             },
                           ),
                           const SizedBox(height: 6),
-                          const Text(
+                          Text(
                             '拉伸会铺满窗口并可能裁剪边缘；保持原比例会完整显示并可能留黑边。',
                             style: TextStyle(
-                                color: Color(0xFF667085), fontSize: 12.5),
+                              color: _palette.textMuted,
+                              fontSize: 12.5,
+                            ),
                           ),
                         ],
                       ),
@@ -3047,24 +3055,24 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                                   const EdgeInsets.fromLTRB(12, 10, 12, 10),
                               decoration: BoxDecoration(
                                 borderRadius: BorderRadius.circular(12),
-                                color: const Color(0xFFFFFAEB),
+                                color: _palette.warningSurface,
                                 border:
-                                    Border.all(color: const Color(0xFFFEC84B)),
+                                    Border.all(color: _palette.warningBorder),
                               ),
                               child: Row(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  const Icon(
+                                  Icon(
                                     Icons.warning_amber_rounded,
                                     size: 18,
-                                    color: Color(0xFFB54708),
+                                    color: _palette.warning,
                                   ),
                                   const SizedBox(width: 8),
                                   Expanded(
                                     child: Text(
                                       permissionWarning,
-                                      style: const TextStyle(
-                                        color: Color(0xFFB54708),
+                                      style: TextStyle(
+                                        color: _palette.warning,
                                         fontSize: 12.5,
                                         fontWeight: FontWeight.w500,
                                       ),
@@ -4370,15 +4378,15 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                     if (errorMessage != null && errorMessage!.trim().isNotEmpty)
                       Text(
                         errorMessage!,
-                        style: const TextStyle(
-                          color: Color(0xFFB42318),
+                        style: TextStyle(
+                          color: _palette.danger,
                           fontSize: 12.5,
                         ),
                       ),
                     if (waitingEntries.isEmpty)
-                      const Text(
+                      Text(
                         '暂无待审核成员',
-                        style: TextStyle(color: Color(0xFF667085)),
+                        style: TextStyle(color: _palette.textMuted),
                       )
                     else
                       ...waitingEntries.map(
@@ -4386,7 +4394,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                           margin: const EdgeInsets.only(bottom: 8),
                           padding: const EdgeInsets.all(10),
                           decoration: BoxDecoration(
-                            border: Border.all(color: const Color(0xFFDDE6FF)),
+                            border: Border.all(color: _palette.panelBorder),
                             borderRadius: BorderRadius.circular(8),
                           ),
                           child: Row(
@@ -4836,8 +4844,8 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                         const SizedBox(height: 8),
                         Text(
                           testMessage!,
-                          style: const TextStyle(
-                            color: Color(0xFF067647),
+                          style: TextStyle(
+                            color: _palette.success,
                             fontSize: 12.5,
                           ),
                         ),
@@ -4846,8 +4854,8 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                         const SizedBox(height: 8),
                         Text(
                           errorMessage!,
-                          style: const TextStyle(
-                            color: Color(0xFFB42318),
+                          style: TextStyle(
+                            color: _palette.danger,
                             fontSize: 12.5,
                           ),
                         ),
@@ -4906,8 +4914,8 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
       padding: const EdgeInsets.fromLTRB(14, 6, 14, 2),
       child: Text(
         title,
-        style: const TextStyle(
-          color: Color(0xFF98A2B3),
+        style: TextStyle(
+          color: _palette.textMuted,
           fontSize: 11,
           fontWeight: FontWeight.w700,
         ),
@@ -4928,7 +4936,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
             height: 24,
             alignment: Alignment.center,
             decoration: BoxDecoration(
-              color: const Color(0xFFEAF1FF),
+              color: _palette.primarySoft,
               borderRadius: BorderRadius.circular(8),
             ),
             child: Text(
@@ -4940,8 +4948,8 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
           Expanded(
             child: Text(
               label,
-              style: const TextStyle(
-                color: Color(0xFF101828),
+              style: TextStyle(
+                color: _palette.textPrimary,
                 fontSize: 13,
                 fontWeight: FontWeight.w600,
               ),
@@ -5435,9 +5443,10 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     return Container(
       margin: const EdgeInsets.only(left: 6),
       decoration: BoxDecoration(
-        color: const Color(0x26FFFFFF),
+        color: Colors.white.withValues(alpha: 0.15),
         borderRadius: BorderRadius.circular(11),
-        border: Border.all(color: const Color(0x44D1E0FF)),
+        border:
+            Border.all(color: _palette.heroMutedText.withValues(alpha: 0.27)),
       ),
       child: IconButton(
         tooltip: tooltip,
@@ -5456,12 +5465,10 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     required String subtitle,
     bool danger = false,
   }) {
-    final iconBg = danger ? const Color(0xFFFEE4E2) : const Color(0xFFEFF4FF);
-    final iconFg = danger ? const Color(0xFFB42318) : const Color(0xFF175CD3);
-    final titleColor =
-        danger ? const Color(0xFFB42318) : const Color(0xFF101828);
-    final subtitleColor =
-        danger ? const Color(0xFFB42318) : const Color(0xFF667085);
+    final iconBg = danger ? _palette.dangerSurface : _palette.primarySoft;
+    final iconFg = danger ? _palette.danger : _palette.primaryStrong;
+    final titleColor = danger ? _palette.danger : _palette.textPrimary;
+    final subtitleColor = danger ? _palette.danger : _palette.textMuted;
     return PopupMenuItem<String>(
       value: value,
       child: SizedBox(
@@ -5519,11 +5526,11 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
         onSelected: _handleMobileMenuAction,
         offset: const Offset(-8, 48),
         elevation: 12,
-        color: Colors.white,
-        surfaceTintColor: Colors.white,
+        color: _palette.surface,
+        surfaceTintColor: _palette.surface,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(16),
-          side: const BorderSide(color: Color(0xFFDDE6FF)),
+          side: BorderSide(color: _palette.panelBorder),
         ),
         itemBuilder: (_) {
           final entries = <PopupMenuEntry<String>>[];
@@ -5611,9 +5618,11 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
         child: Container(
           padding: const EdgeInsets.all(9),
           decoration: BoxDecoration(
-            color: const Color(0x26FFFFFF),
+            color: Colors.white.withValues(alpha: 0.15),
             borderRadius: BorderRadius.circular(11),
-            border: Border.all(color: const Color(0x44D1E0FF)),
+            border: Border.all(
+              color: _palette.heroMutedText.withValues(alpha: 0.27),
+            ),
           ),
           child: Stack(
             clipBehavior: Clip.none,
@@ -5628,7 +5637,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                     width: 10,
                     height: 10,
                     decoration: BoxDecoration(
-                      color: const Color(0xFFEF4444),
+                      color: _palette.danger,
                       borderRadius: BorderRadius.circular(999),
                       border: Border.all(color: Colors.white, width: 1.5),
                     ),
@@ -5646,9 +5655,9 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
       padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFF9BB8FF)),
-        gradient: const LinearGradient(
-          colors: [Color(0xFF155EEF), Color(0xFF175CD3)],
+        border: Border.all(color: _palette.heroBorder),
+        gradient: LinearGradient(
+          colors: [_palette.heroGradientStart, _palette.heroGradientEnd],
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
         ),
@@ -5672,8 +5681,10 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                 const SizedBox(height: 2),
                 Text(
                   '会议号：$_roomNumber',
-                  style:
-                      const TextStyle(color: Color(0xFFD1E0FF), fontSize: 12.5),
+                  style: TextStyle(
+                    color: _palette.heroMutedText,
+                    fontSize: 12.5,
+                  ),
                 ),
                 Text(
                   _meetingDisplayName.isEmpty
@@ -5681,8 +5692,10 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                       : _meetingDisplayName,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style:
-                      const TextStyle(color: Color(0xFFD1E0FF), fontSize: 11.5),
+                  style: TextStyle(
+                    color: _palette.heroMutedText,
+                    fontSize: 11.5,
+                  ),
                 ),
               ],
             ),
@@ -5707,9 +5720,9 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     return Container(
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: _palette.surface,
         borderRadius: BorderRadius.circular(radius),
-        border: Border.all(color: const Color(0xFFDDE6FF)),
+        border: Border.all(color: _palette.panelBorder),
       ),
       child: _buildStage(),
     );
@@ -5799,9 +5812,9 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: _palette.surface,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFFDDE6FF)),
+        border: Border.all(color: _palette.panelBorder),
       ),
       child: Row(
         children: [
@@ -5841,15 +5854,14 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                     ? _stopMeetingRecording
                     : _startMeetingRecording)
                 : null,
-            backgroundColor: _recordingActive
-                ? const Color(0xFFB42318)
-                : const Color(0xFF155EEF),
+            backgroundColor:
+                _recordingActive ? _palette.danger : _palette.primary,
           ),
           _buildMobileControlButton(
             icon: Icons.call_end,
             label: _isHost && _requiresAuth ? '结束会议' : '离开会议',
             onPressed: _connected ? _handleLeaveButtonPressed : null,
-            backgroundColor: const Color(0xFFB42318),
+            backgroundColor: _palette.danger,
           ),
         ],
       ),
@@ -5864,16 +5876,18 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
-        color: dark ? const Color(0x26FFFFFF) : Colors.white,
+        color: dark ? Colors.white.withValues(alpha: 0.15) : _palette.surface,
         borderRadius: BorderRadius.circular(8),
         border: Border.all(
-          color: dark ? const Color(0x55D1E0FF) : const Color(0xFFCCDBFF),
+          color: dark
+              ? _palette.heroMutedText.withValues(alpha: 0.35)
+              : _palette.primaryBorder,
         ),
       ),
       child: MeetingMetaText(
         '$label: $value',
         style: TextStyle(
-          color: dark ? const Color(0xFFD1E0FF) : const Color(0xFF175CD3),
+          color: dark ? _palette.heroMutedText : _palette.primaryStrong,
           fontSize: 11,
         ),
       ),
@@ -5895,10 +5909,13 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
       width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       decoration: BoxDecoration(
-        color: dark ? const Color(0x1AFFFFFF) : const Color(0xFFEFF4FF),
+        color:
+            dark ? Colors.white.withValues(alpha: 0.10) : _palette.primarySoft,
         borderRadius: BorderRadius.circular(10),
         border: Border.all(
-          color: dark ? const Color(0x55D1E0FF) : const Color(0xFFCCDBFF),
+          color: dark
+              ? _palette.heroMutedText.withValues(alpha: 0.35)
+              : _palette.primaryBorder,
         ),
       ),
       child: Column(
@@ -5909,14 +5926,13 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
               Icon(
                 Icons.bug_report_outlined,
                 size: 14,
-                color: dark ? const Color(0xFFD1E0FF) : const Color(0xFF175CD3),
+                color: dark ? _palette.heroMutedText : _palette.primaryStrong,
               ),
               const SizedBox(width: 6),
               MeetingTitleText(
                 'AI Debug',
                 style: TextStyle(
-                  color:
-                      dark ? const Color(0xFFD1E0FF) : const Color(0xFF175CD3),
+                  color: dark ? _palette.heroMutedText : _palette.primaryStrong,
                   fontSize: 12,
                   fontWeight: FontWeight.w600,
                 ),
@@ -5925,8 +5941,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
               MeetingMetaText(
                 _realtimeBotDebugLastEvent,
                 style: TextStyle(
-                  color:
-                      dark ? const Color(0xFFD1E0FF) : const Color(0xFF175CD3),
+                  color: dark ? _palette.heroMutedText : _palette.primaryStrong,
                   fontSize: 11,
                 ),
               ),
@@ -6053,10 +6068,11 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
             child: OutlinedButton.icon(
               style: OutlinedButton.styleFrom(
                 foregroundColor:
-                    dark ? const Color(0xFFD1E0FF) : const Color(0xFF175CD3),
+                    dark ? _palette.heroMutedText : _palette.primaryStrong,
                 side: BorderSide(
-                  color:
-                      dark ? const Color(0x55D1E0FF) : const Color(0xFFCCDBFF),
+                  color: dark
+                      ? _palette.heroMutedText.withValues(alpha: 0.35)
+                      : _palette.primaryBorder,
                 ),
                 visualDensity: VisualDensity.compact,
                 tapTargetSize: MaterialTapTargetSize.shrinkWrap,
@@ -6074,10 +6090,11 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
             child: OutlinedButton.icon(
               style: OutlinedButton.styleFrom(
                 foregroundColor:
-                    dark ? const Color(0xFFD1E0FF) : const Color(0xFF175CD3),
+                    dark ? _palette.heroMutedText : _palette.primaryStrong,
                 side: BorderSide(
-                  color:
-                      dark ? const Color(0x55D1E0FF) : const Color(0xFFCCDBFF),
+                  color: dark
+                      ? _palette.heroMutedText.withValues(alpha: 0.35)
+                      : _palette.primaryBorder,
                 ),
                 visualDensity: VisualDensity.compact,
                 tapTargetSize: MaterialTapTargetSize.shrinkWrap,
@@ -6093,7 +6110,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
           MeetingDebugText(
             'preview: ${_clipDebugText(_realtimeBotDebugLastPreview)}',
             style: TextStyle(
-              color: dark ? const Color(0xFFD1E0FF) : const Color(0xFF175CD3),
+              color: dark ? _palette.heroMutedText : _palette.primaryStrong,
               fontSize: 11,
             ),
           ),
@@ -6101,7 +6118,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
           MeetingDebugText(
             'last_process: ${_formatDebugTime(_realtimeBotDebugLastProcessAt)}',
             style: TextStyle(
-              color: dark ? const Color(0xFFD1E0FF) : const Color(0xFF175CD3),
+              color: dark ? _palette.heroMutedText : _palette.primaryStrong,
               fontSize: 11,
             ),
           ),
@@ -6109,7 +6126,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
           MeetingDebugText(
             'blocker: ${_clipDebugText(blocker)}',
             style: TextStyle(
-              color: dark ? const Color(0xFFD1E0FF) : const Color(0xFF175CD3),
+              color: dark ? _palette.heroMutedText : _palette.primaryStrong,
               fontSize: 11,
             ),
           ),
@@ -6117,7 +6134,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
           MeetingErrorText(
             'error: ${_clipDebugText(_realtimeBotDebugLastError)}',
             style: TextStyle(
-              color: dark ? const Color(0xFFFDA29B) : const Color(0xFFB42318),
+              color: dark ? _palette.dangerSoft : _palette.danger,
               fontSize: 11,
             ),
           ),
@@ -6130,9 +6147,9 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     return Scaffold(
       body: MeetingSelectableRegion(
         child: Container(
-          decoration: const BoxDecoration(
+          decoration: BoxDecoration(
             gradient: LinearGradient(
-              colors: [Color(0xFFF5F8FF), Color(0xFFEEF4FF)],
+              colors: [_palette.pageBackground, _palette.primarySoft],
               begin: Alignment.topCenter,
               end: Alignment.bottomCenter,
             ),
@@ -6153,15 +6170,15 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                       vertical: 8,
                     ),
                     decoration: BoxDecoration(
-                      color: const Color(0xFFEFF4FF),
+                      color: _palette.primarySoft,
                       borderRadius: BorderRadius.circular(10),
-                      border: Border.all(color: const Color(0xFFCCDBFF)),
+                      border: Border.all(color: _palette.primaryBorder),
                     ),
                     child: MeetingStatusText(
                       _status,
                       maxLines: 2,
-                      style: const TextStyle(
-                        color: Color(0xFF175CD3),
+                      style: TextStyle(
+                        color: _palette.primaryStrong,
                         fontSize: 12,
                       ),
                     ),
@@ -6182,10 +6199,10 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                         children: [
                           Container(
                             decoration: BoxDecoration(
-                              color: Colors.white,
+                              color: _palette.surface,
                               borderRadius: BorderRadius.circular(12),
                               border: Border.all(
-                                color: const Color(0xFFDDE6FF),
+                                color: _palette.panelBorder,
                               ),
                             ),
                             child: const TabBar(
@@ -6264,9 +6281,9 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
       width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       decoration: BoxDecoration(
-        color: const Color(0xFFEEF4FF),
+        color: _palette.primarySoft,
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: const Color(0xFFCCDBFF)),
+        border: Border.all(color: _palette.primaryBorder),
       ),
       child: Wrap(
         spacing: 8,
@@ -6280,12 +6297,12 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
           _buildTopMetricChip(
             icon: Icons.groups_rounded,
             text: '参会/预订：$activeCount/$maxParticipants',
-            accent: const Color(0xFF175CD3),
+            accent: _palette.primaryStrong,
           ),
           _buildTopMetricChip(
             icon: Icons.timer_outlined,
             text: '时长：${_meetingElapsedText()}',
-            accent: const Color(0xFF175CD3),
+            accent: _palette.primaryStrong,
           ),
           if (_recordingActive || _recordingUploading)
             _buildTopMetricChip(
@@ -6293,7 +6310,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                   ? Icons.cloud_upload_outlined
                   : Icons.fiber_manual_record,
               text: _recordingUploading ? '录制上传中' : '正在录制',
-              accent: const Color(0xFFB42318),
+              accent: _palette.danger,
             ),
         ],
       ),
@@ -6321,7 +6338,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     return OutlinedButton.icon(
       style: OutlinedButton.styleFrom(
         foregroundColor: Colors.white,
-        side: const BorderSide(color: Color(0xFFD1E0FF)),
+        side: BorderSide(color: _palette.heroMutedText),
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
         visualDensity: VisualDensity.compact,
         tapTargetSize: MaterialTapTargetSize.shrinkWrap,
@@ -6342,9 +6359,9 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
       padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFF9BB8FF)),
-        gradient: const LinearGradient(
-          colors: [Color(0xFF155EEF), Color(0xFF175CD3)],
+        border: Border.all(color: _palette.heroBorder),
+        gradient: LinearGradient(
+          colors: [_palette.heroGradientStart, _palette.heroGradientEnd],
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
         ),
@@ -6376,8 +6393,8 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                       children: [
                         MeetingMetaText(
                           '会议号：$_roomNumber',
-                          style: const TextStyle(
-                            color: Color(0xFFD1E0FF),
+                          style: TextStyle(
+                            color: _palette.heroMutedText,
                             fontSize: 12.5,
                           ),
                         ),
@@ -6385,15 +6402,15 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                           onDoubleTap: _openMeetingDisplayNameDialog,
                           child: MeetingMetaText(
                             '显示名：$displayName',
-                            style: const TextStyle(
-                              color: Color(0xFFD1E0FF),
+                            style: TextStyle(
+                              color: _palette.heroMutedText,
                               fontSize: 12.5,
                             ),
                           ),
                         ),
                         TextButton.icon(
                           style: TextButton.styleFrom(
-                            foregroundColor: const Color(0xFFD1E0FF),
+                            foregroundColor: _palette.heroMutedText,
                             padding: const EdgeInsets.symmetric(horizontal: 2),
                             visualDensity: VisualDensity.compact,
                             tapTargetSize: MaterialTapTargetSize.shrinkWrap,
@@ -6476,12 +6493,12 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
               _buildTopMetricChip(
                 icon: Icons.groups_rounded,
                 text: '参会/预订：$activeCount/$maxParticipants',
-                accent: const Color(0xFF175CD3),
+                accent: _palette.primaryStrong,
               ),
               _buildTopMetricChip(
                 icon: Icons.timer_outlined,
                 text: '时长：${_meetingElapsedText()}',
-                accent: const Color(0xFF175CD3),
+                accent: _palette.primaryStrong,
               ),
               if (_recordingActive || _recordingUploading)
                 _buildTopMetricChip(
@@ -6489,7 +6506,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                       ? Icons.cloud_upload_outlined
                       : Icons.fiber_manual_record,
                   text: _recordingUploading ? '录制上传中' : '正在录制',
-                  accent: const Color(0xFFB42318),
+                  accent: _palette.danger,
                 ),
             ],
           ),
@@ -6498,24 +6515,26 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
             width: double.infinity,
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
             decoration: BoxDecoration(
-              color: const Color(0x26FFFFFF),
+              color: Colors.white.withValues(alpha: 0.15),
               borderRadius: BorderRadius.circular(9),
-              border: Border.all(color: const Color(0x55D1E0FF)),
+              border: Border.all(
+                color: _palette.heroMutedText.withValues(alpha: 0.35),
+              ),
             ),
             child: Row(
               children: [
-                const Icon(
+                Icon(
                   Icons.info_outline,
                   size: 14,
-                  color: Color(0xFFD1E0FF),
+                  color: _palette.heroMutedText,
                 ),
                 const SizedBox(width: 6),
                 Expanded(
                   child: MeetingStatusText(
                     _status,
                     maxLines: 1,
-                    style: const TextStyle(
-                      color: Color(0xFFD1E0FF),
+                    style: TextStyle(
+                      color: _palette.heroMutedText,
                       fontSize: 12,
                     ),
                   ),
@@ -6541,21 +6560,21 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
   }) {
     return Container(
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: _palette.surface,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFFDDE6FF)),
+        border: Border.all(color: _palette.panelBorder),
       ),
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(icon, size: 18, color: const Color(0xFF175CD3)),
+          Icon(icon, size: 18, color: _palette.primaryStrong),
           const SizedBox(height: 8),
           RotatedBox(
             quarterTurns: 3,
             child: Text(
               label,
-              style: const TextStyle(
-                color: Color(0xFF344054),
+              style: TextStyle(
+                color: _palette.textSecondary,
                 fontWeight: FontWeight.w600,
               ),
             ),
@@ -6568,7 +6587,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
               onPressed: onToggle,
               icon: Icon(
                 left ? Icons.chevron_right : Icons.chevron_left,
-                color: const Color(0xFF175CD3),
+                color: _palette.primaryStrong,
               ),
             ),
           ),
@@ -6609,7 +6628,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                   child: Tooltip(
                     message: collapseTooltip,
                     child: Material(
-                      color: const Color(0xFFF7FAFF),
+                      color: _palette.surfaceMuted,
                       shape: const CircleBorder(),
                       elevation: 1,
                       child: IconButton(
@@ -6619,7 +6638,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                         icon: Icon(
                           left ? Icons.chevron_left : Icons.chevron_right,
                           size: 18,
-                          color: const Color(0xFF175CD3),
+                          color: _palette.primaryStrong,
                         ),
                       ),
                     ),
@@ -6702,7 +6721,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
       }
     } else {
       mediaLayer = Container(
-        color: const Color(0xFFEAF2FF),
+        color: _palette.primarySoft,
         alignment: Alignment.center,
         child: _buildParticipantAvatar(
           displayName: tile.displayName,
@@ -6715,12 +6734,10 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
       onDoubleTap: () => _toggleSpotlight(tile.identity),
       child: Container(
         decoration: BoxDecoration(
-          color: const Color(0xFFEAF2FF),
+          color: _palette.primarySoft,
           borderRadius: BorderRadius.circular(12),
           border: Border.all(
-            color: tile.isSpeaking
-                ? const Color(0xFF155EEF)
-                : const Color(0xFFCCDBFF),
+            color: tile.isSpeaking ? _palette.primary : _palette.primaryBorder,
             width: tile.isSpeaking ? 1.5 : 1,
           ),
         ),
@@ -6733,7 +6750,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
               right: 8,
               child: Container(
                 decoration: BoxDecoration(
-                  color: const Color(0xAA155EEF),
+                  color: _palette.primary.withValues(alpha: 0.67),
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: IconButton(
@@ -6763,7 +6780,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
                 decoration: BoxDecoration(
-                  color: const Color(0xCC155EEF),
+                  color: _palette.primary.withValues(alpha: 0.8),
                   borderRadius: BorderRadius.circular(8),
                 ),
                 child: Row(
@@ -6799,8 +6816,8 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                       tile.micEnabled ? Icons.mic : Icons.mic_off,
                       size: 14,
                       color: tile.micEnabled
-                          ? const Color(0xFF86EFAC)
-                          : const Color(0xFFFCA5A5),
+                          ? _palette.success
+                          : _palette.dangerSoft,
                     ),
                     const SizedBox(width: 6),
                     ParticipantAudioLevelBar(
@@ -6815,8 +6832,8 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                       tile.cameraEnabled ? Icons.videocam : Icons.videocam_off,
                       size: 14,
                       color: tile.cameraEnabled
-                          ? const Color(0xFF93C5FD)
-                          : const Color(0xFFFCA5A5),
+                          ? _palette.heroMutedText
+                          : _palette.dangerSoft,
                     ),
                   ],
                 ),
@@ -6837,7 +6854,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
       decoration: BoxDecoration(
-        color: const Color(0xAA155EEF),
+        color: _palette.primary.withValues(alpha: 0.67),
         borderRadius: BorderRadius.circular(10),
       ),
       child: Row(
@@ -6885,23 +6902,23 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
         return Container(
           alignment: Alignment.center,
           decoration: BoxDecoration(
-            color: const Color(0xFFF9FBFF),
+            color: _palette.surfaceRaised,
             borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: const Color(0xFFDDE6FF)),
+            border: Border.all(color: _palette.panelBorder),
           ),
-          child: const Column(
+          child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              SizedBox(
+              const SizedBox(
                 width: 20,
                 height: 20,
                 child: CircularProgressIndicator(strokeWidth: 2.4),
               ),
-              SizedBox(height: 10),
+              const SizedBox(height: 10),
               Text(
                 '已进入会议主界面，正在等候室等待主持人准入...',
                 textAlign: TextAlign.center,
-                style: TextStyle(color: Color(0xFF475467)),
+                style: TextStyle(color: _palette.textSecondary),
               ),
             ],
           ),
@@ -6913,13 +6930,13 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
       return Container(
         alignment: Alignment.center,
         decoration: BoxDecoration(
-          color: const Color(0xFFF9FBFF),
+          color: _palette.surfaceRaised,
           borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: const Color(0xFFDDE6FF)),
+          border: Border.all(color: _palette.panelBorder),
         ),
         child: Text(
           placeholder,
-          style: const TextStyle(color: Color(0xFF475467)),
+          style: TextStyle(color: _palette.textSecondary),
         ),
       );
     }
@@ -6981,19 +6998,22 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
       width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
-        color: const Color(0xFFFFF4E8),
+        color: _palette.warningSurface,
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: const Color(0xFFFEC84B)),
+        border: Border.all(color: _palette.warningBorder),
       ),
       child: Row(
         children: [
-          const Icon(Icons.warning_amber_rounded,
-              color: Color(0xFFB54708), size: 18),
+          Icon(
+            Icons.warning_amber_rounded,
+            color: _palette.warning,
+            size: 18,
+          ),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
               warning,
-              style: const TextStyle(color: Color(0xFF7A2E0E), fontSize: 12.5),
+              style: TextStyle(color: _palette.warning, fontSize: 12.5),
             ),
           ),
           TextButton(
@@ -7021,15 +7041,15 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     if (avatarUrl.trim().isEmpty) {
       return CircleAvatar(
         radius: radius,
-        backgroundColor: const Color(0xFFD9E6FF),
-        foregroundColor: const Color(0xFF175CD3),
+        backgroundColor: _palette.primarySoftAlt,
+        foregroundColor: _palette.primaryStrong,
         child:
             Text(initial, style: const TextStyle(fontWeight: FontWeight.w700)),
       );
     }
     return CircleAvatar(
       radius: radius,
-      backgroundColor: const Color(0xFFD9E6FF),
+      backgroundColor: _palette.primarySoftAlt,
       backgroundImage: NetworkImage(avatarUrl),
       onBackgroundImageError: (_, __) {},
     );
@@ -7045,32 +7065,32 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
         decoration: BoxDecoration(
-          color: const Color(0xFFFFF4E8),
+          color: _palette.warningSurface,
           borderRadius: BorderRadius.circular(999),
-          border: Border.all(color: const Color(0xFFFDB022)),
+          border: Border.all(color: _palette.warningBorder),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(
+            Icon(
               Icons.pan_tool_alt_rounded,
               size: 11,
-              color: Color(0xFFB54708),
+              color: _palette.warning,
             ),
             const SizedBox(width: 4),
             Text(
               label,
-              style: const TextStyle(
-                color: Color(0xFFB54708),
+              style: TextStyle(
+                color: _palette.warning,
                 fontSize: 10.5,
                 fontWeight: FontWeight.w700,
               ),
             ),
             const SizedBox(width: 4),
-            const Icon(
+            Icon(
               Icons.task_alt_rounded,
               size: 11,
-              color: Color(0xFF15803D),
+              color: _palette.success,
             ),
           ],
         ),
@@ -7555,13 +7575,63 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
       padding: const EdgeInsets.fromLTRB(14, 6, 14, 2),
       child: Text(
         title,
-        style: const TextStyle(
-          color: Color(0xFF98A2B3),
+        style: TextStyle(
+          color: _palette.textMuted,
           fontSize: 11,
           fontWeight: FontWeight.w700,
         ),
       ),
     );
+  }
+
+  IconData _participantMenuIconData(ParticipantMenuIcon icon) {
+    switch (icon) {
+      case ParticipantMenuIcon.badge:
+        return Icons.badge_outlined;
+      case ParticipantMenuIcon.mic:
+        return Icons.mic;
+      case ParticipantMenuIcon.micOff:
+        return Icons.mic_off;
+      case ParticipantMenuIcon.hand:
+        return Icons.pan_tool_alt_outlined;
+      case ParticipantMenuIcon.video:
+        return Icons.videocam_outlined;
+      case ParticipantMenuIcon.videoOff:
+        return Icons.videocam_off;
+      case ParticipantMenuIcon.screenShare:
+        return Icons.screen_share_outlined;
+      case ParticipantMenuIcon.stopScreenShare:
+        return Icons.stop_screen_share;
+      case ParticipantMenuIcon.robot:
+        return Icons.smart_toy_outlined;
+      case ParticipantMenuIcon.keyboardVoice:
+        return Icons.keyboard_voice_outlined;
+      case ParticipantMenuIcon.cameraAlt:
+        return Icons.camera_alt_outlined;
+      case ParticipantMenuIcon.chatBubble:
+        return Icons.chat_bubble_outline_rounded;
+      case ParticipantMenuIcon.taskAlt:
+        return Icons.task_alt_outlined;
+      case ParticipantMenuIcon.adminPanel:
+        return Icons.admin_panel_settings_outlined;
+      case ParticipantMenuIcon.rename:
+        return Icons.drive_file_rename_outline;
+      case ParticipantMenuIcon.personRemove:
+        return Icons.person_remove;
+      case ParticipantMenuIcon.personRemoveAlt:
+        return Icons.person_remove_alt_1_outlined;
+      case ParticipantMenuIcon.personOff:
+        return Icons.person_off_outlined;
+    }
+  }
+
+  IconData _chatMessageMenuIconData(ChatMessageMenuIcon icon) {
+    switch (icon) {
+      case ChatMessageMenuIcon.copy:
+        return Icons.content_copy_outlined;
+      case ChatMessageMenuIcon.recall:
+        return Icons.undo_outlined;
+    }
   }
 
   PopupMenuEntry<String> _participantMenuActionItemRefined({
@@ -7572,11 +7642,9 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     bool enabled = true,
     bool danger = false,
   }) {
-    final iconColor =
-        danger ? const Color(0xFFB42318) : const Color(0xFF175CD3);
-    final iconBg = danger ? const Color(0xFFFEE4E2) : const Color(0xFFEAF1FF);
-    final titleColor =
-        danger ? const Color(0xFFB42318) : const Color(0xFF101828);
+    final iconColor = danger ? _palette.danger : _palette.primaryStrong;
+    final iconBg = danger ? _palette.dangerSurface : _palette.primarySoft;
+    final titleColor = danger ? _palette.danger : _palette.textPrimary;
     return PopupMenuItem<String>(
       value: value,
       enabled: enabled,
@@ -7614,8 +7682,8 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                     const SizedBox(height: 2),
                     Text(
                       subtitle,
-                      style: const TextStyle(
-                        color: Color(0xFF98A2B3),
+                      style: TextStyle(
+                        color: _palette.textMuted,
                         fontSize: 11.5,
                       ),
                     ),
@@ -7633,242 +7701,45 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     _ParticipantRowData row,
     bool isSelf,
   ) {
-    final items = <PopupMenuEntry<String>>[];
-    if (isSelf) {
-      items.add(_participantMenuSectionRefined('我的控制'));
-      items.add(
-        _participantMenuActionItemRefined(
-          value: 'rename_self',
-          title: '修改本次显示名',
-          icon: Icons.badge_outlined,
-        ),
-      );
-      if (!row.allowSelfUnmute) {
-        items.add(
-          _participantMenuActionItemRefined(
-            value: 'request_mic',
-            title: row.micRequestPending ? '开麦申请已提交' : '申请开麦',
-            subtitle: row.micRequestPending ? '等待主持人审批' : '提交后主持人可一键批准',
-            icon: Icons.pan_tool_alt_outlined,
-            enabled: !row.micRequestPending,
-          ),
-        );
+    final specs = buildParticipantMenuSpecs(
+      ParticipantMenuBuilderInput(
+        isSelf: isSelf,
+        isModerator: _isModerator,
+        hasPrivateMeetingApiScope: _hasPrivateMeetingApiScope,
+        userId: row.userId,
+        isRealtimeBot: row.isRealtimeBot,
+        roleKey: row.roleKey,
+        micEnabled: row.micEnabled,
+        cameraEnabled: row.cameraEnabled,
+        mutedByHost: row.mutedByHost,
+        videoBlockedByHost: row.videoBlockedByHost,
+        allowSelfUnmute: row.allowSelfUnmute,
+        allowMemberVideo: row.allowMemberVideo,
+        allowChat: row.allowChat,
+        allowScreenShare: row.allowScreenShare,
+        micRequestPending: row.micRequestPending,
+        videoRequestPending: row.videoRequestPending,
+        screenShareRequestPending: row.screenShareRequestPending,
+        isScreenSharing: row.isScreenSharing,
+      ),
+    );
+    return specs.map((spec) {
+      switch (spec.kind) {
+        case ParticipantMenuEntryKind.section:
+          return _participantMenuSectionRefined(spec.title);
+        case ParticipantMenuEntryKind.divider:
+          return const PopupMenuDivider(height: 8);
+        case ParticipantMenuEntryKind.action:
+          return _participantMenuActionItemRefined(
+            value: spec.value!,
+            title: spec.title,
+            icon: _participantMenuIconData(spec.icon!),
+            subtitle: spec.subtitle,
+            enabled: spec.enabled,
+            danger: spec.danger,
+          );
       }
-      if (!row.allowMemberVideo) {
-        items.add(
-          _participantMenuActionItemRefined(
-            value: 'request_video',
-            title: row.videoRequestPending ? '开视频申请已提交' : '申请开视频',
-            subtitle: row.videoRequestPending ? '等待主持人审批' : '提交后主持人可一键批准',
-            icon: Icons.videocam_outlined,
-            enabled: !row.videoRequestPending,
-          ),
-        );
-      }
-      if (!row.allowScreenShare) {
-        items.add(
-          _participantMenuActionItemRefined(
-            value: 'request_share',
-            title: row.screenShareRequestPending ? '屏幕共享申请已提交' : '申请屏幕共享',
-            subtitle: row.screenShareRequestPending ? '等待主持人审批' : '提交后主持人可一键批准',
-            icon: Icons.screen_share_outlined,
-            enabled: !row.screenShareRequestPending,
-          ),
-        );
-      }
-      return items;
-    }
-
-    final canModerateTarget = _isModerator && _hasPrivateMeetingApiScope;
-    if (!canModerateTarget) {
-      return items;
-    }
-    if (row.isRealtimeBot) {
-      items.add(_participantMenuSectionRefined('AI 控制'));
-      items.add(
-        _participantMenuActionItemRefined(
-          value: row.mutedByHost ? 'unmute' : 'mute',
-          title: row.mutedByHost ? '允许 AI 发言' : '静音 AI 发言',
-          subtitle: row.mutedByHost ? '当前：已静音' : '当前：可发言',
-          icon: row.mutedByHost ? Icons.mic : Icons.mic_off,
-        ),
-      );
-      items.add(
-        _participantMenuActionItemRefined(
-          value: 'ai_control',
-          title: '打开 AI 管控',
-          subtitle: '配置模型参数并测试连通性',
-          icon: Icons.smart_toy_outlined,
-        ),
-      );
-      return items;
-    }
-    if (row.roleKey == 'host') {
-      return items;
-    }
-    final isGuest = row.userId == null;
-    final String muteSubtitle;
-    final String videoSubtitle;
-    if (isGuest) {
-      muteSubtitle = row.micEnabled ? '当前：麦克风开启' : '当前：麦克风关闭';
-      videoSubtitle = row.cameraEnabled ? '当前：摄像头开启' : '当前：摄像头关闭';
-    } else {
-      muteSubtitle = row.mutedByHost ? '当前：主持人已静音' : '当前：成员可发言';
-      videoSubtitle = row.videoBlockedByHost ? '当前：主持人已关闭视频' : '当前：成员可开视频';
-    }
-
-    items.add(_participantMenuSectionRefined('即时控制'));
-    items.add(
-      _participantMenuActionItemRefined(
-        value: row.mutedByHost ? 'unmute' : 'mute',
-        title: row.mutedByHost ? '允许开麦' : '静音成员',
-        subtitle: muteSubtitle,
-        icon: row.mutedByHost ? Icons.mic : Icons.mic_off,
-      ),
-    );
-    items.add(
-      _participantMenuActionItemRefined(
-        value: row.videoBlockedByHost ? 'video_on' : 'video_off',
-        title: row.videoBlockedByHost ? '允许开视频' : '关闭成员视频',
-        subtitle: videoSubtitle,
-        icon: row.videoBlockedByHost ? Icons.videocam : Icons.videocam_off,
-      ),
-    );
-    if (row.isScreenSharing) {
-      items.add(
-        _participantMenuActionItemRefined(
-          value: 'stop_share',
-          title: '结束屏幕共享',
-          icon: Icons.stop_screen_share,
-        ),
-      );
-    }
-
-    items.add(const PopupMenuDivider(height: 8));
-    items.add(_participantMenuSectionRefined('权限设置'));
-    items.add(
-      _participantMenuActionItemRefined(
-        value: row.allowSelfUnmute
-            ? 'mic_permission_block'
-            : 'mic_permission_allow',
-        title: row.allowSelfUnmute ? '禁止开麦（权限）' : '允许开麦（权限）',
-        icon: Icons.keyboard_voice_outlined,
-      ),
-    );
-    items.add(
-      _participantMenuActionItemRefined(
-        value: row.allowMemberVideo
-            ? 'video_permission_block'
-            : 'video_permission_allow',
-        title: row.allowMemberVideo ? '禁止开视频（权限）' : '允许开视频（权限）',
-        icon: Icons.camera_alt_outlined,
-      ),
-    );
-    items.add(
-      _participantMenuActionItemRefined(
-        value:
-            row.allowChat ? 'chat_permission_block' : 'chat_permission_allow',
-        title: row.allowChat ? '禁止聊天（权限）' : '允许聊天（权限）',
-        icon: Icons.chat_bubble_outline_rounded,
-        subtitle: isGuest ? '访客聊天权限跟随会议设置' : null,
-        enabled: !isGuest,
-      ),
-    );
-    items.add(
-      _participantMenuActionItemRefined(
-        value: row.allowScreenShare
-            ? 'share_permission_block'
-            : 'share_permission_allow',
-        title: row.allowScreenShare ? '禁止共享（权限）' : '允许共享（权限）',
-        icon: Icons.screen_share_outlined,
-      ),
-    );
-    if (row.micRequestPending && !row.allowSelfUnmute) {
-      items.add(
-        _participantMenuActionItemRefined(
-          value: 'mic_permission_allow',
-          title: '通过开麦申请',
-          icon: Icons.task_alt_outlined,
-        ),
-      );
-    }
-    if (row.videoRequestPending && !row.allowMemberVideo) {
-      items.add(
-        _participantMenuActionItemRefined(
-          value: 'video_permission_allow',
-          title: '通过视频申请',
-          icon: Icons.task_alt_outlined,
-        ),
-      );
-    }
-
-    items.add(const PopupMenuDivider(height: 8));
-    if (row.screenShareRequestPending && !row.allowScreenShare) {
-      items.add(
-        _participantMenuActionItemRefined(
-          value: 'share_permission_allow',
-          title: '通过屏幕共享申请',
-          icon: Icons.task_alt_outlined,
-        ),
-      );
-    }
-    items.add(_participantMenuSectionRefined('成员管理'));
-    if (!isGuest) {
-      if (row.roleKey == 'cohost') {
-        items.add(
-          _participantMenuActionItemRefined(
-            value: 'set_participant',
-            title: '取消联席主持人',
-            icon: Icons.person_remove_alt_1_outlined,
-          ),
-        );
-      } else if (row.roleKey == 'participant') {
-        items.add(
-          _participantMenuActionItemRefined(
-            value: 'set_cohost',
-            title: '设为联席主持人',
-            icon: Icons.admin_panel_settings_outlined,
-          ),
-        );
-      }
-    }
-    items.add(
-      _participantMenuActionItemRefined(
-        value: 'rename_member',
-        title: '成员改名',
-        icon: Icons.drive_file_rename_outline,
-      ),
-    );
-    if (isGuest) {
-      items.add(
-        _participantMenuActionItemRefined(
-          value: 'remove_guest',
-          title: '移出成员',
-          icon: Icons.person_remove,
-          danger: true,
-        ),
-      );
-    } else {
-      items.add(
-        _participantMenuActionItemRefined(
-          value: 'remove',
-          title: '移出成员',
-          subtitle: '仅移出，允许重新加入会议',
-          icon: Icons.person_remove_alt_1_rounded,
-          danger: true,
-        ),
-      );
-      items.add(
-        _participantMenuActionItemRefined(
-          value: 'remove_ban',
-          title: '移出并封禁',
-          subtitle: '移出后禁止再次进入本会议',
-          icon: Icons.person_off_outlined,
-          danger: true,
-        ),
-      );
-    }
-    return items;
+    }).toList();
   }
 
   Future<void> _quickReviewWaitingEntry(
@@ -7910,11 +7781,9 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     bool enabled = true,
     bool danger = false,
   }) {
-    final iconColor =
-        danger ? const Color(0xFFB42318) : const Color(0xFF175CD3);
-    final iconBg = danger ? const Color(0xFFFEE4E2) : const Color(0xFFEAF1FF);
-    final titleColor =
-        danger ? const Color(0xFFB42318) : const Color(0xFF101828);
+    final iconColor = danger ? _palette.danger : _palette.primaryStrong;
+    final iconBg = danger ? _palette.dangerSurface : _palette.primarySoft;
+    final titleColor = danger ? _palette.danger : _palette.textPrimary;
     return PopupMenuItem<String>(
       value: value,
       enabled: enabled,
@@ -7952,8 +7821,8 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                     const SizedBox(height: 2),
                     Text(
                       subtitle,
-                      style: const TextStyle(
-                        color: Color(0xFF98A2B3),
+                      style: TextStyle(
+                        color: _palette.textMuted,
                         fontSize: 11.5,
                       ),
                     ),
@@ -7980,9 +7849,9 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     return Scaffold(
       body: MeetingSelectableRegion(
         child: Container(
-          decoration: const BoxDecoration(
+          decoration: BoxDecoration(
             gradient: LinearGradient(
-              colors: [Color(0xFFF5F8FF), Color(0xFFEEF4FF)],
+              colors: [_palette.pageBackground, _palette.primarySoft],
               begin: Alignment.topCenter,
               end: Alignment.bottomCenter,
             ),
