@@ -1,6 +1,7 @@
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from zoneinfo import ZoneInfo
 
+from django.conf import settings
 from django.contrib.auth.models import User
 from rest_framework import serializers
 
@@ -26,6 +27,40 @@ from conference.models import (
     WaitingRoomStatus,
 )
 from conference.share import build_meeting_share_code
+
+
+def _setting_str(name: str, default: str = "") -> str:
+    return str(getattr(settings, name, default) or "").strip()
+
+
+_REALTIME_BOT_DEFAULT_PROVIDER = (
+    RealtimeBotProvider.VOLCENGINE
+    if _setting_str("REALTIME_BOT_DEFAULT_PROVIDER", RealtimeBotProvider.OPENAI).lower()
+    == RealtimeBotProvider.VOLCENGINE
+    else RealtimeBotProvider.OPENAI
+)
+_REALTIME_BOT_DEFAULT_BASE_URL = _setting_str("REALTIME_BOT_DEFAULT_BASE_URL", "https://api.openai.com") or "https://api.openai.com"
+_REALTIME_BOT_DEFAULT_MODEL = _setting_str("REALTIME_BOT_DEFAULT_MODEL", "gpt-realtime") or "gpt-realtime"
+_REALTIME_BOT_DEFAULT_VOLC_MODEL = _setting_str("REALTIME_BOT_DEFAULT_VOLC_MODEL", "2.2.0.0") or "2.2.0.0"
+_REALTIME_BOT_DEFAULT_VOICE = _setting_str("REALTIME_BOT_DEFAULT_VOICE", "marin") or "marin"
+_REALTIME_BOT_DEFAULT_DISPLAY_NAME = (
+    _setting_str("REALTIME_BOT_DEFAULT_DISPLAY_NAME", "实时语音助手")
+    or "实时语音助手"
+)
+_REALTIME_BOT_DEFAULT_API_KEY = _setting_str("REALTIME_BOT_DEFAULT_API_KEY")
+_REALTIME_BOT_DEFAULT_VOLC_WS_URL = (
+    _setting_str("REALTIME_BOT_DEFAULT_VOLC_WS_URL", "wss://openspeech.bytedance.com/api/v3/realtime/dialogue")
+    or "wss://openspeech.bytedance.com/api/v3/realtime/dialogue"
+)
+_REALTIME_BOT_DEFAULT_VOLC_APP_ID = _setting_str("REALTIME_BOT_DEFAULT_VOLC_APP_ID")
+_REALTIME_BOT_DEFAULT_VOLC_APP_KEY = _setting_str("REALTIME_BOT_DEFAULT_VOLC_APP_KEY", "PlgvMymc7f3tQnJ6") or "PlgvMymc7f3tQnJ6"
+_REALTIME_BOT_DEFAULT_VOLC_ACCESS_KEY = _setting_str("REALTIME_BOT_DEFAULT_VOLC_ACCESS_KEY")
+_REALTIME_BOT_DEFAULT_VOLC_RESOURCE_ID = (
+    _setting_str("REALTIME_BOT_DEFAULT_VOLC_RESOURCE_ID", "volc.speech.dialog")
+    or "volc.speech.dialog"
+)
+_REALTIME_BOT_DEFAULT_VOLC_UID = _setting_str("REALTIME_BOT_DEFAULT_VOLC_UID")
+_REALTIME_BOT_ALLOWED_VOLC_MODELS = {"1.2.1.1", "2.2.0.0"}
 
 
 class UserOutSerializer(serializers.ModelSerializer):
@@ -210,9 +245,15 @@ class MeetingRealtimeBotControlSerializer(serializers.Serializer):
     realtime_bot_enabled = serializers.BooleanField(required=False)
     realtime_bot_muted = serializers.BooleanField(required=False)
     realtime_bot_base_url = serializers.CharField(required=False, allow_blank=False, max_length=255)
+    realtime_bot_openai_model = serializers.CharField(required=False, allow_blank=False, max_length=120)
+    realtime_bot_openai_voice = serializers.CharField(required=False, allow_blank=True, max_length=40)
+    realtime_bot_volc_model = serializers.CharField(required=False, allow_blank=False, max_length=20)
+    realtime_bot_volc_voice = serializers.CharField(required=False, allow_blank=True, max_length=120)
+    # Backward compatibility for older clients. New clients should use
+    # realtime_bot_openai_* / realtime_bot_volc_* fields instead.
     realtime_bot_model = serializers.CharField(required=False, allow_blank=False, max_length=120)
     realtime_bot_api_key = serializers.CharField(required=False, allow_blank=True, max_length=255)
-    realtime_bot_voice = serializers.CharField(required=False, allow_blank=False, max_length=40)
+    realtime_bot_voice = serializers.CharField(required=False, allow_blank=True, max_length=120)
     realtime_bot_volc_ws_url = serializers.CharField(required=False, allow_blank=False, max_length=255)
     realtime_bot_volc_app_id = serializers.CharField(required=False, allow_blank=False, max_length=64)
     realtime_bot_volc_app_key = serializers.CharField(required=False, allow_blank=True, max_length=255)
@@ -227,7 +268,7 @@ class MeetingRealtimeBotConnectivityTestSerializer(serializers.Serializer):
     base_url = serializers.CharField(required=False, allow_blank=False, max_length=255)
     model = serializers.CharField(required=False, allow_blank=False, max_length=120)
     api_key = serializers.CharField(required=False, allow_blank=False, max_length=255)
-    voice = serializers.CharField(required=False, allow_blank=False, max_length=40)
+    voice = serializers.CharField(required=False, allow_blank=True, max_length=120)
     volc_ws_url = serializers.CharField(required=False, allow_blank=False, max_length=255)
     volc_app_id = serializers.CharField(required=False, allow_blank=False, max_length=64)
     volc_app_key = serializers.CharField(required=False, allow_blank=True, max_length=255)
@@ -289,6 +330,10 @@ class MeetingSerializer(serializers.ModelSerializer):
             "realtime_bot_enabled",
             "realtime_bot_muted",
             "realtime_bot_base_url",
+            "realtime_bot_openai_model",
+            "realtime_bot_openai_voice",
+            "realtime_bot_volc_model",
+            "realtime_bot_volc_voice",
             "realtime_bot_model",
             "realtime_bot_voice",
             "realtime_bot_volc_ws_url",
@@ -388,7 +433,7 @@ class MeetingSerializer(serializers.ModelSerializer):
         user = self._request_user()
         if not self._can_manage_realtime_bot(obj, user):
             return False
-        return bool((obj.realtime_bot_api_key or "").strip())
+        return bool((obj.realtime_bot_api_key or "").strip() or _REALTIME_BOT_DEFAULT_API_KEY)
 
     def get_realtime_bot_api_key(self, obj):
         user = self._request_user()
@@ -400,13 +445,13 @@ class MeetingSerializer(serializers.ModelSerializer):
         user = self._request_user()
         if not self._can_manage_realtime_bot(obj, user):
             return False
-        return bool((obj.realtime_bot_volc_app_key or "").strip())
+        return bool((obj.realtime_bot_volc_app_key or "").strip() or _REALTIME_BOT_DEFAULT_VOLC_APP_KEY)
 
     def get_realtime_bot_volc_access_key_set(self, obj):
         user = self._request_user()
         if not self._can_manage_realtime_bot(obj, user):
             return False
-        return bool((obj.realtime_bot_volc_access_key or "").strip())
+        return bool((obj.realtime_bot_volc_access_key or "").strip() or _REALTIME_BOT_DEFAULT_VOLC_ACCESS_KEY)
 
     def get_realtime_bot_volc_app_key(self, obj):
         user = self._request_user()
@@ -419,6 +464,84 @@ class MeetingSerializer(serializers.ModelSerializer):
         if not self._can_manage_realtime_bot(obj, user):
             return ""
         return (obj.realtime_bot_volc_access_key or "").strip()
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        provider = str(data.get("realtime_bot_provider") or "").strip().lower()
+        if provider not in {RealtimeBotProvider.OPENAI, RealtimeBotProvider.VOLCENGINE}:
+            provider = _REALTIME_BOT_DEFAULT_PROVIDER
+        data["realtime_bot_provider"] = provider
+        data["realtime_bot_base_url"] = (
+            str(data.get("realtime_bot_base_url") or "").strip() or _REALTIME_BOT_DEFAULT_BASE_URL
+        )
+        legacy_model = str(data.get("realtime_bot_model") or "").strip()
+        legacy_voice = str(data.get("realtime_bot_voice") or "").strip()
+
+        openai_model = str(data.get("realtime_bot_openai_model") or "").strip()
+        if not openai_model:
+            if provider != RealtimeBotProvider.VOLCENGINE and legacy_model:
+                openai_model = legacy_model
+            elif legacy_model and legacy_model not in _REALTIME_BOT_ALLOWED_VOLC_MODELS:
+                openai_model = legacy_model
+        if not openai_model:
+            openai_model = _REALTIME_BOT_DEFAULT_MODEL
+        data["realtime_bot_openai_model"] = openai_model
+
+        openai_voice = str(data.get("realtime_bot_openai_voice") or "").strip()
+        if not openai_voice and provider != RealtimeBotProvider.VOLCENGINE and legacy_voice:
+            openai_voice = legacy_voice
+        if not openai_voice:
+            openai_voice = _REALTIME_BOT_DEFAULT_VOICE
+        data["realtime_bot_openai_voice"] = openai_voice
+
+        volc_model = str(data.get("realtime_bot_volc_model") or "").strip()
+        if volc_model not in _REALTIME_BOT_ALLOWED_VOLC_MODELS:
+            if legacy_model in _REALTIME_BOT_ALLOWED_VOLC_MODELS:
+                volc_model = legacy_model
+            else:
+                fallback_volc_model = _REALTIME_BOT_DEFAULT_VOLC_MODEL
+                volc_model = (
+                    fallback_volc_model
+                    if fallback_volc_model in _REALTIME_BOT_ALLOWED_VOLC_MODELS
+                    else "2.2.0.0"
+                )
+        data["realtime_bot_volc_model"] = volc_model
+
+        volc_voice = str(data.get("realtime_bot_volc_voice") or "").strip()
+        if (
+            not volc_voice
+            and provider == RealtimeBotProvider.VOLCENGINE
+            and legacy_voice
+            and legacy_voice != _REALTIME_BOT_DEFAULT_VOICE
+        ):
+            volc_voice = legacy_voice
+        data["realtime_bot_volc_voice"] = volc_voice
+
+        # Backward-compatible aliases for legacy clients.
+        data["realtime_bot_model"] = (
+            volc_model if provider == RealtimeBotProvider.VOLCENGINE else openai_model
+        )
+        data["realtime_bot_voice"] = (
+            volc_voice if provider == RealtimeBotProvider.VOLCENGINE else openai_voice
+        )
+        data["realtime_bot_volc_ws_url"] = (
+            str(data.get("realtime_bot_volc_ws_url") or "").strip() or _REALTIME_BOT_DEFAULT_VOLC_WS_URL
+        )
+        data["realtime_bot_volc_app_id"] = (
+            str(data.get("realtime_bot_volc_app_id") or "").strip() or _REALTIME_BOT_DEFAULT_VOLC_APP_ID
+        )
+        data["realtime_bot_volc_resource_id"] = (
+            str(data.get("realtime_bot_volc_resource_id") or "").strip()
+            or _REALTIME_BOT_DEFAULT_VOLC_RESOURCE_ID
+        )
+        uid = str(data.get("realtime_bot_volc_uid") or "").strip() or _REALTIME_BOT_DEFAULT_VOLC_UID
+        if not uid:
+            uid = f"meeting-{getattr(instance, 'id', 0)}"
+        data["realtime_bot_volc_uid"] = uid
+        data["realtime_bot_display_name"] = (
+            str(data.get("realtime_bot_display_name") or "").strip() or _REALTIME_BOT_DEFAULT_DISPLAY_NAME
+        )
+        return data
 
     def get_realtime_bot_user_id(self, obj):
         if not obj.realtime_bot_enabled:

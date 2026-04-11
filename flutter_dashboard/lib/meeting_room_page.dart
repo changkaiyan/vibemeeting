@@ -76,8 +76,10 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
   bool _realtimeBotMuted = false;
   String _realtimeBotProvider = 'openai';
   String _realtimeBotBaseUrl = 'https://api.openai.com';
-  String _realtimeBotModel = 'gpt-realtime';
-  String _realtimeBotVoice = 'marin';
+  String _realtimeBotOpenaiModel = 'gpt-realtime';
+  String _realtimeBotOpenaiVoice = 'marin';
+  String _realtimeBotVolcModel = '2.2.0.0';
+  String _realtimeBotVolcVoice = '';
   String _realtimeBotVolcWsUrl =
       'wss://openspeech.bytedance.com/api/v3/realtime/dialogue';
   String _realtimeBotVolcAppId = '';
@@ -92,6 +94,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
   bool _realtimeBotAutoListen = true;
   bool _realtimeBotListening = false;
   bool _realtimeBotAudioUploading = false;
+  bool _realtimeBotIngressSocketConnecting = false;
   bool _realtimeBotPlaybackActive = false;
   bool _realtimeBotCaptureStarting = false;
   bool _isSuperAdminUser = false;
@@ -112,14 +115,19 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
   dynamic _realtimeBotCaptureProcessorNode;
   final List<dynamic> _realtimeBotCaptureInputNodes = <dynamic>[];
   dynamic _realtimeBotFallbackMicStream;
+  html.WebSocket? _realtimeBotIngressSocket;
   lk.CancelListenFunc? _realtimeBotFrameCapture;
   String _realtimeBotCaptureTrackId = '';
   int _realtimeBotCaptureSampleRate = _realtimeBotAudioTargetSampleRate;
   DateTime? _realtimeBotCaptureBoundAt;
   Function? _realtimeBotCaptureAudioProcessHandler;
+  Timer? _realtimeBotIngressResponseTimeoutTimer;
+  DateTime? _realtimeBotCurrentUploadStartedAt;
   final List<int> _realtimeBotCaptureBytes = <int>[];
+  final List<int> _realtimeBotPrerollBytes = <int>[];
   DateTime? _realtimeBotSpeechStartedAt;
   DateTime? _realtimeBotLastVoiceAt;
+  bool _realtimeBotSpeechStreamOpen = false;
   int _realtimeBotDebugInputSourceCount = 0;
   bool _realtimeBotDebugVoiceActive = false;
   bool _realtimeBotDebugFallbackMicOpen = false;
@@ -197,14 +205,22 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
   static const Duration _permissionRequestTimeout = Duration(seconds: 8);
   static const Duration _roomConnectTimeout = Duration(seconds: 20);
   static const int _realtimeBotAudioTargetSampleRate = 16000;
-  static const int _realtimeBotAudioSilenceMs = 500;
-  static const int _realtimeBotAudioMinSpeechMs = 220;
-  static const int _realtimeBotAudioForceFlushMs = 1200;
-  static const int _realtimeBotAudioMaxSpeechMs = 12000;
-  static const double _realtimeBotVadThreshold = 0.00008;
-  static const double _realtimeBotVadPeakThreshold = 0.0002;
+  static const int _realtimeBotAudioSilenceMs = 700;
+  static const int _realtimeBotAudioMinSpeechMs = 350;
+  static const int _realtimeBotAudioForceFlushMs = 1600;
+  static const int _realtimeBotAudioMaxSpeechMs = 8000;
+  static const int _realtimeBotIngressStreamChunkBytes = 640;
+  static const int _realtimeBotIngressStreamMaxBufferBytes = 640 * 600;
+  static const int _realtimeBotIngressPrerollBytes = 640 * 10;
+  static const double _realtimeBotVadThreshold = 0.0013;
+  static const double _realtimeBotVadPeakThreshold = 0.011;
+  static const double _realtimeBotVadStartRmsRatio = 0.3;
+  static const double _realtimeBotVadStartPeakRatio = 0.5;
+  static const double _realtimeBotVadHoldRmsRatio = 1.45;
+  static const double _realtimeBotVadHoldPeakRatio = 1.3;
   static const int _realtimeBotDebugRebuildIntervalMs = 250;
   static const int _realtimeBotAudioKeepaliveMs = 1200;
+  static const int _realtimeBotIngressResponseTimeoutMs = 45000;
 
   String? _spotlightIdentity;
   String? _fullscreenIdentity;
@@ -413,6 +429,23 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
       '${_privateMeetingApiBase()}/ai-controls/test';
   String _meetingAiRealtimeAudioApiPath() =>
       '${_privateMeetingApiBase()}/ai-controls/realtime-audio';
+  String _meetingAiRealtimeAudioWsPath() {
+    final apiPath = _meetingAiRealtimeAudioApiPath();
+    if (apiPath.startsWith('/api/')) {
+      return '/ws/${apiPath.substring(5)}';
+    }
+    return apiPath.replaceFirst('/api/', '/ws/');
+  }
+
+  String _meetingAiRealtimeAudioWsUrl() {
+    final location = html.window.location;
+    final scheme = location.protocol == 'https:' ? 'wss' : 'ws';
+    final token = _accessToken.trim();
+    final tokenQuery = token.isEmpty
+        ? ''
+        : '?token=${Uri.encodeQueryComponent(token)}';
+    return '$scheme://${location.host}${_meetingAiRealtimeAudioWsPath()}$tokenQuery';
+  }
 
   String _meetingMuteAllApiPath() =>
       '${_privateMeetingApiBase()}/members/mute-all';
@@ -3326,6 +3359,351 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     return data;
   }
 
+  bool _isRealtimeBotIngressSocketOpen() {
+    final socket = _realtimeBotIngressSocket;
+    if (socket == null) return false;
+    return socket.readyState == html.WebSocket.OPEN;
+  }
+
+  void _clearRealtimeBotIngressResponseTimeout() {
+    _realtimeBotIngressResponseTimeoutTimer?.cancel();
+    _realtimeBotIngressResponseTimeoutTimer = null;
+    _realtimeBotCurrentUploadStartedAt = null;
+  }
+
+  void _startRealtimeBotIngressResponseTimeout() {
+    _realtimeBotIngressResponseTimeoutTimer?.cancel();
+    _realtimeBotIngressResponseTimeoutTimer = Timer(
+      const Duration(milliseconds: _realtimeBotIngressResponseTimeoutMs),
+      () {
+        if (!_realtimeBotAudioUploading) return;
+        _realtimeBotAudioUploading = false;
+        final startedAt = _realtimeBotCurrentUploadStartedAt;
+        final latency = startedAt == null
+            ? null
+            : DateTime.now().difference(startedAt).inMilliseconds;
+        _clearRealtimeBotIngressResponseTimeout();
+        _updateRealtimeBotDebug(
+          event: 'upload_timeout',
+          error: 'ai ingress websocket response timeout',
+          lastUploadAt: DateTime.now(),
+          lastUploadLatencyMs: latency,
+          forceRebuild: true,
+        );
+        _setStatus('AI audio ingress timeout');
+      },
+    );
+  }
+
+  Future<void> _closeRealtimeBotIngressSocket({
+    bool updateDebug = true,
+  }) async {
+    _clearRealtimeBotIngressResponseTimeout();
+    _realtimeBotIngressSocketConnecting = false;
+    _realtimeBotSpeechStreamOpen = false;
+    final socket = _realtimeBotIngressSocket;
+    _realtimeBotIngressSocket = null;
+    if (socket != null) {
+      try {
+        socket.close(1000, 'client-close');
+      } catch (_) {}
+    }
+    if (updateDebug) {
+      _updateRealtimeBotDebug(
+        event: 'ws_closed',
+        forceRebuild: true,
+      );
+    }
+  }
+
+  Future<void> _ensureRealtimeBotIngressSocketReady() async {
+    if (_isRealtimeBotIngressSocketOpen()) return;
+    if (_realtimeBotIngressSocketConnecting) {
+      final waitUntil =
+          DateTime.now().add(const Duration(milliseconds: 8000));
+      while (_realtimeBotIngressSocketConnecting &&
+          DateTime.now().isBefore(waitUntil)) {
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      }
+      if (_isRealtimeBotIngressSocketOpen()) return;
+    }
+
+    _realtimeBotIngressSocketConnecting = true;
+    try {
+      if (_requiresAuth || _hasPrivateMeetingApiScope) {
+        await _ensureJwt();
+      }
+      final socket = html.WebSocket(_meetingAiRealtimeAudioWsUrl());
+      _realtimeBotIngressSocket = socket;
+      socket.onMessage.listen((event) {
+        unawaited(_handleRealtimeBotIngressSocketMessage(event.data));
+      });
+      socket.onClose.listen((event) {
+        if (!identical(socket, _realtimeBotIngressSocket)) return;
+        final closeCode = event is html.CloseEvent ? event.code : 0;
+        final closeReason = event is html.CloseEvent ? event.reason : '';
+        _realtimeBotIngressSocket = null;
+        _realtimeBotSpeechStreamOpen = false;
+        if (_realtimeBotAudioUploading) {
+          final startedAt = _realtimeBotCurrentUploadStartedAt;
+          final latency = startedAt == null
+              ? null
+              : DateTime.now().difference(startedAt).inMilliseconds;
+          _realtimeBotAudioUploading = false;
+          _clearRealtimeBotIngressResponseTimeout();
+          _updateRealtimeBotDebug(
+            event: 'upload_failed',
+            error: 'ai ingress websocket closed ($closeCode) $closeReason'
+                .trim(),
+            lastUploadAt: DateTime.now(),
+            lastUploadLatencyMs: latency,
+            forceRebuild: true,
+          );
+          _setStatus('AI audio ingress websocket disconnected');
+        } else {
+          _updateRealtimeBotDebug(
+            event: 'ws_closed',
+            error: 'ai ingress websocket closed ($closeCode) $closeReason'
+                .trim(),
+            forceRebuild: true,
+          );
+        }
+      });
+      final openFuture = socket.onOpen.first;
+      final errorFuture = socket.onError.first.then<void>((_) {
+        throw StateError('ai ingress websocket open failed');
+      });
+      await Future.any<void>(<Future<void>>[
+        openFuture,
+        errorFuture,
+      ]).timeout(const Duration(milliseconds: 8000));
+      _updateRealtimeBotDebug(
+        event: 'ws_open',
+        clearError: true,
+        forceRebuild: true,
+      );
+    } finally {
+      _realtimeBotIngressSocketConnecting = false;
+    }
+  }
+
+  bool _sendRealtimeBotIngressPayload(Map<String, dynamic> payload) {
+    final socket = _realtimeBotIngressSocket;
+    if (socket == null || socket.readyState != html.WebSocket.OPEN) {
+      unawaited(_ensureRealtimeBotIngressSocketReady());
+      return false;
+    }
+    try {
+      socket.send(jsonEncode(payload));
+      return true;
+    } catch (_) {
+      unawaited(_ensureRealtimeBotIngressSocketReady());
+      return false;
+    }
+  }
+
+  void _flushRealtimeBotStreamAudioChunks({bool force = false}) {
+    while (_realtimeBotCaptureBytes.length >= _realtimeBotIngressStreamChunkBytes) {
+      final chunk = Uint8List.fromList(
+        _realtimeBotCaptureBytes.sublist(0, _realtimeBotIngressStreamChunkBytes),
+      );
+      final ok = _sendRealtimeBotIngressPayload(
+        <String, dynamic>{
+          'type': 'audio_chunk',
+          'audio_base64': base64Encode(chunk),
+          'sample_rate': _realtimeBotCaptureSampleRate,
+          'channels': 1,
+        },
+      );
+      if (!ok) return;
+      _realtimeBotCaptureBytes.removeRange(0, _realtimeBotIngressStreamChunkBytes);
+    }
+    if (!force) return;
+    final remain = _realtimeBotCaptureBytes.length -
+        (_realtimeBotCaptureBytes.length % 2);
+    if (remain < 320) {
+      _realtimeBotCaptureBytes.clear();
+      return;
+    }
+    final chunk = Uint8List.fromList(_realtimeBotCaptureBytes.sublist(0, remain));
+    final ok = _sendRealtimeBotIngressPayload(
+      <String, dynamic>{
+        'type': 'audio_chunk',
+        'audio_base64': base64Encode(chunk),
+        'sample_rate': _realtimeBotCaptureSampleRate,
+        'channels': 1,
+      },
+    );
+    if (ok) {
+      _realtimeBotCaptureBytes.removeRange(0, remain);
+    }
+  }
+
+  void _startRealtimeBotSpeechStream(DateTime now) {
+    _realtimeBotSpeechStartedAt = now;
+    _realtimeBotLastVoiceAt = now;
+    _realtimeBotCaptureBytes.clear();
+    _realtimeBotSpeechStreamOpen = _sendRealtimeBotIngressPayload(
+      const <String, dynamic>{'type': 'speech_start'},
+    );
+    _updateRealtimeBotDebug(
+      event: _realtimeBotSpeechStreamOpen ? 'speech_start' : 'speech_start_pending_ws',
+      bufferedBytes: _realtimeBotCaptureBytes.length,
+    );
+  }
+
+  void _endRealtimeBotSpeechStream({
+    required DateTime now,
+    bool force = false,
+  }) {
+    final wasActive = _realtimeBotSpeechStartedAt != null || _realtimeBotSpeechStreamOpen;
+    if (!wasActive) return;
+    _flushRealtimeBotStreamAudioChunks(force: true);
+    if (_realtimeBotSpeechStreamOpen) {
+      _sendRealtimeBotIngressPayload(const <String, dynamic>{'type': 'speech_end'});
+    }
+    _realtimeBotCaptureBytes.clear();
+    _realtimeBotPrerollBytes.clear();
+    _realtimeBotSpeechStartedAt = null;
+    _realtimeBotLastVoiceAt = null;
+    _realtimeBotSpeechStreamOpen = false;
+    _updateRealtimeBotDebug(
+      event: force ? 'speech_end_forced' : 'speech_end',
+      bufferedBytes: 0,
+      voiceActive: false,
+    );
+  }
+
+  Future<void> _handleRealtimeBotIngressSocketMessage(dynamic rawData) async {
+    Map<String, dynamic>? payload;
+    if (rawData is String) {
+      final text = rawData.trim();
+      if (text.isEmpty) return;
+      try {
+        final decoded = jsonDecode(text);
+        if (decoded is Map<String, dynamic>) {
+          payload = decoded;
+        } else if (decoded is Map) {
+          payload = decoded.map(
+            (key, value) => MapEntry(key.toString(), value),
+          );
+        }
+      } catch (_) {
+        return;
+      }
+    } else if (rawData is Map<String, dynamic>) {
+      payload = rawData;
+    } else if (rawData is Map) {
+      payload = rawData.map(
+        (key, value) => MapEntry(key.toString(), value),
+      );
+    }
+    if (payload == null) return;
+
+    final messageType = (payload['type'] ?? '').toString().trim().toLowerCase();
+    if (messageType == 'ready') {
+      _updateRealtimeBotDebug(
+        event: 'ws_ready',
+        clearError: true,
+        forceRebuild: true,
+      );
+      return;
+    }
+    if (messageType == 'ack') {
+      _updateRealtimeBotDebug(
+        event: 'ws_ack',
+        clearError: true,
+      );
+      return;
+    }
+    if (messageType == 'asr') {
+      final text = (payload['text'] ?? '').toString().trim();
+      final isInterim = _boolFromJson(payload['is_interim'], false);
+      if (text.isNotEmpty && !isInterim) {
+        _updateRealtimeBotDebug(preview: text);
+      }
+      _updateRealtimeBotDebug(event: isInterim ? 'asr_interim' : 'asr_final');
+      return;
+    }
+    if (messageType == 'reply_delta') {
+      _updateRealtimeBotDebug(event: 'reply_delta');
+      return;
+    }
+    if (messageType == 'no_content') {
+      _realtimeBotAudioUploading = false;
+      _clearRealtimeBotIngressResponseTimeout();
+      _setStatus('未识别到完整语音，请连贯说完再停顿');
+      _updateRealtimeBotDebug(
+        event: 'no_content',
+        error: '',
+        voiceActive: false,
+        bufferedBytes: 0,
+      );
+      return;
+    }
+    if (messageType == 'error') {
+      final detail = (payload['detail'] ?? 'audio ingress failed')
+          .toString()
+          .trim();
+      final startedAt = _realtimeBotCurrentUploadStartedAt;
+      final latency = startedAt == null
+          ? null
+          : DateTime.now().difference(startedAt).inMilliseconds;
+      _realtimeBotAudioUploading = false;
+      _clearRealtimeBotIngressResponseTimeout();
+      _updateRealtimeBotDebug(
+        event: 'upload_failed',
+        error: detail,
+        lastUploadAt: DateTime.now(),
+        lastUploadLatencyMs: latency,
+        forceRebuild: true,
+      );
+      _setStatus('AI audio ingress failed: $detail');
+      return;
+    }
+    if (messageType != 'result') return;
+
+    final startedAt = _realtimeBotCurrentUploadStartedAt;
+    final latency = startedAt == null
+        ? null
+        : DateTime.now().difference(startedAt).inMilliseconds;
+    _realtimeBotAudioUploading = false;
+    _clearRealtimeBotIngressResponseTimeout();
+    final recognizedText = (payload['recognized_text'] ?? '').toString().trim();
+    if (recognizedText.isNotEmpty) {
+      _updateRealtimeBotDebug(preview: recognizedText);
+    }
+    final preview = (payload['preview_text'] ?? '').toString().trim();
+    if (preview.isNotEmpty) {
+      _setStatus('AI reply: $preview');
+      _updateRealtimeBotDebug(preview: preview);
+    }
+    final rawMessage = payload['message'];
+    if (rawMessage is Map<String, dynamic>) {
+      final botMessage = _ChatMessage.fromJson(rawMessage);
+      if (botMessage.audioBase64.trim().isNotEmpty) {
+        await _playRealtimeBotAudio(botMessage);
+      }
+    } else if (rawMessage is Map) {
+      final normalized = rawMessage.map(
+        (key, value) => MapEntry(key.toString(), value),
+      );
+      final botMessage = _ChatMessage.fromJson(normalized);
+      if (botMessage.audioBase64.trim().isNotEmpty) {
+        await _playRealtimeBotAudio(botMessage);
+      }
+    }
+    _updateRealtimeBotDebug(
+      event: 'upload_ok',
+      clearError: true,
+      lastUploadAt: DateTime.now(),
+      lastUploadLatencyMs: latency,
+      bumpUploadCount: true,
+      forceRebuild: true,
+    );
+    await _loadMessages();
+  }
+
   bool _shouldRunRealtimeBotAudioIngress() {
     if (_isShareEntry || !_hasPrivateMeetingApiScope) return false;
     if (!_connected || !_isModerator) return false;
@@ -3413,20 +3791,74 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     _setStatus('已尝试启用浏览器麦克风采集');
   }
 
-  lk.LocalAudioTrack? _resolveRealtimeBotCaptureTrack() {
+  dynamic _pickRealtimeBotParticipantAudioTrack(
+    dynamic participant, {
+    bool preferMicrophoneSource = true,
+  }) {
+    if (participant == null) return null;
+    try {
+      final identity = (participant.identity ?? '').toString().trim();
+      if (identity.isNotEmpty && identity == _realtimeBotVirtualIdentity()) {
+        return null;
+      }
+    } catch (_) {}
+    if (preferMicrophoneSource) {
+      try {
+        final micPub =
+            participant.getTrackPublicationBySource(lk.TrackSource.microphone);
+        if (micPub != null &&
+            !_boolFromJson(micPub.muted, false) &&
+            micPub.track != null) {
+          return micPub.track;
+        }
+      } catch (_) {}
+    }
+    try {
+      for (final dynamic pub in participant.audioTrackPublications) {
+        if (_boolFromJson(pub.muted, false)) continue;
+        final dynamic track = pub.track;
+        if (track != null) return track;
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  dynamic _resolveRealtimeBotCaptureTrack() {
     final room = _room;
     if (room == null) return null;
     final local = room.localParticipant;
-    if (local == null) return null;
-    final primaryPub = local.getTrackPublicationBySource(lk.TrackSource.microphone);
-    if (primaryPub is lk.LocalTrackPublication<lk.LocalAudioTrack>) {
-      final primaryTrack = primaryPub.track;
-      if (primaryTrack != null && !primaryPub.muted) return primaryTrack;
+    if (local != null) {
+      try {
+        final localPrimaryTrack = _pickRealtimeBotParticipantAudioTrack(
+          local,
+          preferMicrophoneSource: true,
+        );
+        if (localPrimaryTrack != null) {
+          return localPrimaryTrack;
+        }
+      } catch (_) {}
     }
-    for (final pub in local.audioTrackPublications) {
-      if (pub.muted) continue;
-      final track = pub.track;
+
+    for (final participant in room.remoteParticipants.values) {
+      final isSpeaking = _boolFromJson(participant.isSpeaking, false);
+      if (!isSpeaking) continue;
+      final track = _pickRealtimeBotParticipantAudioTrack(
+        participant,
+        preferMicrophoneSource: true,
+      );
       if (track != null) return track;
+    }
+    for (final participant in room.remoteParticipants.values) {
+      final track = _pickRealtimeBotParticipantAudioTrack(
+        participant,
+        preferMicrophoneSource: true,
+      );
+      if (track != null) return track;
+    }
+    if (local != null) {
+      final fallbackTrack =
+          _pickRealtimeBotParticipantAudioTrack(local, preferMicrophoneSource: false);
+      if (fallbackTrack != null) return fallbackTrack;
     }
     return null;
   }
@@ -3436,15 +3868,35 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     if (room == null) return 'room=null';
     final local = room.localParticipant;
     if (local == null) return 'local=null';
-    final pubs = local.audioTrackPublications;
-    var muted = 0;
-    var withTrack = 0;
-    for (final pub in pubs) {
-      if (pub.muted) muted += 1;
-      if (pub.track != null) withTrack += 1;
+    final localPubs = local.audioTrackPublications;
+    var localMuted = 0;
+    var localWithTrack = 0;
+    for (final pub in localPubs) {
+      if (_boolFromJson(pub.muted, false)) localMuted += 1;
+      if (pub.track != null) localWithTrack += 1;
     }
     final micEnabled = local.isMicrophoneEnabled();
-    return 'pubs=${pubs.length}, muted=$muted, with_track=$withTrack, mic_enabled=$micEnabled';
+    var remoteMembers = 0;
+    var remotePubs = 0;
+    var remoteMuted = 0;
+    var remoteWithTrack = 0;
+    var remoteSpeaking = 0;
+    for (final participant in room.remoteParticipants.values) {
+      final identity = (participant.identity).toString().trim();
+      if (identity == _realtimeBotVirtualIdentity()) continue;
+      remoteMembers += 1;
+      if (_boolFromJson(participant.isSpeaking, false)) {
+        remoteSpeaking += 1;
+      }
+      for (final pub in participant.audioTrackPublications) {
+        remotePubs += 1;
+        if (_boolFromJson(pub.muted, false)) remoteMuted += 1;
+        if (pub.track != null) remoteWithTrack += 1;
+      }
+    }
+    return 'local_pubs=${localPubs.length}, local_muted=$localMuted, local_with_track=$localWithTrack, '
+        'mic_enabled=$micEnabled, remote_members=$remoteMembers, remote_pubs=$remotePubs, '
+        'remote_muted=$remoteMuted, remote_with_track=$remoteWithTrack, remote_speaking=$remoteSpeaking';
   }
 
   String _realtimeBotTrackIdentifier(dynamic track) {
@@ -3532,6 +3984,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     _updateRealtimeBotDebug(event: 'starting', forceRebuild: true);
     try {
       _startRealtimeBotCaptureKeepalive();
+      await _ensureRealtimeBotIngressSocketReady();
       await _ensureRealtimeBotFallbackMicStream();
       await _bindRealtimeBotFrameCapture(force: true);
       if (mounted) {
@@ -3753,13 +4206,17 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
 
   Future<void> _stopRealtimeBotAudioIngress() async {
     _stopRealtimeBotCaptureKeepalive();
+    _endRealtimeBotSpeechStream(now: DateTime.now(), force: true);
+    await _closeRealtimeBotIngressSocket(updateDebug: false);
     if (!_realtimeBotListening &&
         _realtimeBotFrameCapture == null &&
         _realtimeBotCaptureAudioProcessHandler == null &&
         _realtimeBotAudioContext == null) {
       _realtimeBotCaptureBytes.clear();
+      _realtimeBotPrerollBytes.clear();
       _realtimeBotSpeechStartedAt = null;
       _realtimeBotLastVoiceAt = null;
+      _realtimeBotSpeechStreamOpen = false;
       _realtimeBotCaptureStarting = false;
       _updateRealtimeBotDebug(
         event: 'stopped',
@@ -3771,9 +4228,6 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
       );
       return;
     }
-    try {
-      await _flushRealtimeBotCapturedAudio(force: true);
-    } catch (_) {}
     try {
       await _stopRealtimeBotFrameCapture();
     } catch (_) {}
@@ -3840,8 +4294,10 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     } catch (_) {}
     _realtimeBotAudioContext = null;
     _realtimeBotCaptureBytes.clear();
+    _realtimeBotPrerollBytes.clear();
     _realtimeBotSpeechStartedAt = null;
     _realtimeBotLastVoiceAt = null;
+    _realtimeBotSpeechStreamOpen = false;
     _realtimeBotCaptureStarting = false;
     if (mounted) {
       setState(() {
@@ -3863,7 +4319,6 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
 
   void _handleRealtimeBotAudioFrame(lk.AudioFrame frame) {
     if (!_shouldRunRealtimeBotAudioIngress()) return;
-    if (_realtimeBotAudioUploading) return;
     if (_realtimeBotPlaybackActive) return;
     if (frame.data.isEmpty) return;
 
@@ -3887,44 +4342,25 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     final now = DateTime.now();
     final safeRms = rms.isFinite ? rms : 0.0;
     final peak = _pcm16PeakLevel(pcmBytes);
-    final hasVoice =
-        safeRms >= _realtimeBotVadThreshold || peak >= _realtimeBotVadPeakThreshold;
-    final startVoice = safeRms >= (_realtimeBotVadThreshold * 0.2) ||
-        peak >= (_realtimeBotVadPeakThreshold * 0.5);
+    final hasVoice = safeRms >=
+            (_realtimeBotVadThreshold * _realtimeBotVadHoldRmsRatio) ||
+        peak >= (_realtimeBotVadPeakThreshold * _realtimeBotVadHoldPeakRatio);
+    final startVoice =
+        safeRms >= (_realtimeBotVadThreshold * _realtimeBotVadStartRmsRatio) ||
+            peak >=
+                (_realtimeBotVadPeakThreshold * _realtimeBotVadStartPeakRatio);
     _realtimeBotCaptureSampleRate = _realtimeBotAudioTargetSampleRate;
-    _updateRealtimeBotDebug(
-      bumpProcessCount: true,
-      lastProcessAt: now,
-      rms: safeRms,
+    _ingestRealtimeBotPcmFrame(
+      now: now,
+      pcmBytes: pcmBytes,
+      safeRms: safeRms,
+      hasVoice: hasVoice,
+      startVoice: startVoice,
     );
-    if (startVoice && _realtimeBotSpeechStartedAt == null) {
-      _realtimeBotSpeechStartedAt = now;
-      _realtimeBotLastVoiceAt = now;
-      _realtimeBotCaptureBytes.clear();
-      _updateRealtimeBotDebug(event: 'speech_started');
-    }
-    if (_realtimeBotSpeechStartedAt == null) {
-      _updateRealtimeBotDebug(
-        voiceActive: false,
-        bufferedBytes: 0,
-      );
-      return;
-    }
-    if (hasVoice) {
-      _realtimeBotLastVoiceAt = now;
-    }
-    _realtimeBotCaptureBytes.addAll(pcmBytes);
-    _updateRealtimeBotDebug(
-      event: hasVoice ? 'capturing_voice' : 'capturing_silence',
-      voiceActive: hasVoice,
-      bufferedBytes: _realtimeBotCaptureBytes.length,
-    );
-    unawaited(_flushRealtimeBotCapturedAudio());
   }
 
   void _handleRealtimeBotAudioProcess(dynamic event) {
     if (!_shouldRunRealtimeBotAudioIngress()) return;
-    if (_realtimeBotAudioUploading) return;
     if (_realtimeBotPlaybackActive) return;
     final dynamic inputBuffer = event['inputBuffer'];
     if (inputBuffer == null) return;
@@ -3963,41 +4399,20 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     final now = DateTime.now();
     final safeRms = rms.isFinite ? rms : 0.0;
     final peak = _pcm16PeakLevel(normalizedPcmBytes);
-    final hasVoice =
-        safeRms >= _realtimeBotVadThreshold || peak >= _realtimeBotVadPeakThreshold;
-    final startVoice = safeRms >= (_realtimeBotVadThreshold * 0.2) ||
-        peak >= (_realtimeBotVadPeakThreshold * 0.5);
-    _updateRealtimeBotDebug(
-      bumpProcessCount: true,
-      lastProcessAt: now,
-      rms: safeRms,
+    final hasVoice = safeRms >=
+            (_realtimeBotVadThreshold * _realtimeBotVadHoldRmsRatio) ||
+        peak >= (_realtimeBotVadPeakThreshold * _realtimeBotVadHoldPeakRatio);
+    final startVoice =
+        safeRms >= (_realtimeBotVadThreshold * _realtimeBotVadStartRmsRatio) ||
+            peak >=
+                (_realtimeBotVadPeakThreshold * _realtimeBotVadStartPeakRatio);
+    _ingestRealtimeBotPcmFrame(
+      now: now,
+      pcmBytes: normalizedPcmBytes,
+      safeRms: safeRms,
+      hasVoice: hasVoice,
+      startVoice: startVoice,
     );
-
-    if (startVoice && _realtimeBotSpeechStartedAt == null) {
-      _realtimeBotSpeechStartedAt = now;
-      _realtimeBotLastVoiceAt = now;
-      _realtimeBotCaptureBytes.clear();
-      _updateRealtimeBotDebug(event: 'speech_started');
-    }
-    if (_realtimeBotSpeechStartedAt == null) {
-      _updateRealtimeBotDebug(
-        voiceActive: false,
-        rms: safeRms,
-        bufferedBytes: 0,
-      );
-      return;
-    }
-    if (hasVoice) {
-      _realtimeBotLastVoiceAt = now;
-    }
-    _realtimeBotCaptureBytes.addAll(normalizedPcmBytes);
-    _updateRealtimeBotDebug(
-      event: hasVoice ? 'capturing_voice' : 'capturing_silence',
-      voiceActive: hasVoice,
-      rms: safeRms,
-      bufferedBytes: _realtimeBotCaptureBytes.length,
-    );
-    unawaited(_flushRealtimeBotCapturedAudio());
   }
 
   Future<void> _flushRealtimeBotCapturedAudio({bool force = false}) async {
@@ -4032,8 +4447,8 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     }
     final chunkRms = _pcm16RmsLevel(audioBytes);
     final chunkPeak = _pcm16PeakLevel(audioBytes);
-    final chunkHasSpeech = chunkRms >= (_realtimeBotVadThreshold * 1.15) ||
-        chunkPeak >= (_realtimeBotVadPeakThreshold * 1.15);
+    final chunkHasSpeech = chunkRms >= (_realtimeBotVadThreshold * 0.9) ||
+        chunkPeak >= (_realtimeBotVadPeakThreshold * 0.9);
     if (!force && !chunkHasSpeech) {
       _updateRealtimeBotDebug(
         event: 'drop_low_energy_chunk',
@@ -4046,6 +4461,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     }
     final uploadStartAt = DateTime.now();
     _realtimeBotAudioUploading = true;
+    _realtimeBotCurrentUploadStartedAt = uploadStartAt;
     _updateRealtimeBotDebug(
       event: 'uploading',
       clearError: true,
@@ -4055,54 +4471,32 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
       forceRebuild: true,
     );
     try {
-      final res = await _request(
-        'POST',
-        _meetingAiRealtimeAudioApiPath(),
-        body: <String, dynamic>{
-          'audio_base64': base64Encode(audioBytes),
-          'sample_rate': _realtimeBotCaptureSampleRate,
-          'channels': 1,
-        },
-      );
-      final payload = await _jsonOrThrow(res);
-      if (payload is Map<String, dynamic>) {
-        final preview = (payload['preview_text'] ?? '').toString().trim();
-        if (preview.isNotEmpty) {
-          _setStatus('AI回复：$preview');
-          _setStatus('AI回复：$preview');
-          _setStatus('AI reply: $preview');
-          _updateRealtimeBotDebug(preview: preview);
-        }
-        final rawMessage = payload['message'];
-        if (rawMessage is Map<String, dynamic>) {
-          final botMessage = _ChatMessage.fromJson(rawMessage);
-          if (botMessage.audioBase64.trim().isNotEmpty) {
-            await _playRealtimeBotAudio(botMessage);
-            _updateRealtimeBotDebug(
-              event: 'upload_ok_audio_ready',
-              clearError: true,
-            );
-          } else {
-            _updateRealtimeBotDebug(
-              event: 'upload_ok_no_audio',
-              error: 'ai reply text arrived but audio is empty',
-              forceRebuild: true,
-            );
-          }
-        }
+      await _ensureRealtimeBotIngressSocketReady();
+      final socket = _realtimeBotIngressSocket;
+      if (socket == null || socket.readyState != html.WebSocket.OPEN) {
+        throw StateError('ai ingress websocket is not open');
       }
+      socket.send(
+        jsonEncode(
+          <String, dynamic>{
+            'type': 'audio_ingress',
+            'audio_base64': base64Encode(audioBytes),
+            'sample_rate': _realtimeBotCaptureSampleRate,
+            'channels': 1,
+          },
+        ),
+      );
+      _startRealtimeBotIngressResponseTimeout();
       _updateRealtimeBotDebug(
-        event: 'upload_ok',
+        event: 'upload_sent',
         clearError: true,
-        lastUploadAt: DateTime.now(),
-        lastUploadLatencyMs:
-            DateTime.now().difference(uploadStartAt).inMilliseconds,
-        bumpUploadCount: true,
+        lastUploadAt: uploadStartAt,
         forceRebuild: true,
       );
-      await _loadMessages();
     } catch (e) {
       final errorText = _friendlyError(e);
+      _realtimeBotAudioUploading = false;
+      _clearRealtimeBotIngressResponseTimeout();
       _setStatus('AI audio ingress failed: $errorText');
       _setStatus('AI语音接入失败：${_friendlyError(e)}');
       _updateRealtimeBotDebug(
@@ -4113,10 +4507,74 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
             DateTime.now().difference(uploadStartAt).inMilliseconds,
         forceRebuild: true,
       );
-    } finally {
-      _realtimeBotAudioUploading = false;
-      _updateRealtimeBotDebug(forceRebuild: true);
     }
+  }
+
+  void _ingestRealtimeBotPcmFrame({
+    required DateTime now,
+    required Uint8List pcmBytes,
+    required double safeRms,
+    required bool hasVoice,
+    required bool startVoice,
+  }) {
+    _updateRealtimeBotDebug(
+      bumpProcessCount: true,
+      lastProcessAt: now,
+      rms: safeRms,
+    );
+    if (_realtimeBotSpeechStartedAt == null) {
+      _realtimeBotPrerollBytes.addAll(pcmBytes);
+      if (_realtimeBotPrerollBytes.length > _realtimeBotIngressPrerollBytes) {
+        final trim =
+            _realtimeBotPrerollBytes.length - _realtimeBotIngressPrerollBytes;
+        _realtimeBotPrerollBytes.removeRange(0, trim);
+      }
+    }
+    var frameAlreadyInBuffer = false;
+    if (startVoice && _realtimeBotSpeechStartedAt == null) {
+      _startRealtimeBotSpeechStream(now);
+      if (_realtimeBotPrerollBytes.isNotEmpty) {
+        _realtimeBotCaptureBytes.addAll(_realtimeBotPrerollBytes);
+        _realtimeBotPrerollBytes.clear();
+        frameAlreadyInBuffer = true;
+      }
+    }
+    if (_realtimeBotSpeechStartedAt == null) {
+      _updateRealtimeBotDebug(
+        voiceActive: false,
+        bufferedBytes: 0,
+      );
+      return;
+    }
+    if (hasVoice) {
+      _realtimeBotLastVoiceAt = now;
+    }
+    if (!frameAlreadyInBuffer) {
+      _realtimeBotCaptureBytes.addAll(pcmBytes);
+    }
+    if (_realtimeBotCaptureBytes.length > _realtimeBotIngressStreamMaxBufferBytes) {
+      final dropCount =
+          _realtimeBotCaptureBytes.length - _realtimeBotIngressStreamMaxBufferBytes;
+      _realtimeBotCaptureBytes.removeRange(0, dropCount);
+    }
+    _flushRealtimeBotStreamAudioChunks();
+
+    final speechStartedAt = _realtimeBotSpeechStartedAt!;
+    final elapsedMs = now.difference(speechStartedAt).inMilliseconds;
+    final lastVoiceAt = _realtimeBotLastVoiceAt ?? speechStartedAt;
+    final silenceMs = now.difference(lastVoiceAt).inMilliseconds;
+    final shouldEnd = elapsedMs >= _realtimeBotAudioMaxSpeechMs ||
+        (elapsedMs >= _realtimeBotAudioMinSpeechMs &&
+            silenceMs >= _realtimeBotAudioSilenceMs);
+    if (shouldEnd) {
+      _endRealtimeBotSpeechStream(now: now);
+    }
+    _updateRealtimeBotDebug(
+      event: hasVoice ? 'streaming_voice' : 'streaming_silence',
+      voiceActive: hasVoice,
+      rms: safeRms,
+      bufferedBytes: _realtimeBotCaptureBytes.length,
+    );
   }
 
   Float32List? _asFloat32List(dynamic value) {
@@ -5215,8 +5673,14 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     var volcAppKeySet = _realtimeBotVolcAppKeySet;
     var volcAccessKeySet = _realtimeBotVolcAccessKeySet;
     final baseUrlController = TextEditingController(text: _realtimeBotBaseUrl);
-    final modelController = TextEditingController(text: _realtimeBotModel);
-    final voiceController = TextEditingController(text: _realtimeBotVoice);
+    final openaiModelController =
+        TextEditingController(text: _realtimeBotOpenaiModel);
+    final openaiVoiceController =
+        TextEditingController(text: _realtimeBotOpenaiVoice);
+    final volcModelController =
+        TextEditingController(text: _realtimeBotVolcModel);
+    final volcVoiceController =
+        TextEditingController(text: _realtimeBotVolcVoice);
     final volcWsUrlController =
         TextEditingController(text: _realtimeBotVolcWsUrl);
     final volcAppIdController =
@@ -5236,8 +5700,11 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     Future<void> saveConfig(StateSetter setDialogState) async {
       if (busy) return;
       final baseUrl = baseUrlController.text.trim();
-      final model = modelController.text.trim();
-      final voice = voiceController.text.trim();
+      final openaiModel = openaiModelController.text.trim();
+      final openaiVoice = openaiVoiceController.text.trim();
+      final volcModelRaw = volcModelController.text.trim();
+      final volcModel = volcModelRaw.isEmpty ? '2.2.0.0' : volcModelRaw;
+      final volcVoice = volcVoiceController.text.trim();
       final volcWsUrl = volcWsUrlController.text.trim();
       final volcAppId = volcAppIdController.text.trim();
       final volcResourceId = volcResourceIdController.text.trim();
@@ -5266,6 +5733,8 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
           setDialogState(() => errorMessage = '启用前请填写火山引擎 Access Key');
           return;
         }
+        payload['realtime_bot_volc_model'] = volcModel;
+        payload['realtime_bot_volc_voice'] = volcVoice;
         payload['realtime_bot_volc_ws_url'] = volcWsUrl;
         payload['realtime_bot_volc_app_id'] = volcAppId;
         payload['realtime_bot_volc_resource_id'] = volcResourceId;
@@ -5277,7 +5746,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
           payload['realtime_bot_volc_access_key'] = volcAccessKeyInput;
         }
       } else {
-        if (baseUrl.isEmpty || model.isEmpty || voice.isEmpty) {
+        if (baseUrl.isEmpty || openaiModel.isEmpty || openaiVoice.isEmpty) {
           setDialogState(
               () => errorMessage = '请完整填写 OpenAI Base URL / Model / Voice');
           return;
@@ -5287,8 +5756,8 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
           return;
         }
         payload['realtime_bot_base_url'] = baseUrl;
-        payload['realtime_bot_model'] = model;
-        payload['realtime_bot_voice'] = voice;
+        payload['realtime_bot_openai_model'] = openaiModel;
+        payload['realtime_bot_openai_voice'] = openaiVoice;
         if (keyInput.isNotEmpty) {
           payload['realtime_bot_api_key'] = keyInput;
         }
@@ -5308,8 +5777,10 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
           volcAppKeySet = _realtimeBotVolcAppKeySet;
           volcAccessKeySet = _realtimeBotVolcAccessKeySet;
           baseUrlController.text = _realtimeBotBaseUrl;
-          modelController.text = _realtimeBotModel;
-          voiceController.text = _realtimeBotVoice;
+          openaiModelController.text = _realtimeBotOpenaiModel;
+          openaiVoiceController.text = _realtimeBotOpenaiVoice;
+          volcModelController.text = _realtimeBotVolcModel;
+          volcVoiceController.text = _realtimeBotVolcVoice;
           volcWsUrlController.text = _realtimeBotVolcWsUrl;
           volcAppIdController.text = _realtimeBotVolcAppId;
           volcResourceIdController.text = _realtimeBotVolcResourceId;
@@ -5333,8 +5804,11 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     Future<void> testConnectivity(StateSetter setDialogState) async {
       if (busy) return;
       final baseUrl = baseUrlController.text.trim();
-      final model = modelController.text.trim();
-      final voice = voiceController.text.trim();
+      final openaiModel = openaiModelController.text.trim();
+      final openaiVoice = openaiVoiceController.text.trim();
+      final volcModelRaw = volcModelController.text.trim();
+      final volcModel = volcModelRaw.isEmpty ? '2.2.0.0' : volcModelRaw;
+      final volcVoice = volcVoiceController.text.trim();
       final volcWsUrl = volcWsUrlController.text.trim();
       final volcAppId = volcAppIdController.text.trim();
       final volcResourceId = volcResourceIdController.text.trim();
@@ -5353,7 +5827,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
           return;
         }
       } else {
-        if (baseUrl.isEmpty || model.isEmpty || voice.isEmpty) {
+        if (baseUrl.isEmpty || openaiModel.isEmpty || openaiVoice.isEmpty) {
           setDialogState(
               () => errorMessage = '请先填写 OpenAI Base URL / Model / Voice');
           return;
@@ -5363,6 +5837,8 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
           return;
         }
       }
+      final testModel = provider == 'volcengine' ? volcModel : openaiModel;
+      final testVoice = provider == 'volcengine' ? volcVoice : openaiVoice;
       setDialogState(() {
         busy = true;
         errorMessage = null;
@@ -5372,8 +5848,8 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
         final result = await _testMeetingAiConnectivity(
           provider: provider,
           baseUrl: baseUrl,
-          model: model,
-          voice: voice,
+          model: testModel,
+          voice: testVoice,
           apiKey: keyInput,
           volcWsUrl: volcWsUrl,
           volcAppId: volcAppId,
@@ -5486,6 +5962,24 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                       if (provider == 'volcengine') ...[
                         const SizedBox(height: 8),
                         TextField(
+                          controller: volcModelController,
+                          enabled: !busy,
+                          decoration: const InputDecoration(
+                            labelText: 'Volcengine Model',
+                            hintText: '2.2.0.0 / 1.2.1.1',
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        TextField(
+                          controller: volcVoiceController,
+                          enabled: !busy,
+                          decoration: const InputDecoration(
+                            labelText: 'Volcengine Speaker（可选）',
+                            hintText: 'saturn_... / zh_...',
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        TextField(
                           controller: volcWsUrlController,
                           enabled: !busy,
                           decoration: const InputDecoration(
@@ -5555,7 +6049,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                         ),
                         const SizedBox(height: 8),
                         TextField(
-                          controller: modelController,
+                          controller: openaiModelController,
                           enabled: !busy,
                           decoration: const InputDecoration(
                             labelText: 'Model',
@@ -5564,7 +6058,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                         ),
                         const SizedBox(height: 8),
                         TextField(
-                          controller: voiceController,
+                          controller: openaiVoiceController,
                           enabled: !busy,
                           decoration: const InputDecoration(
                             labelText: 'Voice',
@@ -5641,8 +6135,10 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
       );
     } finally {
       baseUrlController.dispose();
-      modelController.dispose();
-      voiceController.dispose();
+      openaiModelController.dispose();
+      openaiVoiceController.dispose();
+      volcModelController.dispose();
+      volcVoiceController.dispose();
       volcWsUrlController.dispose();
       volcAppIdController.dispose();
       volcResourceIdController.dispose();
@@ -5687,10 +6183,16 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
         (data['realtime_bot_base_url'] ?? 'https://api.openai.com')
             .toString()
             .trim();
-    final realtimeBotModel =
-        (data['realtime_bot_model'] ?? 'gpt-realtime').toString().trim();
-    final realtimeBotVoice =
-        (data['realtime_bot_voice'] ?? 'marin').toString().trim();
+    final realtimeBotOpenaiModel =
+        (data['realtime_bot_openai_model'] ?? '').toString().trim();
+    final realtimeBotOpenaiVoice =
+        (data['realtime_bot_openai_voice'] ?? '').toString().trim();
+    final realtimeBotVolcModel =
+        (data['realtime_bot_volc_model'] ?? '').toString().trim();
+    final realtimeBotVolcVoice =
+        (data['realtime_bot_volc_voice'] ?? '').toString().trim();
+    final legacyModel = (data['realtime_bot_model'] ?? '').toString().trim();
+    final legacyVoice = (data['realtime_bot_voice'] ?? '').toString().trim();
     final realtimeBotVolcWsUrl = (data['realtime_bot_volc_ws_url'] ??
             'wss://openspeech.bytedance.com/api/v3/realtime/dialogue')
         .toString()
@@ -5739,9 +6241,28 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
       _realtimeBotBaseUrl = realtimeBotBaseUrl.isEmpty
           ? 'https://api.openai.com'
           : realtimeBotBaseUrl;
-      _realtimeBotModel =
-          realtimeBotModel.isEmpty ? 'gpt-realtime' : realtimeBotModel;
-      _realtimeBotVoice = realtimeBotVoice.isEmpty ? 'marin' : realtimeBotVoice;
+      _realtimeBotOpenaiModel = realtimeBotOpenaiModel.isNotEmpty
+          ? realtimeBotOpenaiModel
+          : (legacyModel.isNotEmpty &&
+                  legacyModel != '1.2.1.1' &&
+                  legacyModel != '2.2.0.0'
+              ? legacyModel
+              : 'gpt-realtime');
+      _realtimeBotOpenaiVoice = realtimeBotOpenaiVoice.isNotEmpty
+          ? realtimeBotOpenaiVoice
+          : ((realtimeBotProvider != 'volcengine' && legacyVoice.isNotEmpty)
+              ? legacyVoice
+              : 'marin');
+      _realtimeBotVolcModel = realtimeBotVolcModel.isNotEmpty
+          ? realtimeBotVolcModel
+          : ((legacyModel == '1.2.1.1' || legacyModel == '2.2.0.0')
+              ? legacyModel
+              : '2.2.0.0');
+      _realtimeBotVolcVoice = realtimeBotVolcVoice.isNotEmpty
+          ? realtimeBotVolcVoice
+          : ((realtimeBotProvider == 'volcengine' && legacyVoice != 'marin')
+              ? legacyVoice
+              : '');
       _realtimeBotVolcWsUrl = realtimeBotVolcWsUrl.isEmpty
           ? 'wss://openspeech.bytedance.com/api/v3/realtime/dialogue'
           : realtimeBotVolcWsUrl;
@@ -5981,10 +6502,18 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
       final blob = html.Blob(<dynamic>[bytes], mimeType);
       objectUrl = html.Url.createObjectUrlFromBlob(blob);
       audio = html.AudioElement(objectUrl)
-        ..autoplay = true
+        ..autoplay = false
         ..preload = 'auto';
       audio.onEnded.first.then((_) => cleanupPlayback());
       audio.onError.first.then((_) => cleanupPlayback());
+      try {
+        await audio.onCanPlayThrough.first.timeout(
+          const Duration(milliseconds: 1200),
+        );
+      } catch (_) {}
+      try {
+        audio.currentTime = 0;
+      } catch (_) {}
       await audio.play();
       _playedRealtimeBotAudioMessageIds.add(message.id);
       await playbackDone.future.timeout(
