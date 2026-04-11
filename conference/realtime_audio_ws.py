@@ -102,6 +102,16 @@ def _client_ip(scope) -> str:
     return "unknown"
 
 
+def _is_turn_done_event_name(event_name: str) -> bool:
+    return event_name in {
+        "chatended",
+        "chat_ended",
+        "response.done",
+        "response.completed",
+        "session.stop",
+    }
+
+
 class _VolcengineRealtimeStreamBridge:
     def __init__(self, *, meeting: Meeting, emit):
         self.meeting = meeting
@@ -214,10 +224,7 @@ class _VolcengineRealtimeStreamBridge:
                     "format": "pcm",
                     "sample_rate": 16000,
                 },
-                "extra": {
-                    "end_smooth_window_ms": 1800,
-                    "enable_asr_twopass": True,
-                },
+                "extra": {"end_smooth_window_ms": 1200},
             },
             "tts": tts_payload,
             "dialog": {
@@ -496,7 +503,7 @@ class _VolcengineRealtimeStreamBridge:
                     self._turn_audio_done = True
                     self._turn_last_audio_at = time.time()
 
-            if event_name in {"chatended", "chat_ended", "response.done", "response.completed"}:
+            if _is_turn_done_event_name(event_name):
                 with self._state_lock:
                     self._turn_text_done = True
                     if self._turn_text_done_at <= 0:
@@ -710,7 +717,14 @@ def _decode_audio_chunk(payload: dict) -> tuple[bytes, str]:
         return b"", f"Invalid audio payload: {exc}"
     if not audio_pcm16:
         return b"", "audio payload is empty"
-    return audio_pcm16, ""
+    boosted_pcm16, _, _, _ = meeting_views._auto_gain_pcm16_for_asr(
+        audio_pcm16,
+        sample_rate=16000,
+        target_rms=0.03,
+        min_rms_to_boost=0.01,
+        max_gain=48.0,
+    )
+    return boosted_pcm16, ""
 
 
 @sync_to_async

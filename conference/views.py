@@ -252,6 +252,10 @@ _REALTIME_BOT_RESPONSE_TIMEOUT_SECONDS = max(
     5,
     _setting_int("REALTIME_BOT_RESPONSE_TIMEOUT_SECONDS", 20),
 )
+_REALTIME_BOT_OUTPUT_LEADING_SILENCE_MS = max(
+    0,
+    min(300, _setting_int("REALTIME_BOT_OUTPUT_LEADING_SILENCE_MS", 60)),
+)
 _VOLCENGINE_EVENT_LOGGER = logging.getLogger("conference.volcengine.realtime")
 
 _VOLCENGINE_PROTOCOL_VERSION = 0b0001
@@ -3531,11 +3535,18 @@ def _pcm16le_to_wav_base64(
         pcm_bytes = pcm_bytes[: len(pcm_bytes) - 1]
     if not pcm_bytes:
         return ""
+    safe_channels = max(1, int(channels))
+    safe_rate = max(8000, int(sample_rate))
+    leading_ms = int(_REALTIME_BOT_OUTPUT_LEADING_SILENCE_MS or 0)
+    if leading_ms > 0:
+        lead_samples = int((safe_rate * leading_ms) / 1000)
+        if lead_samples > 0:
+            pcm_bytes = (b"\x00\x00" * (lead_samples * safe_channels)) + pcm_bytes
     with io.BytesIO() as buffer:
         with wave.open(buffer, "wb") as wav_file:
-            wav_file.setnchannels(max(1, int(channels)))
+            wav_file.setnchannels(safe_channels)
             wav_file.setsampwidth(2)
-            wav_file.setframerate(max(8000, int(sample_rate)))
+            wav_file.setframerate(safe_rate)
             wav_file.writeframes(pcm_bytes)
         return base64.b64encode(buffer.getvalue()).decode("ascii")
 
@@ -3631,6 +3642,103 @@ def _decode_and_normalize_pcm16_audio(
         source_rate=_coerce_sample_rate(sample_rate, 16000),
         target_rate=_coerce_sample_rate(target_sample_rate, 16000),
     )
+
+
+def _pcm16_audio_stats(pcm_bytes: bytes, *, sample_rate: int) -> dict:
+    if not pcm_bytes:
+        return {
+            "samples": 0,
+            "duration_ms": 0,
+            "rms": 0.0,
+            "peak": 0.0,
+            "non_zero_ratio": 0.0,
+        }
+    usable = pcm_bytes[: len(pcm_bytes) - (len(pcm_bytes) % 2)]
+    if not usable:
+        return {
+            "samples": 0,
+            "duration_ms": 0,
+            "rms": 0.0,
+            "peak": 0.0,
+            "non_zero_ratio": 0.0,
+        }
+
+    samples = array("h")
+    samples.frombytes(usable)
+    sample_count = len(samples)
+    if sample_count <= 0:
+        return {
+            "samples": 0,
+            "duration_ms": 0,
+            "rms": 0.0,
+            "peak": 0.0,
+            "non_zero_ratio": 0.0,
+        }
+
+    sum_sq = 0.0
+    peak_abs = 0
+    non_zero_count = 0
+    for sample in samples:
+        value = int(sample)
+        abs_value = abs(value)
+        if abs_value > peak_abs:
+            peak_abs = abs_value
+        if abs_value > 16:
+            non_zero_count += 1
+        sum_sq += float(value * value)
+
+    rms = math.sqrt(sum_sq / sample_count) / 32768.0
+    peak = float(peak_abs) / 32768.0
+    duration_ms = int((sample_count * 1000) / max(1, int(sample_rate)))
+    non_zero_ratio = float(non_zero_count) / float(sample_count)
+    return {
+        "samples": int(sample_count),
+        "duration_ms": int(duration_ms),
+        "rms": float(round(rms, 6)),
+        "peak": float(round(peak, 6)),
+        "non_zero_ratio": float(round(non_zero_ratio, 6)),
+    }
+
+
+def _auto_gain_pcm16_for_asr(
+    pcm_bytes: bytes,
+    *,
+    sample_rate: int = 16000,
+    target_rms: float = 0.02,
+    min_rms_to_boost: float = 0.004,
+    max_gain: float = 24.0,
+) -> tuple[bytes, dict, dict, float]:
+    before = _pcm16_audio_stats(pcm_bytes, sample_rate=sample_rate)
+    if not pcm_bytes:
+        return pcm_bytes, before, before, 1.0
+
+    rms = float(before.get("rms") or 0.0)
+    peak = float(before.get("peak") or 0.0)
+    if rms <= 0.0 or rms >= float(min_rms_to_boost):
+        return pcm_bytes, before, before, 1.0
+
+    gain = float(target_rms) / max(rms, 1e-9)
+    gain = max(1.0, min(float(max_gain), gain))
+    if peak > 0:
+        gain = min(gain, 0.95 / peak)
+    if gain <= 1.05:
+        return pcm_bytes, before, before, 1.0
+
+    samples = array("h")
+    usable = pcm_bytes[: len(pcm_bytes) - (len(pcm_bytes) % 2)]
+    samples.frombytes(usable)
+    boosted = array("h")
+    for sample in samples:
+        value = int(round(int(sample) * gain))
+        if value > 32767:
+            value = 32767
+        elif value < -32768:
+            value = -32768
+        boosted.append(value)
+
+    boosted_bytes = boosted.tobytes()
+    after = _pcm16_audio_stats(boosted_bytes, sample_rate=sample_rate)
+    return boosted_bytes, before, after, float(round(gain, 3))
 
 
 def _openai_realtime_ws_url(base_url: str, model: str) -> str:
@@ -4586,7 +4694,7 @@ def _call_realtime_bot_via_volcengine_dialog_websocket(
                     "tts": {
                         "audio_config": {
                             "channel": 1,
-                            "format": "pcm_s16le",
+                            "format": "pcm",
                             "sample_rate": 24000,
                         },
                         "speaker": speaker,
@@ -4815,7 +4923,7 @@ def _call_realtime_bot_via_volcengine_audio_dialog_websocket(
                     "tts": {
                         "audio_config": {
                             "channel": 1,
-                            "format": "pcm_s16le",
+                            "format": "pcm",
                             "sample_rate": 24000,
                         },
                         "speaker": speaker,

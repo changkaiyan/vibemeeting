@@ -1,6 +1,9 @@
+import 'dart:typed_data';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:smart_meeting_app/meeting_room/models.dart';
 import 'package:smart_meeting_app/meeting_room/realtime_bot_protocol.dart';
+import 'package:smart_meeting_app/meeting_room/realtime_bot_streaming.dart';
 
 void main() {
   test('ChatMessage normalizes sender and timestamp fields', () {
@@ -156,6 +159,108 @@ void main() {
     expect(
       meetingAiRealtimeAudioWsPath('/api/meetings/7/ai-controls/realtime-audio'),
       '/ws/meetings/7/ai-controls/realtime-audio',
+    );
+  });
+
+  test('flushRealtimeBotStreamChunks emits continuous 640-byte frames before turn end', () {
+    final captureBytes = List<int>.generate(640 * 2 + 160, (index) => index % 255);
+    final sentChunks = <Uint8List>[];
+
+    final sentCount = flushRealtimeBotStreamChunks(
+      captureBytes,
+      chunkBytes: 640,
+      sendChunk: (chunk) {
+        sentChunks.add(chunk);
+        return true;
+      },
+    );
+
+    expect(sentCount, 2);
+    expect(sentChunks, hasLength(2));
+    expect(sentChunks[0], hasLength(640));
+    expect(sentChunks[1], hasLength(640));
+    expect(captureBytes, hasLength(160));
+  });
+
+  test('flushRealtimeBotStreamChunks keeps buffered audio when websocket send fails', () {
+    final captureBytes = List<int>.generate(640 * 2, (index) => index % 255);
+    var attempts = 0;
+
+    final sentCount = flushRealtimeBotStreamChunks(
+      captureBytes,
+      chunkBytes: 640,
+      sendChunk: (chunk) {
+        attempts += 1;
+        return attempts < 2;
+      },
+    );
+
+    expect(sentCount, 1);
+    expect(attempts, 2);
+    expect(captureBytes, hasLength(640));
+  });
+
+  test('shouldEndRealtimeBotSpeechTurn matches kaiyan silence cutoff logic', () {
+    expect(
+      shouldEndRealtimeBotSpeechTurn(
+        elapsedMs: 1200,
+        silenceMs: 300,
+        minSpeechMs: 350,
+        silenceThresholdMs: 700,
+        maxSpeechMs: 8000,
+      ),
+      isFalse,
+    );
+    expect(
+      shouldEndRealtimeBotSpeechTurn(
+        elapsedMs: 1400,
+        silenceMs: 800,
+        minSpeechMs: 350,
+        silenceThresholdMs: 700,
+        maxSpeechMs: 8000,
+      ),
+      isTrue,
+    );
+    expect(
+      shouldEndRealtimeBotSpeechTurn(
+        elapsedMs: 1700,
+        silenceMs: 100,
+        minSpeechMs: 350,
+        silenceThresholdMs: 700,
+        maxSpeechMs: 8000,
+      ),
+      isFalse,
+    );
+  });
+
+  test('shouldRestartRealtimeBotCapture restarts when frames stop advancing', () {
+    final now = DateTime(2026, 4, 11, 12, 0, 0);
+
+    expect(
+      shouldRestartRealtimeBotCapture(
+        now: now,
+        boundAt: now.subtract(const Duration(seconds: 9)),
+        lastProcessAt: null,
+      ),
+      isTrue,
+    );
+
+    expect(
+      shouldRestartRealtimeBotCapture(
+        now: now,
+        boundAt: now.subtract(const Duration(seconds: 20)),
+        lastProcessAt: now.subtract(const Duration(seconds: 9)),
+      ),
+      isTrue,
+    );
+
+    expect(
+      shouldRestartRealtimeBotCapture(
+        now: now,
+        boundAt: now.subtract(const Duration(seconds: 20)),
+        lastProcessAt: now.subtract(const Duration(seconds: 2)),
+      ),
+      isFalse,
     );
   });
 }

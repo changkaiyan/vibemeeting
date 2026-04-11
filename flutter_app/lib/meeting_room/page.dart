@@ -19,6 +19,7 @@ import 'debug/debug_flags.dart';
 import 'debug/stt_debug.dart';
 import 'models.dart';
 import 'realtime_bot_protocol.dart';
+import 'realtime_bot_streaming.dart';
 import 'participant_menu/participant_menu_builder.dart';
 import 'utils/audio_level.dart';
 import 'widgets/media_test_widgets.dart';
@@ -3242,14 +3243,19 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
       unawaited(_ensureRealtimeBotFallbackMicStream());
     }
     if (_realtimeBotListening && hasCapture) {
+      final now = DateTime.now();
       final boundAt = _realtimeBotCaptureBoundAt;
       final lastProcessAt = _realtimeBotDebugLastProcessAt;
-      if (boundAt != null &&
-          lastProcessAt == null &&
-          DateTime.now().difference(boundAt).inMilliseconds > 8000) {
+      if (shouldRestartRealtimeBotCapture(
+        now: now,
+        boundAt: boundAt,
+        lastProcessAt: lastProcessAt,
+      )) {
         _updateRealtimeBotDebug(
           event: 'capture_stalled',
-          error: 'audio renderer has no frames for >8s',
+          error: lastProcessAt == null
+              ? 'audio renderer has no frames for >8s'
+              : 'audio renderer stopped processing for >8s',
           forceRebuild: true,
         );
         unawaited(_bindRealtimeBotFrameCapture(force: true));
@@ -3833,11 +3839,12 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
   }
 
   void _flushRealtimeBotStreamAudioChunks({bool force = false}) {
-    while (_realtimeBotCaptureBytes.length >= _realtimeBotIngressStreamChunkBytes) {
-      final chunk = Uint8List.fromList(
-        _realtimeBotCaptureBytes.sublist(0, _realtimeBotIngressStreamChunkBytes),
-      );
-      final ok = _sendRealtimeBotIngressPayload(
+    flushRealtimeBotStreamChunks(
+      _realtimeBotCaptureBytes,
+      chunkBytes: _realtimeBotIngressStreamChunkBytes,
+      force: force,
+      sendChunk: (chunk) {
+        final ok = _sendRealtimeBotIngressPayload(
         <String, dynamic>{
           'type': 'audio_chunk',
           'audio_base64': base64Encode(chunk),
@@ -3845,28 +3852,9 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
           'channels': 1,
         },
       );
-      if (!ok) return;
-      _realtimeBotCaptureBytes.removeRange(0, _realtimeBotIngressStreamChunkBytes);
-    }
-    if (!force) return;
-    final remain = _realtimeBotCaptureBytes.length -
-        (_realtimeBotCaptureBytes.length % 2);
-    if (remain < 320) {
-      _realtimeBotCaptureBytes.clear();
-      return;
-    }
-    final chunk = Uint8List.fromList(_realtimeBotCaptureBytes.sublist(0, remain));
-    final ok = _sendRealtimeBotIngressPayload(
-      <String, dynamic>{
-        'type': 'audio_chunk',
-        'audio_base64': base64Encode(chunk),
-        'sample_rate': _realtimeBotCaptureSampleRate,
-        'channels': 1,
+        return ok;
       },
     );
-    if (ok) {
-      _realtimeBotCaptureBytes.removeRange(0, remain);
-    }
   }
 
   void _startRealtimeBotSpeechStream(DateTime now) {
@@ -4114,7 +4102,6 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
 
   void _handleRealtimeBotAudioFrame(lk.AudioFrame frame) {
     if (!_shouldRunRealtimeBotAudioIngress()) return;
-    if (_realtimeBotAudioUploading) return;
     if (_realtimeBotPlaybackActive) return;
     if (frame.data.isEmpty) return;
 
@@ -4143,62 +4130,21 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     final startVoice = safeRms >=
             (_realtimeBotVadThreshold * _realtimeBotVadStartRmsRatio) ||
         peak >= (_realtimeBotVadPeakThreshold * _realtimeBotVadStartPeakRatio);
+    final holdVoice = hasVoice ||
+        safeRms >= (_realtimeBotVadThreshold * _realtimeBotVadHoldRmsRatio) ||
+        peak >= (_realtimeBotVadPeakThreshold * _realtimeBotVadHoldPeakRatio);
     _realtimeBotCaptureSampleRate = _realtimeBotAudioTargetSampleRate;
-    _updateRealtimeBotDebug(
-      bumpProcessCount: true,
-      lastProcessAt: now,
-      rms: safeRms,
+    _ingestRealtimeBotPcmFrame(
+      now: now,
+      pcmBytes: pcmBytes,
+      safeRms: safeRms,
+      hasVoice: holdVoice,
+      startVoice: startVoice,
     );
-    if (_realtimeBotSpeechStartedAt == null) {
-      _realtimeBotPrerollBytes.addAll(pcmBytes);
-      if (_realtimeBotPrerollBytes.length > _realtimeBotIngressPrerollBytes) {
-        _realtimeBotPrerollBytes.removeRange(
-          0,
-          _realtimeBotPrerollBytes.length - _realtimeBotIngressPrerollBytes,
-        );
-      }
-      if (startVoice) {
-        _startRealtimeBotSpeechStream(now);
-        if (_realtimeBotPrerollBytes.isNotEmpty) {
-          _realtimeBotCaptureBytes.addAll(_realtimeBotPrerollBytes);
-        }
-      }
-    }
-    if (_realtimeBotSpeechStartedAt == null) {
-      _updateRealtimeBotDebug(
-        voiceActive: false,
-        bufferedBytes: 0,
-      );
-      return;
-    }
-    if (hasVoice) {
-      _realtimeBotLastVoiceAt = now;
-    } else {
-      final holdVoice = safeRms >=
-              (_realtimeBotVadThreshold * _realtimeBotVadHoldRmsRatio) ||
-          peak >= (_realtimeBotVadPeakThreshold * _realtimeBotVadHoldPeakRatio);
-      if (holdVoice) {
-        _realtimeBotLastVoiceAt = now;
-      }
-    }
-    _realtimeBotCaptureBytes.addAll(pcmBytes);
-    if (_realtimeBotCaptureBytes.length > _realtimeBotIngressStreamMaxBufferBytes) {
-      _realtimeBotCaptureBytes.removeRange(
-        0,
-        _realtimeBotCaptureBytes.length - _realtimeBotIngressStreamMaxBufferBytes,
-      );
-    }
-    _updateRealtimeBotDebug(
-      event: hasVoice ? 'capturing_voice' : 'capturing_silence',
-      voiceActive: hasVoice,
-      bufferedBytes: _realtimeBotCaptureBytes.length,
-    );
-    _flushRealtimeBotCapturedAudio();
   }
 
   void _handleRealtimeBotAudioProcess(dynamic event) {
     if (!_shouldRunRealtimeBotAudioIngress()) return;
-    if (_realtimeBotAudioUploading) return;
     if (_realtimeBotPlaybackActive) return;
     final dynamic inputBuffer = event['inputBuffer'];
     if (inputBuffer == null) return;
@@ -4242,25 +4188,46 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     final startVoice = safeRms >=
             (_realtimeBotVadThreshold * _realtimeBotVadStartRmsRatio) ||
         peak >= (_realtimeBotVadPeakThreshold * _realtimeBotVadStartPeakRatio);
+    final holdVoice = hasVoice ||
+        safeRms >= (_realtimeBotVadThreshold * _realtimeBotVadHoldRmsRatio) ||
+        peak >= (_realtimeBotVadPeakThreshold * _realtimeBotVadHoldPeakRatio);
+    _ingestRealtimeBotPcmFrame(
+      now: now,
+      pcmBytes: normalizedPcmBytes,
+      safeRms: safeRms,
+      hasVoice: holdVoice,
+      startVoice: startVoice,
+    );
+  }
+
+  void _ingestRealtimeBotPcmFrame({
+    required DateTime now,
+    required Uint8List pcmBytes,
+    required double safeRms,
+    required bool hasVoice,
+    required bool startVoice,
+  }) {
     _updateRealtimeBotDebug(
       bumpProcessCount: true,
       lastProcessAt: now,
       rms: safeRms,
     );
-
     if (_realtimeBotSpeechStartedAt == null) {
-      _realtimeBotPrerollBytes.addAll(normalizedPcmBytes);
+      _realtimeBotPrerollBytes.addAll(pcmBytes);
       if (_realtimeBotPrerollBytes.length > _realtimeBotIngressPrerollBytes) {
         _realtimeBotPrerollBytes.removeRange(
           0,
           _realtimeBotPrerollBytes.length - _realtimeBotIngressPrerollBytes,
         );
       }
-      if (startVoice) {
-        _startRealtimeBotSpeechStream(now);
-        if (_realtimeBotPrerollBytes.isNotEmpty) {
-          _realtimeBotCaptureBytes.addAll(_realtimeBotPrerollBytes);
-        }
+    }
+    var frameAlreadyInBuffer = false;
+    if (startVoice && _realtimeBotSpeechStartedAt == null) {
+      _startRealtimeBotSpeechStream(now);
+      if (_realtimeBotPrerollBytes.isNotEmpty) {
+        _realtimeBotCaptureBytes.addAll(_realtimeBotPrerollBytes);
+        _realtimeBotPrerollBytes.clear();
+        frameAlreadyInBuffer = true;
       }
     }
     if (_realtimeBotSpeechStartedAt == null) {
@@ -4273,79 +4240,48 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     }
     if (hasVoice) {
       _realtimeBotLastVoiceAt = now;
-    } else {
-      final holdVoice = safeRms >=
-              (_realtimeBotVadThreshold * _realtimeBotVadHoldRmsRatio) ||
-          peak >= (_realtimeBotVadPeakThreshold * _realtimeBotVadHoldPeakRatio);
-      if (holdVoice) {
-        _realtimeBotLastVoiceAt = now;
-      }
     }
-    _realtimeBotCaptureBytes.addAll(normalizedPcmBytes);
+    if (!frameAlreadyInBuffer) {
+      _realtimeBotCaptureBytes.addAll(pcmBytes);
+    }
     if (_realtimeBotCaptureBytes.length > _realtimeBotIngressStreamMaxBufferBytes) {
       _realtimeBotCaptureBytes.removeRange(
         0,
         _realtimeBotCaptureBytes.length - _realtimeBotIngressStreamMaxBufferBytes,
       );
     }
-    _updateRealtimeBotDebug(
-      event: hasVoice ? 'capturing_voice' : 'capturing_silence',
-      voiceActive: hasVoice,
-      rms: safeRms,
-      bufferedBytes: _realtimeBotCaptureBytes.length,
-    );
-    _flushRealtimeBotCapturedAudio();
-  }
+    _flushRealtimeBotStreamAudioChunks();
 
-  void _flushRealtimeBotCapturedAudio({bool force = false}) {
-    final speechStartedAt = _realtimeBotSpeechStartedAt;
-    if (speechStartedAt == null) return;
-    final now = DateTime.now();
+    final speechStartedAt = _realtimeBotSpeechStartedAt!;
     final elapsedMs = now.difference(speechStartedAt).inMilliseconds;
     final lastVoiceAt = _realtimeBotLastVoiceAt ?? speechStartedAt;
     final silenceMs = now.difference(lastVoiceAt).inMilliseconds;
-    final shouldSend = force ||
-        elapsedMs >= _realtimeBotAudioMaxSpeechMs ||
-        elapsedMs >= _realtimeBotAudioForceFlushMs ||
-        (elapsedMs >= _realtimeBotAudioMinSpeechMs &&
-            silenceMs >= _realtimeBotAudioSilenceMs);
-    if (!shouldSend) {
-      _updateRealtimeBotDebug(bufferedBytes: _realtimeBotCaptureBytes.length);
-      return;
-    }
-    final chunkRms = _realtimeBotCaptureBytes.isEmpty
-        ? 0.0
-        : _pcm16RmsLevel(Uint8List.fromList(_realtimeBotCaptureBytes));
-    final chunkPeak = _realtimeBotCaptureBytes.isEmpty
-        ? 0.0
-        : _pcm16PeakLevel(Uint8List.fromList(_realtimeBotCaptureBytes));
-    final chunkHasSpeech =
-        chunkRms >= (_realtimeBotVadThreshold * _realtimeBotVadHoldRmsRatio) ||
-            chunkPeak >=
-                (_realtimeBotVadPeakThreshold * _realtimeBotVadHoldPeakRatio);
-    if (!force && !chunkHasSpeech) {
-      _endRealtimeBotSpeechStream(now: now, force: false);
+    if (shouldEndRealtimeBotSpeechTurn(
+      elapsedMs: elapsedMs,
+      silenceMs: silenceMs,
+      minSpeechMs: _realtimeBotAudioMinSpeechMs,
+      silenceThresholdMs: _realtimeBotAudioSilenceMs,
+      maxSpeechMs: _realtimeBotAudioMaxSpeechMs,
+    )) {
+      _realtimeBotAudioUploading = true;
+      _realtimeBotCurrentUploadStartedAt = now;
+      _startRealtimeBotIngressResponseTimeout();
+      _endRealtimeBotSpeechStream(now: now);
       _updateRealtimeBotDebug(
-        event: 'drop_low_energy_chunk',
+        event: 'uploading',
+        clearError: true,
         voiceActive: false,
-        rms: chunkRms,
         bufferedBytes: 0,
         lastUploadBytes: 0,
+        forceRebuild: true,
       );
       return;
     }
-    _realtimeBotAudioUploading = true;
-    _realtimeBotCurrentUploadStartedAt = now;
-    _startRealtimeBotIngressResponseTimeout();
-    _flushRealtimeBotStreamAudioChunks(force: true);
-    _endRealtimeBotSpeechStream(now: now, force: force);
     _updateRealtimeBotDebug(
-      event: 'uploading',
-      clearError: true,
-      voiceActive: false,
-      bufferedBytes: 0,
-      lastUploadBytes: 0,
-      forceRebuild: true,
+      event: hasVoice ? 'streaming_voice' : 'streaming_silence',
+      voiceActive: hasVoice,
+      rms: safeRms,
+      bufferedBytes: _realtimeBotCaptureBytes.length,
     );
   }
 

@@ -1,9 +1,11 @@
 import asyncio
 import base64
 import hashlib
+import inspect
 import importlib
 import json
 import os
+import sys
 import tempfile
 from datetime import timedelta
 from pathlib import Path
@@ -48,6 +50,7 @@ from conference.models import (
 from conference.meeting_resolver import MeetingLookup
 from conference.meeting_refs import ensure_meeting_ref
 from conference.share import build_meeting_share_code
+import conference.realtime_audio_ws as conference_realtime_audio_ws
 import conference.views as conference_views
 from services.stt_worker.stt_worker.config import SttWorkerConfig
 from services.stt_worker.stt_worker.server import DEFAULT_WS_PATH, start_server
@@ -3488,6 +3491,135 @@ class MeetingRealtimeAudioWebSocketTests(TestCase):
             muted_by_host=False,
         )
         self.meeting_ref = ensure_meeting_ref(self.meeting, self.host)
+
+    @patch("conference.realtime_audio_ws.meeting_views._volcengine_wait_for_event")
+    @patch("conference.realtime_audio_ws.meeting_views._volcengine_build_request", return_value=b"req")
+    @patch("conference.realtime_audio_ws.meeting_views._volcengine_ws_headers", return_value=["X-Test: 1"])
+    @patch("conference.realtime_audio_ws.threading.Thread")
+    def test_stream_bridge_start_matches_kaiyan_session_audio_params(
+        self,
+        mock_thread_cls,
+        mock_headers,
+        mock_build_request,
+        mock_wait_for_event,
+    ):
+        self.meeting.realtime_bot_provider = "volcengine"
+        self.meeting.realtime_bot_volc_app_id = "app-id"
+        self.meeting.realtime_bot_volc_access_key = "access-key"
+        self.meeting.realtime_bot_volc_resource_id = "volc.resource"
+        self.meeting.realtime_bot_volc_ws_url = "wss://volc.example.test/realtime"
+        self.meeting.realtime_bot_volc_model = "2.2.0.0"
+        self.meeting.realtime_bot_volc_voice = "saturn_zh_female_aojiaonvyou_tob"
+        self.meeting.save(
+            update_fields=[
+                "realtime_bot_provider",
+                "realtime_bot_volc_app_id",
+                "realtime_bot_volc_access_key",
+                "realtime_bot_volc_resource_id",
+                "realtime_bot_volc_ws_url",
+                "realtime_bot_volc_model",
+                "realtime_bot_volc_voice",
+            ]
+        )
+
+        class FakeWebSocket:
+            def __init__(self):
+                self.timeout = None
+                self.binary_payloads = []
+
+            def settimeout(self, value):
+                self.timeout = value
+
+            def send_binary(self, payload):
+                self.binary_payloads.append(payload)
+
+            def close(self):
+                return None
+
+        fake_ws = FakeWebSocket()
+        fake_websocket_module = SimpleNamespace(
+            create_connection=lambda *args, **kwargs: fake_ws,
+            WebSocketTimeoutException=TimeoutError,
+        )
+        mock_thread = SimpleNamespace(start=lambda: None)
+        mock_thread_cls.return_value = mock_thread
+
+        with patch.dict(sys.modules, {"websocket": fake_websocket_module}):
+            bridge = conference_realtime_audio_ws._VolcengineRealtimeStreamBridge(
+                meeting=self.meeting,
+                emit=lambda payload: None,
+            )
+            bridge.start()
+
+        self.assertEqual(mock_build_request.call_count, 2)
+        start_session_payload = mock_build_request.call_args_list[1].kwargs["payload"]
+        self.assertEqual(start_session_payload["asr"]["audio_config"]["format"], "pcm")
+        self.assertEqual(start_session_payload["asr"]["audio_config"]["sample_rate"], 16000)
+        self.assertEqual(start_session_payload["asr"]["extra"]["end_smooth_window_ms"], 1200)
+        self.assertEqual(start_session_payload["tts"]["audio_config"]["format"], "pcm")
+        self.assertEqual(start_session_payload["tts"]["audio_config"]["sample_rate"], 24000)
+        self.assertEqual(
+            start_session_payload["tts"]["speaker"],
+            conference_views._meeting_realtime_bot_volc_speaker(
+                self.meeting,
+                dialog_model=conference_views._meeting_realtime_bot_volc_model(self.meeting),
+            ),
+        )
+        self.assertEqual(start_session_payload["dialog"]["extra"]["input_mod"], "push_to_talk")
+        self.assertTrue(start_session_payload["dialog"]["extra"]["strict_audit"])
+        self.assertEqual(
+            start_session_payload["dialog"]["extra"]["recv_timeout"],
+            conference_views._REALTIME_BOT_RESPONSE_TIMEOUT_SECONDS,
+        )
+        self.assertEqual(start_session_payload["dialog"]["extra"]["model"], "2.2.0.0")
+
+    @patch("conference.realtime_audio_ws.meeting_views._auto_gain_pcm16_for_asr")
+    @patch("conference.realtime_audio_ws.meeting_views._decode_and_normalize_pcm16_audio")
+    def test_decode_audio_chunk_applies_same_auto_gain_path_as_kaiyan_streaming(
+        self,
+        mock_decode_audio,
+        mock_auto_gain,
+    ):
+        mock_decode_audio.return_value = b"\x01\x02\x03\x04"
+        mock_auto_gain.return_value = (
+            b"\x05\x06\x07\x08",
+            {"rms": 0.01},
+            {"rms": 0.03},
+            3.0,
+        )
+
+        audio_pcm16, err = async_to_sync(conference_realtime_audio_ws._decode_audio_chunk)(
+            {
+                "audio_base64": base64.b64encode(b"fake").decode("ascii"),
+                "sample_rate": 16000,
+                "channels": 1,
+            }
+        )
+
+        self.assertEqual(err, "")
+        self.assertEqual(audio_pcm16, b"\x05\x06\x07\x08")
+        mock_auto_gain.assert_called_once_with(
+            b"\x01\x02\x03\x04",
+            sample_rate=16000,
+            target_rms=0.03,
+            min_rms_to_boost=0.01,
+            max_gain=48.0,
+        )
+
+    def test_stream_bridge_treats_session_stop_as_turn_done_event(self):
+        self.assertTrue(conference_realtime_audio_ws._is_turn_done_event_name("session.stop"))
+        self.assertTrue(conference_realtime_audio_ws._is_turn_done_event_name("response.completed"))
+        self.assertFalse(conference_realtime_audio_ws._is_turn_done_event_name("response.delta"))
+
+    def test_volc_text_websocket_source_uses_pcm_tts_format(self):
+        source = inspect.getsource(conference_views._call_realtime_bot_via_volcengine_dialog_websocket)
+        self.assertIn('"format": "pcm"', source)
+        self.assertNotIn('"format": "pcm_s16le"', source)
+
+    def test_volc_audio_websocket_source_uses_pcm_tts_format(self):
+        source = inspect.getsource(conference_views._call_realtime_bot_via_volcengine_audio_dialog_websocket)
+        self.assertIn('"format": "pcm"', source)
+        self.assertNotIn('"format": "pcm_s16le"', source)
 
     async def _run_ws_session(self, path: str, token: str, frames: list[dict]):
         communicator = ApplicationCommunicator(
