@@ -1,17 +1,23 @@
 import os
 
-os.environ.setdefault("DJANGO_SETTINGS_MODULE", "smart_meeting.settings")
-
+from channels.auth import AuthMiddlewareStack
+from channels.routing import ProtocolTypeRouter, URLRouter
+from django.conf import settings
 from django.contrib.staticfiles.handlers import ASGIStaticFilesHandler
 from django.core.asgi import get_asgi_application
 
-django_asgi_app = ASGIStaticFilesHandler(get_asgi_application())
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "smart_meeting.settings")
 
-from conference.speech_to_text.realtime import realtime_stt_application
+django_asgi_app = get_asgi_application()
+if settings.DEBUG:
+    django_asgi_app = ASGIStaticFilesHandler(django_asgi_app)
+
+from conference.routing import websocket_urlpatterns
 
 
-async def application(scope, receive, send):
-    if scope["type"] == "websocket" and scope.get("path", "").startswith("/ws/meetings/"):
-        await realtime_stt_application(scope, receive, send)
-        return
-    await django_asgi_app(scope, receive, send)
+application = ProtocolTypeRouter(
+    {
+        "http": django_asgi_app,
+        "websocket": AuthMiddlewareStack(URLRouter(websocket_urlpatterns)),
+    }
+)

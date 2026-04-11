@@ -119,9 +119,13 @@ class Meeting(models.Model):
     realtime_bot_enabled = models.BooleanField(default=False)
     realtime_bot_muted = models.BooleanField(default=False)
     realtime_bot_base_url = models.CharField(max_length=255, blank=True, default="https://api.openai.com")
+    realtime_bot_openai_model = models.CharField(max_length=120, blank=True, default="gpt-realtime")
+    realtime_bot_openai_voice = models.CharField(max_length=40, blank=True, default="marin")
+    realtime_bot_volc_model = models.CharField(max_length=20, blank=True, default="2.2.0.0")
+    realtime_bot_volc_voice = models.CharField(max_length=120, blank=True, default="")
     realtime_bot_model = models.CharField(max_length=120, blank=True, default="gpt-realtime")
     realtime_bot_api_key = models.CharField(max_length=255, blank=True, default="")
-    realtime_bot_voice = models.CharField(max_length=40, blank=True, default="marin")
+    realtime_bot_voice = models.CharField(max_length=120, blank=True, default="marin")
     realtime_bot_volc_ws_url = models.CharField(
         max_length=255,
         blank=True,

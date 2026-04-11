@@ -20,11 +20,22 @@ def _csv_env(name: str, default: str = "") -> list[str]:
     return [item.strip() for item in os.getenv(name, default).split(",") if item.strip()]
 
 
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return int(default)
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return int(default)
+
+
 SECRET_KEY = os.getenv("SECRET_KEY", "replace-this-with-a-secure-secret")
 DEBUG = os.getenv("DEBUG", "1") == "1"
 ALLOWED_HOSTS = _csv_env("ALLOWED_HOSTS", "127.0.0.1,localhost,testserver,*")
 
 INSTALLED_APPS = [
+    "channels",
     "unfold",
     "django.contrib.admin",
     "django.contrib.auth",
@@ -65,6 +76,9 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "smart_meeting.wsgi.application"
 ASGI_APPLICATION = "smart_meeting.asgi.application"
+CHANNEL_LAYERS = {
+    "default": {"BACKEND": "channels.layers.InMemoryChannelLayer"},
+}
 
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 if DATABASE_URL.startswith("sqlite:///"):
@@ -132,6 +146,60 @@ MEETING_AGENT_BRIDGE_MODE = os.getenv("MEETING_AGENT_BRIDGE_MODE", "").strip().l
 MEETING_AGENT_BRIDGE_TIMEOUT_SECONDS = float(os.getenv("MEETING_AGENT_BRIDGE_TIMEOUT_SECONDS", "20"))
 MEETING_STT_PROVIDER = os.getenv("MEETING_STT_PROVIDER", "").strip().lower()
 MEETING_REALTIME_STT_WORKER_URL = os.getenv("MEETING_REALTIME_STT_WORKER_URL", "").strip()
+
+REALTIME_BOT_DEFAULT_PROVIDER = os.getenv("REALTIME_BOT_DEFAULT_PROVIDER", "openai").strip().lower()
+if REALTIME_BOT_DEFAULT_PROVIDER not in {"openai", "volcengine"}:
+    REALTIME_BOT_DEFAULT_PROVIDER = "openai"
+REALTIME_BOT_DEFAULT_BASE_URL = os.getenv("REALTIME_BOT_DEFAULT_BASE_URL", "https://api.openai.com").strip()
+REALTIME_BOT_DEFAULT_MODEL = os.getenv("REALTIME_BOT_DEFAULT_MODEL", "gpt-realtime").strip()
+REALTIME_BOT_DEFAULT_VOLC_MODEL = os.getenv("REALTIME_BOT_DEFAULT_VOLC_MODEL", "2.2.0.0").strip()
+REALTIME_BOT_DEFAULT_VOICE = os.getenv("REALTIME_BOT_DEFAULT_VOICE", "marin").strip()
+REALTIME_BOT_DEFAULT_DISPLAY_NAME = os.getenv("REALTIME_BOT_DEFAULT_DISPLAY_NAME", "实时语音助手").strip()
+REALTIME_BOT_DEFAULT_API_KEY = os.getenv("REALTIME_BOT_DEFAULT_API_KEY", "").strip()
+REALTIME_BOT_DEFAULT_VOLC_WS_URL = os.getenv(
+    "REALTIME_BOT_DEFAULT_VOLC_WS_URL",
+    "wss://openspeech.bytedance.com/api/v3/realtime/dialogue",
+).strip()
+REALTIME_BOT_DEFAULT_VOLC_APP_ID = os.getenv("REALTIME_BOT_DEFAULT_VOLC_APP_ID", "").strip()
+REALTIME_BOT_DEFAULT_VOLC_APP_KEY = os.getenv(
+    "REALTIME_BOT_DEFAULT_VOLC_APP_KEY",
+    "PlgvMymc7f3tQnJ6",
+).strip()
+REALTIME_BOT_DEFAULT_VOLC_ACCESS_KEY = os.getenv("REALTIME_BOT_DEFAULT_VOLC_ACCESS_KEY", "").strip()
+REALTIME_BOT_DEFAULT_VOLC_RESOURCE_ID = os.getenv(
+    "REALTIME_BOT_DEFAULT_VOLC_RESOURCE_ID",
+    "volc.speech.dialog",
+).strip()
+REALTIME_BOT_DEFAULT_VOLC_UID = os.getenv("REALTIME_BOT_DEFAULT_VOLC_UID", "").strip()
+REALTIME_BOT_DEFAULT_VOLC_O_SPEAKER = os.getenv(
+    "REALTIME_BOT_DEFAULT_VOLC_O_SPEAKER",
+    "zh_female_vv_jupiter_bigtts",
+).strip()
+REALTIME_BOT_DEFAULT_VOLC_SC_SPEAKER = os.getenv(
+    "REALTIME_BOT_DEFAULT_VOLC_SC_SPEAKER",
+    "",
+).strip()
+REALTIME_BOT_VOLC_AUDIO_INPUT_MODE = os.getenv(
+    "REALTIME_BOT_VOLC_AUDIO_INPUT_MODE",
+    "push_to_talk",
+).strip().lower()
+if REALTIME_BOT_VOLC_AUDIO_INPUT_MODE not in {"audio_file", "push_to_talk", "keep_alive", "mic_silence"}:
+    REALTIME_BOT_VOLC_AUDIO_INPUT_MODE = "audio_file"
+REALTIME_BOT_VOLC_JSON_COMPRESSION = os.getenv(
+    "REALTIME_BOT_VOLC_JSON_COMPRESSION",
+    "none",
+).strip().lower()
+if REALTIME_BOT_VOLC_JSON_COMPRESSION not in {"none", "gzip"}:
+    REALTIME_BOT_VOLC_JSON_COMPRESSION = "none"
+REALTIME_BOT_VOLC_AUDIO_CHUNK_BYTES = _env_int("REALTIME_BOT_VOLC_AUDIO_CHUNK_BYTES", 640)
+REALTIME_BOT_VOLC_AUDIO_CHUNK_INTERVAL_MS = _env_int("REALTIME_BOT_VOLC_AUDIO_CHUNK_INTERVAL_MS", 20)
+REALTIME_BOT_VOLC_DEBUG_EVENTS = os.getenv("REALTIME_BOT_VOLC_DEBUG_EVENTS", "0").strip() == "1"
+REALTIME_BOT_VOLC_DEBUG_EVENTS_MAX_PAYLOAD_CHARS = _env_int(
+    "REALTIME_BOT_VOLC_DEBUG_EVENTS_MAX_PAYLOAD_CHARS",
+    2000,
+)
+REALTIME_BOT_WS_CONNECT_TIMEOUT_SECONDS = _env_int("REALTIME_BOT_WS_CONNECT_TIMEOUT_SECONDS", 10)
+REALTIME_BOT_RESPONSE_TIMEOUT_SECONDS = _env_int("REALTIME_BOT_RESPONSE_TIMEOUT_SECONDS", 20)
 
 TECHCLOUD_OAUTH_CLIENT_ID = os.getenv("TECHCLOUD_OAUTH_CLIENT_ID", "").strip()
 TECHCLOUD_OAUTH_CLIENT_SECRET = os.getenv("TECHCLOUD_OAUTH_CLIENT_SECRET", "").strip()
