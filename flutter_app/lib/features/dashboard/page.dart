@@ -887,7 +887,7 @@ class _DashboardPageState extends State<DashboardPage> {
                         ),
                         if (bill.exceededKeys.isNotEmpty) ...[
                           const SizedBox(height: 14),
-                          const Text(
+                          Text(
                             '已超限项目',
                             style: TextStyle(
                               fontWeight: FontWeight.w700,
