@@ -17,12 +17,12 @@ import '../device_profile.dart';
 import 'chat_menu/chat_message_menu_builder.dart';
 import 'debug/debug_flags.dart';
 import 'debug/stt_debug.dart';
+import 'models.dart';
 import 'participant_menu/participant_menu_builder.dart';
 import 'utils/audio_level.dart';
 import 'widgets/media_test_widgets.dart';
 import 'widgets/panel_widgets.dart';
 import 'widgets/selectable_region.dart';
-part 'models.dart';
 part 'logic/chat_logic.dart';
 part 'widgets/chat_widgets.dart';
 part 'widgets/layout_panels.dart';
@@ -174,14 +174,14 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
   List<lk.MediaDevice> _audioInputs = const [];
   List<lk.MediaDevice> _audioOutputs = const [];
   List<lk.MediaDevice> _videoInputs = const [];
-  _CameraResolutionPreset _cameraResolutionPreset =
-      _CameraResolutionPreset.p2160;
-  _ScreenShareResolutionPreset _screenShareResolutionPreset =
-      _ScreenShareResolutionPreset.p2160;
+  CameraResolutionPreset _cameraResolutionPreset =
+      CameraResolutionPreset.p2160;
+  ScreenShareResolutionPreset _screenShareResolutionPreset =
+      ScreenShareResolutionPreset.p2160;
   bool _adaptiveStreamEnabled = false;
   bool _dynacastEnabled = false;
-  _RemoteShareViewMode _remoteCameraViewMode = _RemoteShareViewMode.original;
-  _RemoteShareViewMode _remoteShareViewMode = _RemoteShareViewMode.original;
+  RemoteShareViewMode _remoteCameraViewMode = RemoteShareViewMode.original;
+  RemoteShareViewMode _remoteShareViewMode = RemoteShareViewMode.original;
   final Map<String, TransformationController> _tileZoomControllers =
       <String, TransformationController>{};
   bool _desktopParticipantsCollapsed = false;
@@ -286,9 +286,9 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
   Timer? _realtimeBotCaptureKeepaliveTimer;
   StreamSubscription<html.Event>? _fullscreenSubscription;
   int _latestMessageId = 0;
-  final List<_ChatMessage> _messages = [];
-  final Map<int, _ChatMessage> _pendingLocalDraftMessages =
-      <int, _ChatMessage>{};
+  final List<ChatMessage> _messages = [];
+  final Map<int, ChatMessage> _pendingLocalDraftMessages =
+      <int, ChatMessage>{};
   final Set<int> _playedRealtimeBotAudioMessageIds = <int>{};
   final Set<int> _playingRealtimeBotAudioMessageIds = <int>{};
   final Set<int> _recallingMessageIds = <int>{};
@@ -320,20 +320,20 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
   Completer<void>? _workspaceSttRecorderStopCompleter;
   Completer<void>? _workspaceSttFlushDataCompleter;
   int _workspacePendingAudioChunkSends = 0;
-  List<_WorkspaceAgentSession> _workspaceAgentSessions =
-      const <_WorkspaceAgentSession>[];
-  _WorkspaceContextSnapshot? _workspaceContext;
-  List<_WorkspaceTranscriptChunk> _workspaceTranscripts =
-      const <_WorkspaceTranscriptChunk>[];
-  List<_WorkspaceArtifact> _workspaceArtifacts = const <_WorkspaceArtifact>[];
-  Map<int, _MeetingMemberProfile> _memberProfiles = {};
+  List<WorkspaceAgentSession> _workspaceAgentSessions =
+      const <WorkspaceAgentSession>[];
+  WorkspaceContextSnapshot? _workspaceContext;
+  List<WorkspaceTranscriptChunk> _workspaceTranscripts =
+      const <WorkspaceTranscriptChunk>[];
+  List<WorkspaceArtifact> _workspaceArtifacts = const <WorkspaceArtifact>[];
+  Map<int, MeetingMemberProfile> _memberProfiles = {};
   final Map<String, String> _runtimeDisplayNamesByIdentity = <String, String>{};
   final Map<String, int> _guestDisplayNameVersionsByIdentity = <String, int>{};
   bool _updatingLocalRequestMetadata = false;
   String? _lastHandledHostForceMicNonce;
   String? _lastHandledHostForceVideoNonce;
   bool _handlingHostForceOpen = false;
-  List<_WaitingRoomEntry> _waitingRoomEntries = const [];
+  List<WaitingRoomEntry> _waitingRoomEntries = const [];
   int _lastWaitingRoomCount = 0;
   bool _hasNewWaitingRoomNotice = false;
   bool _waitingForAdmission = false;
@@ -389,7 +389,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
   int? get _localUserId =>
       _userIdFromIdentity(_room?.localParticipant?.identity ?? '');
 
-  _MeetingMemberProfile? get _localMemberProfile {
+  MeetingMemberProfile? get _localMemberProfile {
     final userId = _localUserId;
     if (userId == null) return null;
     return _memberProfiles[userId];
@@ -826,7 +826,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
       _setStatus('当前暂无在会成员可导出');
       return;
     }
-    final sortedRows = List<_ParticipantRowData>.from(rows)
+    final sortedRows = List<ParticipantRowData>.from(rows)
       ..sort((a, b) {
         final typeOrder =
             (a.userId == null ? 1 : 0).compareTo(b.userId == null ? 1 : 0);
@@ -1116,7 +1116,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     return int.tryParse(idPart);
   }
 
-  _MeetingMemberProfile? _profileForIdentity(String identity) {
+  MeetingMemberProfile? _profileForIdentity(String identity) {
     final userId = _userIdFromIdentity(identity);
     if (userId == null) return null;
     return _memberProfiles[userId];
@@ -1184,12 +1184,12 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     return ids;
   }
 
-  _MeetingMemberProfile _memberProfileWithDisplayName(
-    _MeetingMemberProfile profile,
+  MeetingMemberProfile _memberProfileWithDisplayName(
+    MeetingMemberProfile profile,
     String displayName, {
     int? displayNameVersion,
   }) {
-    return _MeetingMemberProfile(
+    return MeetingMemberProfile(
       userId: profile.userId,
       username: profile.username,
       displayName: displayName,
@@ -1226,7 +1226,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
             displayNameVersion != null &&
             profile.displayNameVersion != displayNameVersion;
         if (profile != null && (profileNameChanged || profileVersionChanged)) {
-          _memberProfiles = <int, _MeetingMemberProfile>{
+          _memberProfiles = <int, MeetingMemberProfile>{
             ..._memberProfiles,
             resolvedUserId: _memberProfileWithDisplayName(
               profile,
@@ -1353,10 +1353,10 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     );
   }
 
-  _RequestPendingFlags _requestPendingFlagsForParticipant(
+  RequestPendingFlags _requestPendingFlagsForParticipant(
       lk.Participant participant) {
     final payload = _participantMetadataAsMap(participant);
-    return _RequestPendingFlags(
+    return RequestPendingFlags(
       micPending: _boolFromJson(payload[_micRequestMetadataKey], false),
       videoPending: _boolFromJson(payload[_videoRequestMetadataKey], false),
       screenSharePending:
@@ -1608,7 +1608,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
   }
 
   String _friendlyError(Object error) {
-    if (error is _ApiException) {
+    if (error is MeetingApiException) {
       return error.detail;
     }
     final text = error.toString();
@@ -1627,13 +1627,13 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
   }
 
   bool _isWaitingRoomPendingError(Object error) {
-    if (error is! _ApiException) return false;
+    if (error is! MeetingApiException) return false;
     final status = (error.payload?['waiting_room_status'] ?? '').toString();
     return error.statusCode == 403 && status == 'pending';
   }
 
   bool _isWaitingRoomRejectedError(Object error) {
-    if (error is! _ApiException) return false;
+    if (error is! MeetingApiException) return false;
     final status = (error.payload?['waiting_room_status'] ?? '').toString();
     return error.statusCode == 403 && status == 'rejected';
   }
@@ -1885,39 +1885,39 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
 
   lk.VideoParameters _cameraVideoParameters() {
     switch (_cameraResolutionPreset) {
-      case _CameraResolutionPreset.p720:
+      case CameraResolutionPreset.p720:
         return lk.VideoParametersPresets.h720_169;
-      case _CameraResolutionPreset.p1080:
+      case CameraResolutionPreset.p1080:
         return lk.VideoParametersPresets.h1080_169;
-      case _CameraResolutionPreset.p1440:
+      case CameraResolutionPreset.p1440:
         return lk.VideoParametersPresets.h1440_169;
-      case _CameraResolutionPreset.p2160:
+      case CameraResolutionPreset.p2160:
         return lk.VideoParametersPresets.h2160_169;
     }
   }
 
   lk.VideoParameters _screenShareVideoParameters() {
     switch (_screenShareResolutionPreset) {
-      case _ScreenShareResolutionPreset.p720:
+      case ScreenShareResolutionPreset.p720:
         return lk.VideoParametersPresets.screenShareH720FPS15;
-      case _ScreenShareResolutionPreset.p1080:
+      case ScreenShareResolutionPreset.p1080:
         return lk.VideoParametersPresets.screenShareH1080FPS15;
-      case _ScreenShareResolutionPreset.p1440:
+      case ScreenShareResolutionPreset.p1440:
         return lk.VideoParametersPresets.screenShareH1440FPS30;
-      case _ScreenShareResolutionPreset.p2160:
+      case ScreenShareResolutionPreset.p2160:
         return lk.VideoParametersPresets.screenShareH2160FPS30;
     }
   }
 
-  String _cameraResolutionLabel(_CameraResolutionPreset preset) {
+  String _cameraResolutionLabel(CameraResolutionPreset preset) {
     switch (preset) {
-      case _CameraResolutionPreset.p720:
+      case CameraResolutionPreset.p720:
         return '1280 x 720';
-      case _CameraResolutionPreset.p1080:
+      case CameraResolutionPreset.p1080:
         return '1920 x 1080';
-      case _CameraResolutionPreset.p1440:
+      case CameraResolutionPreset.p1440:
         return '2560 x 1440';
-      case _CameraResolutionPreset.p2160:
+      case CameraResolutionPreset.p2160:
         return '3840 x 2160';
     }
   }
@@ -1931,43 +1931,43 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     );
   }
 
-  String _screenShareResolutionLabel(_ScreenShareResolutionPreset preset) {
+  String _screenShareResolutionLabel(ScreenShareResolutionPreset preset) {
     switch (preset) {
-      case _ScreenShareResolutionPreset.p720:
+      case ScreenShareResolutionPreset.p720:
         return '1280 x 720';
-      case _ScreenShareResolutionPreset.p1080:
+      case ScreenShareResolutionPreset.p1080:
         return '1920 x 1080';
-      case _ScreenShareResolutionPreset.p1440:
+      case ScreenShareResolutionPreset.p1440:
         return '2560 x 1440';
-      case _ScreenShareResolutionPreset.p2160:
+      case ScreenShareResolutionPreset.p2160:
         return '3840 x 2160';
     }
   }
 
-  String _remoteShareViewModeLabel(_RemoteShareViewMode mode) {
-    if (mode == _RemoteShareViewMode.original) {
+  String _remoteShareViewModeLabel(RemoteShareViewMode mode) {
+    if (mode == RemoteShareViewMode.original) {
       return '保持原比例';
     }
-    if (mode == _RemoteShareViewMode.stretch) {
+    if (mode == RemoteShareViewMode.stretch) {
       return '拉伸';
     }
     switch (mode) {
-      case _RemoteShareViewMode.original:
+      case RemoteShareViewMode.original:
         return '保持原比例';
-      case _RemoteShareViewMode.stretch:
+      case RemoteShareViewMode.stretch:
       // ignore: unreachable_switch_default
       default:
         return '拉伸';
     }
   }
 
-  lk.VideoViewFit _videoFitForTile(_ParticipantTileData tile) {
+  lk.VideoViewFit _videoFitForTile(ParticipantTileData tile) {
     final mode =
         tile.isScreenShare ? _remoteShareViewMode : _remoteCameraViewMode;
     switch (mode) {
-      case _RemoteShareViewMode.original:
+      case RemoteShareViewMode.original:
         return lk.VideoViewFit.contain;
-      case _RemoteShareViewMode.stretch:
+      case RemoteShareViewMode.stretch:
         return lk.VideoViewFit.cover;
     }
   }
@@ -2653,12 +2653,12 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                           const Text('画面与传输',
                               style: TextStyle(fontWeight: FontWeight.w700)),
                           const SizedBox(height: 10),
-                          DropdownButtonFormField<_CameraResolutionPreset>(
+                          DropdownButtonFormField<CameraResolutionPreset>(
                             value: cameraResolutionPreset,
                             isExpanded: true,
                             decoration:
                                 const InputDecoration(labelText: '本机摄像头分辨率'),
-                            items: _CameraResolutionPreset.values
+                            items: CameraResolutionPreset.values
                                 .map((preset) => DropdownMenuItem(
                                       value: preset,
                                       child:
@@ -2672,12 +2672,12 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                             },
                           ),
                           const SizedBox(height: 10),
-                          DropdownButtonFormField<_ScreenShareResolutionPreset>(
+                          DropdownButtonFormField<ScreenShareResolutionPreset>(
                             value: screenShareResolutionPreset,
                             isExpanded: true,
                             decoration:
                                 const InputDecoration(labelText: '本机共享分辨率'),
-                            items: _ScreenShareResolutionPreset.values
+                            items: ScreenShareResolutionPreset.values
                                 .map((preset) => DropdownMenuItem(
                                       value: preset,
                                       child: Text(
@@ -2713,12 +2713,12 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                             ),
                           ),
                           const SizedBox(height: 10),
-                          DropdownButtonFormField<_RemoteShareViewMode>(
+                          DropdownButtonFormField<RemoteShareViewMode>(
                             value: remoteCameraViewMode,
                             isExpanded: true,
                             decoration:
                                 const InputDecoration(labelText: '观看成员摄像头画面'),
-                            items: _RemoteShareViewMode.values
+                            items: RemoteShareViewMode.values
                                 .map((mode) => DropdownMenuItem(
                                       value: mode,
                                       child:
@@ -2732,12 +2732,12 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                             },
                           ),
                           const SizedBox(height: 10),
-                          DropdownButtonFormField<_RemoteShareViewMode>(
+                          DropdownButtonFormField<RemoteShareViewMode>(
                             value: remoteShareViewMode,
                             isExpanded: true,
                             decoration:
                                 const InputDecoration(labelText: '观看成员共享画面'),
-                            items: _RemoteShareViewMode.values
+                            items: RemoteShareViewMode.values
                                 .map((mode) => DropdownMenuItem(
                                       value: mode,
                                       child:
@@ -3908,7 +3908,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
         }
         final rawMessage = payload['message'];
         if (rawMessage is Map<String, dynamic>) {
-          final botMessage = _ChatMessage.fromJson(rawMessage);
+          final botMessage = ChatMessage.fromJson(rawMessage);
           if (botMessage.audioBase64.trim().isNotEmpty) {
             await _playRealtimeBotAudio(botMessage);
             _updateRealtimeBotDebug(
@@ -4100,7 +4100,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     return output;
   }
 
-  Future<void> _openRenameMemberDialog(_ParticipantRowData row) async {
+  Future<void> _openRenameMemberDialog(ParticipantRowData row) async {
     final userId = row.userId;
     final isGuest = userId == null;
     final controller = TextEditingController(text: row.displayName);
@@ -4160,7 +4160,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     var allowSelfUnmute = _allowSelfUnmute;
     var allowMemberVideo = _allowMemberVideo;
     var busy = false;
-    var waitingEntries = <_WaitingRoomEntry>[];
+    var waitingEntries = <WaitingRoomEntry>[];
     String? errorMessage;
 
     try {
@@ -4970,13 +4970,13 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     return items;
   }
 
-  bool _isMyMessage(_ChatMessage message) {
+  bool _isMyMessage(ChatMessage message) {
     final localUserId = _localUserId;
     if (localUserId == null) return false;
     return message.senderUserId == localUserId;
   }
 
-  bool _canRecallMessage(_ChatMessage message) {
+  bool _canRecallMessage(ChatMessage message) {
     if (!_connected) return false;
     if (_isShareEntry && _localUserId == null) return false;
     if (_isModerator) return true;
@@ -4986,7 +4986,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     return DateTime.now().difference(createdAt) <= const Duration(minutes: 3);
   }
 
-  String _displayNameForMessage(_ChatMessage message) {
+  String _displayNameForMessage(ChatMessage message) {
     if (message.senderUserId > 0) {
       final identity = _connectedIdentityForUserId(message.senderUserId);
       if (identity != null) {
@@ -5032,7 +5032,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     return trimmed.substring(0, 1).toUpperCase();
   }
 
-  Future<void> _confirmRecallMessage(_ChatMessage message) async {
+  Future<void> _confirmRecallMessage(ChatMessage message) async {
     if (_recallingMessageIds.contains(message.id)) return;
     if (!_canRecallMessage(message)) return;
     final shouldRecall = await showDialog<bool>(
@@ -5057,7 +5057,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     await _recallMessage(message);
   }
 
-  Future<void> _recallMessage(_ChatMessage message) async {
+  Future<void> _recallMessage(ChatMessage message) async {
     if (_isShareEntry && _localUserId == null) return;
     if (_recallingMessageIds.contains(message.id)) return;
     if (!mounted) return;
@@ -5087,14 +5087,14 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     }
   }
 
-  _PreferredVideoSelection _findPreferredVideoTrack(
+  PreferredVideoSelection _findPreferredVideoTrack(
       lk.Participant participant) {
     final screenPub = participant
         .getTrackPublicationBySource(lk.TrackSource.screenShareVideo);
     if (screenPub != null &&
         screenPub.track is lk.VideoTrack &&
         !screenPub.muted) {
-      return _PreferredVideoSelection(
+      return PreferredVideoSelection(
         track: screenPub.track as lk.VideoTrack,
         isScreenShare: true,
       );
@@ -5102,32 +5102,32 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     final camPub =
         participant.getTrackPublicationBySource(lk.TrackSource.camera);
     if (camPub != null && camPub.track is lk.VideoTrack && !camPub.muted) {
-      return _PreferredVideoSelection(
+      return PreferredVideoSelection(
         track: camPub.track as lk.VideoTrack,
         isScreenShare: false,
       );
     }
     for (final pub in participant.videoTrackPublications) {
       if (pub.track is lk.VideoTrack && !pub.muted) {
-        return _PreferredVideoSelection(
+        return PreferredVideoSelection(
           track: pub.track as lk.VideoTrack,
           isScreenShare: pub.source == lk.TrackSource.screenShareVideo,
         );
       }
     }
-    return const _PreferredVideoSelection(track: null, isScreenShare: false);
+    return const PreferredVideoSelection(track: null, isScreenShare: false);
   }
 
-  List<_ParticipantTileData> _collectTiles() {
+  List<ParticipantTileData> _collectTiles() {
     final room = _room;
     if (room == null) return const [];
-    final output = <_ParticipantTileData>[];
+    final output = <ParticipantTileData>[];
     final identities = <String>{};
     final local = room.localParticipant;
     if (local != null && identities.add(local.identity)) {
       final localVideo = _findPreferredVideoTrack(local);
       output.add(
-        _ParticipantTileData(
+        ParticipantTileData(
           identity: local.identity,
           displayName: _displayNameForIdentity(
             local.identity,
@@ -5154,7 +5154,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
       }
       final remoteVideo = _findPreferredVideoTrack(p);
       output.add(
-        _ParticipantTileData(
+        ParticipantTileData(
           identity: p.identity,
           displayName: _displayNameForIdentity(
             p.identity,
@@ -5174,10 +5174,10 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     return output;
   }
 
-  List<_ParticipantRowData> _collectParticipantRows() {
+  List<ParticipantRowData> _collectParticipantRows() {
     final room = _room;
     if (room == null) return const [];
-    final rows = <_ParticipantRowData>[];
+    final rows = <ParticipantRowData>[];
     final identities = <String>{};
     final local = room.localParticipant;
     if (local != null && identities.add(local.identity)) {
@@ -5223,7 +5223,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
           ? 'participant'
           : (profile?.role ?? _currentUserRole).trim();
       rows.add(
-        _ParticipantRowData(
+        ParticipantRowData(
           identity: local.identity,
           userId: userId,
           isRealtimeBot: false,
@@ -5310,7 +5310,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
           ? 'participant'
           : (profile?.role ?? 'participant').trim();
       rows.add(
-        _ParticipantRowData(
+        ParticipantRowData(
           identity: p.identity,
           userId: userId,
           isRealtimeBot: false,
@@ -5352,7 +5352,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     if (_realtimeBotEnabled &&
         !rows.any((row) => row.identity == _realtimeBotVirtualIdentity())) {
       rows.add(
-        _ParticipantRowData(
+        ParticipantRowData(
           identity: _realtimeBotVirtualIdentity(),
           userId: _realtimeBotUserId,
           isRealtimeBot: true,
@@ -5731,7 +5731,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
   bool get _isTileFullscreenActive =>
       _fullscreenIdentity != null && html.document.fullscreenElement != null;
 
-  _ParticipantTileData? _fullscreenTileData() {
+  ParticipantTileData? _fullscreenTileData() {
     final identity = _fullscreenIdentity;
     if (identity == null) return null;
     for (final tile in _collectTiles()) {
@@ -6695,7 +6695,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     );
   }
 
-  Widget _buildVideoTile(_ParticipantTileData tile) {
+  Widget _buildVideoTile(ParticipantTileData tile) {
     final isFullscreen = _fullscreenIdentity == tile.identity &&
         html.document.fullscreenElement != null;
     final isSpotlight = _spotlightIdentity == tile.identity;
@@ -6941,7 +6941,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
       );
     }
 
-    _ParticipantTileData? spotlightTile;
+    ParticipantTileData? spotlightTile;
     if (_spotlightIdentity != null) {
       for (final tile in tiles) {
         if (tile.identity == _spotlightIdentity) {
@@ -7099,7 +7099,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
   }
 
   Future<void> _handleParticipantMenuAction(
-    _ParticipantRowData row,
+    ParticipantRowData row,
     String action,
     bool isSelf,
   ) async {
@@ -7383,7 +7383,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
 
   // ignore: unused_element
   List<PopupMenuEntry<String>> _participantMenuItems(
-    _ParticipantRowData row,
+    ParticipantRowData row,
     bool isSelf,
   ) {
     final items = <PopupMenuEntry<String>>[];
@@ -7698,7 +7698,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
   }
 
   List<PopupMenuEntry<String>> _participantMenuItemsRefined(
-    _ParticipantRowData row,
+    ParticipantRowData row,
     bool isSelf,
   ) {
     final specs = buildParticipantMenuSpecs(
@@ -7743,7 +7743,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
   }
 
   Future<void> _quickReviewWaitingEntry(
-    _WaitingRoomEntry entry,
+    WaitingRoomEntry entry,
     String status,
   ) async {
     try {
@@ -7759,7 +7759,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     }
   }
 
-  Future<void> _copyChatMessage(_ChatMessage message) async {
+  Future<void> _copyChatMessage(ChatMessage message) async {
     final text = message.content.trim();
     if (text.isEmpty) {
       _setStatus('当前消息为空，无法复制');

@@ -5,6 +5,13 @@ enum MeetingThemePreset {
   graphite,
 }
 
+String meetingThemePresetLabel(MeetingThemePreset preset) {
+  return switch (preset) {
+    MeetingThemePreset.classicBlue => '经典蓝',
+    MeetingThemePreset.graphite => '石墨灰',
+  };
+}
+
 @immutable
 class MeetingThemePalette extends ThemeExtension<MeetingThemePalette> {
   const MeetingThemePalette({

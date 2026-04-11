@@ -6,10 +6,12 @@ import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 
 import '../../app/theme/meeting_theme.dart';
+import '../../app/theme/theme_controller.dart';
 import '../../core/api_exception.dart';
 import '../../device_profile.dart';
 import '../billing/models.dart';
 import 'models.dart';
+import 'widgets/dashboard_header_actions.dart';
 
 class DashboardPage extends StatefulWidget {
   final bool preferMobileLayout;
@@ -79,6 +81,8 @@ class _DashboardPageState extends State<DashboardPage> {
   String _recordingStorageUpdatedAt = '';
 
   MeetingThemePalette get _palette => MeetingTheme.of(context);
+  MeetingThemeController get _themeController =>
+      MeetingThemeControllerScope.of(context);
 
   @override
   void initState() {
@@ -2856,6 +2860,7 @@ class _DashboardPageState extends State<DashboardPage> {
   }
 
   Widget _buildDesktopScaffold() {
+    final profile = _profile;
     return Scaffold(
       appBar: AppBar(
         toolbarHeight: 74,
@@ -2891,49 +2896,28 @@ class _DashboardPageState extends State<DashboardPage> {
           ],
         ),
         actions: [
-          if (_profile != null)
-            Padding(
-              padding: const EdgeInsets.only(right: 4),
-              child: Center(
-                child: Row(
-                  children: [
-                    _buildProfileAvatar(
-                      avatarUrl: _profile!.avatarUrl,
-                      fallbackText: _profile!.defaultDisplayName,
-                      radius: 14,
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      _profile!.defaultDisplayName,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w600,
+          Padding(
+            padding: const EdgeInsets.only(right: 4),
+            child: Center(
+              child: DashboardHeaderActions(
+                currentThemePreset: _themeController.preset,
+                onThemeSelected: _themeController.updatePreset,
+                onOpenProfile: _openProfileDialog,
+                onRefresh: _refreshDashboardData,
+                onLogout: () => html.window.location.assign('/auth/logout'),
+                onOpenBilling: () => html.window.location.assign('/billing'),
+                isAdmin: profile?.isAdmin ?? false,
+                displayName: profile?.defaultDisplayName,
+                avatar: profile == null
+                    ? null
+                    : _buildProfileAvatar(
+                        avatarUrl: profile.avatarUrl,
+                        fallbackText: profile.defaultDisplayName,
+                        radius: 14,
                       ),
-                    ),
-                  ],
-                ),
+                showLogoutLabel: true,
               ),
             ),
-          IconButton(
-            tooltip: '编辑资料',
-            onPressed: _openProfileDialog,
-            icon: const Icon(Icons.person_outline, color: Colors.white),
-          ),
-          IconButton(
-            tooltip: '刷新',
-            onPressed: _refreshDashboardData,
-            icon: const Icon(Icons.refresh, color: Colors.white),
-          ),
-          if (_profile?.isAdmin ?? false)
-            IconButton(
-              tooltip: '计费管理',
-              onPressed: () => html.window.location.assign('/billing'),
-              icon: const Icon(Icons.payments_outlined, color: Colors.white),
-            ),
-          TextButton.icon(
-            onPressed: () => html.window.location.assign('/auth/logout'),
-            icon: const Icon(Icons.logout, color: Colors.white, size: 18),
-            label: const Text('退出', style: TextStyle(color: Colors.white)),
           ),
           const SizedBox(width: 10),
         ],
@@ -3091,26 +3075,15 @@ class _DashboardPageState extends State<DashboardPage> {
               ],
             ),
           ),
-          IconButton(
-            tooltip: '编辑资料',
-            onPressed: _openProfileDialog,
-            icon: const Icon(Icons.person_outline, color: Colors.white),
-          ),
-          IconButton(
-            tooltip: '刷新',
-            onPressed: _refreshDashboardData,
-            icon: const Icon(Icons.refresh, color: Colors.white),
-          ),
-          if (profile?.isAdmin ?? false)
-            IconButton(
-              tooltip: '计费管理',
-              onPressed: () => html.window.location.assign('/billing'),
-              icon: const Icon(Icons.payments_outlined, color: Colors.white),
-            ),
-          IconButton(
-            tooltip: '退出登录',
-            onPressed: () => html.window.location.assign('/auth/logout'),
-            icon: const Icon(Icons.logout, color: Colors.white),
+          DashboardHeaderActions(
+            currentThemePreset: _themeController.preset,
+            onThemeSelected: _themeController.updatePreset,
+            onOpenProfile: _openProfileDialog,
+            onRefresh: _refreshDashboardData,
+            onLogout: () => html.window.location.assign('/auth/logout'),
+            onOpenBilling: () => html.window.location.assign('/billing'),
+            isAdmin: profile?.isAdmin ?? false,
+            showDisplayName: false,
           ),
         ],
       ),
@@ -3120,9 +3093,9 @@ class _DashboardPageState extends State<DashboardPage> {
   Widget _buildMobileScaffold() {
     return Scaffold(
       body: Container(
-        decoration: const BoxDecoration(
+        decoration: BoxDecoration(
           gradient: LinearGradient(
-            colors: [Color(0xFFF5F8FF), Color(0xFFEEF4FF)],
+            colors: [_palette.pageBackground, _palette.primarySoft],
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
           ),

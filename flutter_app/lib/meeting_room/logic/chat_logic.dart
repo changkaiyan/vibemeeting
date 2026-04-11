@@ -1,13 +1,13 @@
 part of '../page.dart';
 
 extension _MeetingRoomChatLogic on _MeetingRoomPageState {
-  List<_ChatMessage> _mergeServerRowsWithPendingDrafts(
-    List<_ChatMessage> serverRows,
+  List<ChatMessage> _mergeServerRowsWithPendingDrafts(
+    List<ChatMessage> serverRows,
   ) {
     if (_pendingLocalDraftMessages.isEmpty) {
       return serverRows;
     }
-    final merged = <_ChatMessage>[...serverRows];
+    final merged = <ChatMessage>[...serverRows];
     final drafts = _pendingLocalDraftMessages.values.toList()
       ..sort((a, b) {
         final aTime = a.createdAt ?? DateTime.fromMillisecondsSinceEpoch(0);
@@ -25,7 +25,7 @@ extension _MeetingRoomChatLogic on _MeetingRoomPageState {
     return merged;
   }
 
-  int _latestMessageIdFromRows(List<_ChatMessage> rows) {
+  int _latestMessageIdFromRows(List<ChatMessage> rows) {
     var latest = 0;
     for (final row in rows) {
       if (row.id > latest) {
@@ -35,7 +35,7 @@ extension _MeetingRoomChatLogic on _MeetingRoomPageState {
     return latest;
   }
 
-  bool _sameMessageSnapshot(List<_ChatMessage> rows) {
+  bool _sameMessageSnapshot(List<ChatMessage> rows) {
     if (rows.length != _messages.length) return false;
     for (var i = 0; i < rows.length; i++) {
       final current = _messages[i];
@@ -61,14 +61,14 @@ extension _MeetingRoomChatLogic on _MeetingRoomPageState {
     return profile.mutedByHost;
   }
 
-  bool _isRealtimeBotMessage(_ChatMessage message) {
+  bool _isRealtimeBotMessage(ChatMessage message) {
     if (message.isRealtimeBot) return true;
     final botUserId = _realtimeBotUserId;
     if (botUserId == null) return false;
     return message.senderUserId == botUserId;
   }
 
-  Future<void> _playRealtimeBotAudio(_ChatMessage message) async {
+  Future<void> _playRealtimeBotAudio(ChatMessage message) async {
     if (!_isRealtimeBotMessage(message)) return;
     if (_isRealtimeBotMutedForPlayback()) return;
     if (_playedRealtimeBotAudioMessageIds.contains(message.id)) return;
@@ -141,7 +141,7 @@ extension _MeetingRoomChatLogic on _MeetingRoomPageState {
   }
 
   void _playRealtimeBotAudioForNewMessages(
-    List<_ChatMessage> rows,
+    List<ChatMessage> rows,
     int previousLatest,
   ) {
     if (previousLatest <= 0) return;
@@ -188,7 +188,7 @@ extension _MeetingRoomChatLogic on _MeetingRoomPageState {
     );
     final list = await _jsonOrThrow(res) as List<dynamic>;
     final serverRows = list
-        .map((e) => _ChatMessage.fromJson(e as Map<String, dynamic>))
+        .map((e) => ChatMessage.fromJson(e as Map<String, dynamic>))
         .toList();
     final rows = _mergeServerRowsWithPendingDrafts(serverRows);
     if (!mounted) return;
@@ -226,7 +226,7 @@ extension _MeetingRoomChatLogic on _MeetingRoomPageState {
       );
       final list = await _jsonOrThrow(res) as List<dynamic>;
       final serverRows = list
-          .map((e) => _ChatMessage.fromJson(e as Map<String, dynamic>))
+          .map((e) => ChatMessage.fromJson(e as Map<String, dynamic>))
           .toList();
       final rows = _mergeServerRowsWithPendingDrafts(serverRows);
       if (!mounted || _sameMessageSnapshot(rows)) return;
@@ -296,7 +296,7 @@ extension _MeetingRoomChatLogic on _MeetingRoomPageState {
               : _defaultDisplayName.trim())
           : _meetingDisplayName.trim(),
     );
-    final draftMessage = _ChatMessage(
+    final draftMessage = ChatMessage(
       id: draftId,
       senderUserId: _localUserId ?? 0,
       senderUsername: localIdentity.isEmpty ? 'local' : localIdentity,
@@ -327,7 +327,7 @@ extension _MeetingRoomChatLogic on _MeetingRoomPageState {
         requireAuth: _isShareEntry,
       );
       final data = await _jsonOrThrow(res) as Map<String, dynamic>;
-      final msg = _ChatMessage.fromJson(data);
+      final msg = ChatMessage.fromJson(data);
       _pendingLocalDraftMessages.remove(draftId);
       if (!mounted) return;
       setState(() {

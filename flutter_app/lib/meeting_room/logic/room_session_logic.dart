@@ -132,7 +132,7 @@ extension _MeetingRoomSessionLogic on _MeetingRoomPageState {
     _syncRealtimeBotAudioIngress();
   }
 
-  Future<_JoinTokenPayload> _fetchJoinToken() async {
+  Future<JoinTokenPayload> _fetchJoinToken() async {
     if (_isShareEntry && _accessToken.isEmpty) {
       try {
         await _ensureJwt(force: true);
@@ -152,7 +152,7 @@ extension _MeetingRoomSessionLogic on _MeetingRoomPageState {
       requireAuth: shouldRequireAuth,
     );
     final data = await _jsonOrThrow(res) as Map<String, dynamic>;
-    return _JoinTokenPayload.fromJson(data);
+    return JoinTokenPayload.fromJson(data);
   }
 
   void _onRoomUpdated() {

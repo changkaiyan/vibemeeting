@@ -58,20 +58,20 @@ extension _MeetingRoomWorkspaceLogic on _MeetingRoomPageState {
       ]);
       final agents = (await _jsonOrThrow(responses[0]) as List<dynamic>)
           .map(
-            (e) => _WorkspaceAgentSession.fromJson(e as Map<String, dynamic>),
+            (e) => WorkspaceAgentSession.fromJson(e as Map<String, dynamic>),
           )
           .toList();
-      final context = _WorkspaceContextSnapshot.fromJson(
+      final context = WorkspaceContextSnapshot.fromJson(
         await _jsonOrThrow(responses[1]) as Map<String, dynamic>,
       );
       final transcripts = (await _jsonOrThrow(responses[2]) as List<dynamic>)
           .map(
             (e) =>
-                _WorkspaceTranscriptChunk.fromJson(e as Map<String, dynamic>),
+                WorkspaceTranscriptChunk.fromJson(e as Map<String, dynamic>),
           )
           .toList();
       final artifacts = (await _jsonOrThrow(responses[3]) as List<dynamic>)
-          .map((e) => _WorkspaceArtifact.fromJson(e as Map<String, dynamic>))
+          .map((e) => WorkspaceArtifact.fromJson(e as Map<String, dynamic>))
           .toList();
       if (!mounted) return;
       setState(() {
@@ -90,7 +90,7 @@ extension _MeetingRoomWorkspaceLogic on _MeetingRoomPageState {
     }
   }
 
-  _WorkspaceAgentSession? _workspaceAgentSessionFor(String agentType) {
+  WorkspaceAgentSession? _workspaceAgentSessionFor(String agentType) {
     for (final session in _workspaceAgentSessions) {
       if (session.agentType == agentType) return session;
     }

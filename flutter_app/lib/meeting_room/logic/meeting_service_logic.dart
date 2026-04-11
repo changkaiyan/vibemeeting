@@ -117,7 +117,7 @@ extension _MeetingRoomServiceLogic on _MeetingRoomPageState {
           detail = response.body;
         }
       }
-      throw _ApiException(
+      throw MeetingApiException(
         statusCode: response.statusCode,
         detail: detail,
         payload: payloadMap,
@@ -162,15 +162,15 @@ extension _MeetingRoomServiceLogic on _MeetingRoomPageState {
         requireAuth: _requiresAuth,
       );
       final list = await _jsonOrThrow(res) as List<dynamic>;
-      final next = <int, _MeetingMemberProfile>{};
+      final next = <int, MeetingMemberProfile>{};
       for (final row in list) {
         final item =
-            _MeetingMemberProfile.fromJson(row as Map<String, dynamic>);
+            MeetingMemberProfile.fromJson(row as Map<String, dynamic>);
         next[item.userId] = item;
       }
       if (!mounted) return;
       setState(() {
-        final merged = <int, _MeetingMemberProfile>{...next};
+        final merged = <int, MeetingMemberProfile>{...next};
         for (final entry in _memberProfiles.entries) {
           final incoming = merged[entry.key];
           if (incoming == null ||
@@ -295,7 +295,7 @@ extension _MeetingRoomServiceLogic on _MeetingRoomPageState {
             displayNameVersion: resolvedVersion > 0 ? resolvedVersion : null,
           );
         } catch (_) {}
-      } on _ApiException catch (e) {
+      } on MeetingApiException catch (e) {
         if (e.statusCode == 409 && e.payload != null) {
           final payload = e.payload!;
           final currentName =
@@ -376,7 +376,7 @@ extension _MeetingRoomServiceLogic on _MeetingRoomPageState {
             _meetingDisplayName = nextName;
           });
         }
-      } on _ApiException catch (e) {
+      } on MeetingApiException catch (e) {
         if (e.statusCode == 409 && e.payload != null) {
           final payload = e.payload!;
           final currentName =
