@@ -58,9 +58,10 @@
 ```bash
 uv venv --python 3.10.19 .venv
 uv pip install --python .venv/bin/python -r requirements.txt
+uv pip install --python .venv/bin/python -r services/stt_worker/requirements.txt
 cp .env.example .env
 uv run --python .venv/bin/python manage.py migrate
-uv run --python .venv/bin/python manage.py runserver 127.0.0.1:8000 --noreload
+uv run --python .venv/bin/python -m uvicorn smart_meeting.asgi:application --host 127.0.0.1 --port 8000
 ```
 
 启动后访问 `http://127.0.0.1:8000`，或检查 `http://127.0.0.1:8000/healthz`。
@@ -95,9 +96,9 @@ cp .env.example .env
 - `LIVEKIT_PUBLIC_URL`：前端可访问的 LiveKit 地址（HTTPS 页面需 `wss://`）
 - `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET`：LiveKit 服务端鉴权
 - `LIVEKIT_MEET_URL`：打开 LiveKit Meet 的地址（默认官方托管）
-- `MEETING_STT_PROVIDER`：上传音频转写模式；当前可留空或使用 `mock`
+- `MEETING_STT_PROVIDER`：上传音频转写模式；当前本地默认对齐 `faster_whisper`
 - `MEETING_REALTIME_STT_WORKER_URL`：主应用连接实时 STT worker 的 WebSocket 地址
-- `MEETING_AGENT_BRIDGE_MODE`：Agent bridge 模式，默认 `disabled`
+- `MEETING_AGENT_BRIDGE_MODE`：Agent bridge 模式；当前本地默认对齐 `http`
 - `MEETING_AGENT_BRIDGE_URL`：HTTP 模式下的 Agent bridge 地址
 - `TECHCLOUD_OAUTH_CLIENT_ID`：中国科技云通行证应用 `client_id`
 - `TECHCLOUD_OAUTH_CLIENT_SECRET`：中国科技云通行证应用 `client_secret`
@@ -144,6 +145,7 @@ cp .env.example .env
 ## 本地开发部署文档
 
 - [Development Guide](./docs/development.md)
+- [Deployment Notes](./docs/deployment.md)
 
 ## 主要 API
 
