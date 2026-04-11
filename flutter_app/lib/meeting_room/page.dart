@@ -2575,7 +2575,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                             onSecondaryAction: micTesting ? stopMicTest : null,
                             footer: Row(
                               children: [
-                                const SizedBox(
+                                SizedBox(
                                   width: 72,
                                   child: Text(
                                     '输入电平',
