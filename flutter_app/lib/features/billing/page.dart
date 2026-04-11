@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 
+import '../../app/theme/meeting_theme.dart';
 import '../../core/api_exception.dart';
 import '../../device_profile.dart';
 import 'models.dart';
@@ -28,6 +29,8 @@ class _BillingAdminPageState extends State<BillingAdminPage> {
   BillingAuthOptionsItem? _authOptions;
   bool _savingAuthOptions = false;
   bool _exportingUsers = false;
+
+  MeetingThemePalette get _palette => MeetingTheme.of(context);
 
   @override
   void initState() {
@@ -183,7 +186,8 @@ class _BillingAdminPageState extends State<BillingAdminPage> {
     }
   }
 
-  String _fileNameFromContentDisposition(http.Response response, String fallback) {
+  String _fileNameFromContentDisposition(
+      http.Response response, String fallback) {
     final header = response.headers['content-disposition'] ?? '';
     final match = RegExp(r'filename="?([^"]+)"?').firstMatch(header);
     if (match == null) return fallback;
@@ -327,23 +331,36 @@ class _BillingAdminPageState extends State<BillingAdminPage> {
 
   Future<void> _createOrEditPlan({BillingPlanItem? plan}) async {
     final nameCtrl = TextEditingController(text: plan?.name ?? '');
-    final descriptionCtrl = TextEditingController(text: plan?.description ?? '');
-    final activeRoomsCtrl =
-        TextEditingController(text: (plan?.maxActiveRooms ?? 1) <= 0 ? '无限制' : (plan?.maxActiveRooms ?? 1).toString());
+    final descriptionCtrl =
+        TextEditingController(text: plan?.description ?? '');
+    final activeRoomsCtrl = TextEditingController(
+        text: (plan?.maxActiveRooms ?? 1) <= 0
+            ? '无限制'
+            : (plan?.maxActiveRooms ?? 1).toString());
     final participantsCtrl = TextEditingController(
-      text: (plan?.maxRoomParticipants ?? 100) <= 0 ? '无限制' : (plan?.maxRoomParticipants ?? 100).toString(),
+      text: (plan?.maxRoomParticipants ?? 100) <= 0
+          ? '无限制'
+          : (plan?.maxRoomParticipants ?? 100).toString(),
     );
     final roomUsedSecondsCtrl = TextEditingController(
-      text: (plan?.maxRoomUsedSeconds ?? 0) <= 0 ? '无限制' : (plan?.maxRoomUsedSeconds ?? 0).toString(),
+      text: (plan?.maxRoomUsedSeconds ?? 0) <= 0
+          ? '无限制'
+          : (plan?.maxRoomUsedSeconds ?? 0).toString(),
     );
     final currentRoomUsedSecondsCtrl = TextEditingController(
-      text: (plan?.maxCurrentRoomUsedSeconds ?? 0) <= 0 ? '无限制' : (plan?.maxCurrentRoomUsedSeconds ?? 0).toString(),
+      text: (plan?.maxCurrentRoomUsedSeconds ?? 0) <= 0
+          ? '无限制'
+          : (plan?.maxCurrentRoomUsedSeconds ?? 0).toString(),
     );
     final storageCtrl = TextEditingController(
-      text: (plan?.maxRecordingStorageBytes ?? 0) <= 0 ? '无限制' : (plan?.maxRecordingStorageBytes ?? 0).toString(),
+      text: (plan?.maxRecordingStorageBytes ?? 0) <= 0
+          ? '无限制'
+          : (plan?.maxRecordingStorageBytes ?? 0).toString(),
     );
     final meetingCountCtrl = TextEditingController(
-      text: (plan?.maxMeetingCount ?? 10) <= 0 ? '无限制' : (plan?.maxMeetingCount ?? 10).toString(),
+      text: (plan?.maxMeetingCount ?? 10) <= 0
+          ? '无限制'
+          : (plan?.maxMeetingCount ?? 10).toString(),
     );
 
     final save = await showDialog<bool>(
@@ -381,19 +398,22 @@ class _BillingAdminPageState extends State<BillingAdminPage> {
                     TextField(
                       controller: roomUsedSecondsCtrl,
                       keyboardType: TextInputType.number,
-                      decoration: const InputDecoration(labelText: '房间累计使用时长上限（秒）'),
+                      decoration:
+                          const InputDecoration(labelText: '房间累计使用时长上限（秒）'),
                     ),
                     const SizedBox(height: 10),
                     TextField(
                       controller: currentRoomUsedSecondsCtrl,
                       keyboardType: TextInputType.number,
-                      decoration: const InputDecoration(labelText: '当前单房间最大在会时长上限（秒）'),
+                      decoration:
+                          const InputDecoration(labelText: '当前单房间最大在会时长上限（秒）'),
                     ),
                     const SizedBox(height: 10),
                     TextField(
                       controller: storageCtrl,
                       keyboardType: TextInputType.number,
-                      decoration: const InputDecoration(labelText: '录制存储上限（字节）'),
+                      decoration:
+                          const InputDecoration(labelText: '录制存储上限（字节）'),
                     ),
                     const SizedBox(height: 10),
                     TextField(
@@ -447,8 +467,7 @@ class _BillingAdminPageState extends State<BillingAdminPage> {
           roomUsedSecondsCtrl.text,
           fallback: plan?.maxRoomUsedSeconds ?? 0,
         ),
-        'max_current_room_used_seconds':
-            _parsePlanLimitValue(
+        'max_current_room_used_seconds': _parsePlanLimitValue(
           currentRoomUsedSecondsCtrl.text,
           fallback: plan?.maxCurrentRoomUsedSeconds ?? 0,
         ),
@@ -488,24 +507,37 @@ class _BillingAdminPageState extends State<BillingAdminPage> {
 
   Future<void> _createOrEditPlanPretty({BillingPlanItem? plan}) async {
     final nameCtrl = TextEditingController(text: plan?.name ?? '');
-    final descriptionCtrl = TextEditingController(text: plan?.description ?? '');
+    final descriptionCtrl =
+        TextEditingController(text: plan?.description ?? '');
     final activeRoomsCtrl = TextEditingController(
-      text: (plan?.maxActiveRooms ?? 1) <= 0 ? 'unlimited' : (plan?.maxActiveRooms ?? 1).toString(),
+      text: (plan?.maxActiveRooms ?? 1) <= 0
+          ? 'unlimited'
+          : (plan?.maxActiveRooms ?? 1).toString(),
     );
     final participantsCtrl = TextEditingController(
-      text: (plan?.maxRoomParticipants ?? 100) <= 0 ? 'unlimited' : (plan?.maxRoomParticipants ?? 100).toString(),
+      text: (plan?.maxRoomParticipants ?? 100) <= 0
+          ? 'unlimited'
+          : (plan?.maxRoomParticipants ?? 100).toString(),
     );
     final roomUsedSecondsCtrl = TextEditingController(
-      text: (plan?.maxRoomUsedSeconds ?? 0) <= 0 ? 'unlimited' : (plan?.maxRoomUsedSeconds ?? 0).toString(),
+      text: (plan?.maxRoomUsedSeconds ?? 0) <= 0
+          ? 'unlimited'
+          : (plan?.maxRoomUsedSeconds ?? 0).toString(),
     );
     final currentRoomUsedSecondsCtrl = TextEditingController(
-      text: (plan?.maxCurrentRoomUsedSeconds ?? 0) <= 0 ? 'unlimited' : (plan?.maxCurrentRoomUsedSeconds ?? 0).toString(),
+      text: (plan?.maxCurrentRoomUsedSeconds ?? 0) <= 0
+          ? 'unlimited'
+          : (plan?.maxCurrentRoomUsedSeconds ?? 0).toString(),
     );
     final storageCtrl = TextEditingController(
-      text: (plan?.maxRecordingStorageBytes ?? 0) <= 0 ? 'unlimited' : (plan?.maxRecordingStorageBytes ?? 0).toString(),
+      text: (plan?.maxRecordingStorageBytes ?? 0) <= 0
+          ? 'unlimited'
+          : (plan?.maxRecordingStorageBytes ?? 0).toString(),
     );
     final meetingCountCtrl = TextEditingController(
-      text: (plan?.maxMeetingCount ?? 10) <= 0 ? 'unlimited' : (plan?.maxMeetingCount ?? 10).toString(),
+      text: (plan?.maxMeetingCount ?? 10) <= 0
+          ? 'unlimited'
+          : (plan?.maxMeetingCount ?? 10).toString(),
     );
 
     Widget limitField({
@@ -527,8 +559,10 @@ class _BillingAdminPageState extends State<BillingAdminPage> {
     final save = await showDialog<bool>(
           context: context,
           builder: (dialogContext) => Dialog(
-            insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+            insetPadding:
+                const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 760),
               child: Column(
@@ -537,13 +571,17 @@ class _BillingAdminPageState extends State<BillingAdminPage> {
                   Container(
                     width: double.infinity,
                     padding: const EdgeInsets.fromLTRB(18, 16, 18, 14),
-                    decoration: const BoxDecoration(
+                    decoration: BoxDecoration(
                       gradient: LinearGradient(
-                        colors: [Color(0xFF155EEF), Color(0xFF175CD3)],
+                        colors: [
+                          _palette.heroGradientStart,
+                          _palette.heroGradientEnd,
+                        ],
                         begin: Alignment.topLeft,
                         end: Alignment.bottomRight,
                       ),
-                      borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+                      borderRadius:
+                          BorderRadius.vertical(top: Radius.circular(18)),
                     ),
                     child: Text(
                       plan == null ? '新建计费套餐' : '编辑计费套餐',
@@ -563,9 +601,9 @@ class _BillingAdminPageState extends State<BillingAdminPage> {
                           Container(
                             padding: const EdgeInsets.all(12),
                             decoration: BoxDecoration(
-                              color: const Color(0xFFF8FAFF),
+                              color: _palette.surfaceMuted,
                               borderRadius: BorderRadius.circular(12),
-                              border: Border.all(color: const Color(0xFFDDE6FF)),
+                              border: Border.all(color: _palette.panelBorder),
                             ),
                             child: Column(
                               children: [
@@ -573,7 +611,8 @@ class _BillingAdminPageState extends State<BillingAdminPage> {
                                   controller: nameCtrl,
                                   decoration: const InputDecoration(
                                     labelText: '套餐名称',
-                                    prefixIcon: Icon(Icons.sell_outlined, size: 18),
+                                    prefixIcon:
+                                        Icon(Icons.sell_outlined, size: 18),
                                   ),
                                 ),
                                 const SizedBox(height: 10),
@@ -582,7 +621,8 @@ class _BillingAdminPageState extends State<BillingAdminPage> {
                                   maxLines: 2,
                                   decoration: const InputDecoration(
                                     labelText: '描述（可选）',
-                                    prefixIcon: Icon(Icons.notes_outlined, size: 18),
+                                    prefixIcon:
+                                        Icon(Icons.notes_outlined, size: 18),
                                   ),
                                 ),
                               ],
@@ -592,9 +632,9 @@ class _BillingAdminPageState extends State<BillingAdminPage> {
                           Container(
                             padding: const EdgeInsets.all(12),
                             decoration: BoxDecoration(
-                              color: const Color(0xFFFCFDFF),
+                              color: _palette.surfaceRaised,
                               borderRadius: BorderRadius.circular(12),
-                              border: Border.all(color: const Color(0xFFDDE6FF)),
+                              border: Border.all(color: _palette.panelBorder),
                             ),
                             child: Column(
                               children: [
@@ -622,9 +662,9 @@ class _BillingAdminPageState extends State<BillingAdminPage> {
                           Container(
                             padding: const EdgeInsets.all(12),
                             decoration: BoxDecoration(
-                              color: const Color(0xFFFCFDFF),
+                              color: _palette.surfaceRaised,
                               borderRadius: BorderRadius.circular(12),
-                              border: Border.all(color: const Color(0xFFDDE6FF)),
+                              border: Border.all(color: _palette.panelBorder),
                             ),
                             child: Column(
                               children: [
@@ -722,7 +762,8 @@ class _BillingAdminPageState extends State<BillingAdminPage> {
         await _jsonOrThrow(res);
         _setStatus('套餐已创建');
       } else {
-        final res = await _request('PATCH', '/api/billing/plans/${plan.id}', body: payload);
+        final res = await _request('PATCH', '/api/billing/plans/${plan.id}',
+            body: payload);
         await _jsonOrThrow(res);
         _setStatus('套餐已更新');
       }
@@ -795,7 +836,8 @@ class _BillingAdminPageState extends State<BillingAdminPage> {
                       ),
                     ),
                   ],
-                  onChanged: (value) => setStateDialog(() => selectedPlanId = value),
+                  onChanged: (value) =>
+                      setStateDialog(() => selectedPlanId = value),
                 ),
               ),
               actions: [
@@ -831,12 +873,10 @@ class _BillingAdminPageState extends State<BillingAdminPage> {
   Widget _buildStatusBanner() {
     final icon =
         _statusIsError ? Icons.error_outline : Icons.check_circle_outline;
-    final bg =
-        _statusIsError ? const Color(0xFFFEE4E2) : const Color(0xFFEFF4FF);
-    final fg =
-        _statusIsError ? const Color(0xFFB42318) : const Color(0xFF175CD3);
+    final bg = _statusIsError ? _palette.dangerSurface : _palette.primarySoft;
+    final fg = _statusIsError ? _palette.danger : _palette.primaryStrong;
     final border =
-        _statusIsError ? const Color(0xFFFECACA) : const Color(0xFFCCDBFF);
+        _statusIsError ? _palette.dangerBorder : _palette.primaryBorder;
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
@@ -864,9 +904,9 @@ class _BillingAdminPageState extends State<BillingAdminPage> {
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: const Color(0xFFFCFDFF),
+        color: _palette.surfaceRaised,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: const Color(0xFFDDE6FF)),
+        border: Border.all(color: _palette.panelBorder),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -876,10 +916,10 @@ class _BillingAdminPageState extends State<BillingAdminPage> {
               Expanded(
                 child: Text(
                   plan.name,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 16,
                     fontWeight: FontWeight.w700,
-                    color: Color(0xFF101828),
+                    color: _palette.textPrimary,
                   ),
                 ),
               ),
@@ -891,23 +931,25 @@ class _BillingAdminPageState extends State<BillingAdminPage> {
               IconButton(
                 tooltip: '删除套餐',
                 onPressed: () => _deletePlan(plan),
-                icon: const Icon(Icons.delete_outline, color: Color(0xFFB42318)),
+                icon: Icon(Icons.delete_outline, color: _palette.danger),
               ),
             ],
           ),
           if (plan.description.trim().isNotEmpty) ...[
             Text(
               plan.description.trim(),
-              style: const TextStyle(color: Color(0xFF475467)),
+              style: TextStyle(color: _palette.textSecondary),
             ),
             const SizedBox(height: 6),
           ],
           Text('活跃房间上限：${_formatPlanLimitInt(plan.maxActiveRooms)}'),
           Text('单房间人数上限：${_formatPlanLimitInt(plan.maxRoomParticipants)}'),
-          Text('累计房间使用时长上限：${_formatPlanLimitSeconds(plan.maxRoomUsedSeconds)}'),
+          Text(
+              '累计房间使用时长上限：${_formatPlanLimitSeconds(plan.maxRoomUsedSeconds)}'),
           Text(
               '当前单房间最大在会时长上限：${_formatPlanLimitSeconds(plan.maxCurrentRoomUsedSeconds)}'),
-          Text('录制存储上限：${_formatPlanLimitBytes(plan.maxRecordingStorageBytes)}'),
+          Text(
+              '录制存储上限：${_formatPlanLimitBytes(plan.maxRecordingStorageBytes)}'),
           Text('会议数上限：${_formatPlanLimitInt(plan.maxMeetingCount)}'),
         ],
       ),
@@ -1305,9 +1347,12 @@ class _BillingAdminPageState extends State<BillingAdminPage> {
           style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700),
         ),
         flexibleSpace: Container(
-          decoration: const BoxDecoration(
+          decoration: BoxDecoration(
             gradient: LinearGradient(
-              colors: [Color(0xFF155EEF), Color(0xFF175CD3)],
+              colors: [
+                _palette.heroGradientStart,
+                _palette.heroGradientEnd,
+              ],
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
             ),
@@ -1327,9 +1372,9 @@ class _BillingAdminPageState extends State<BillingAdminPage> {
         ],
       ),
       body: Container(
-        decoration: const BoxDecoration(
+        decoration: BoxDecoration(
           gradient: LinearGradient(
-            colors: [Color(0xFFF5F8FF), Color(0xFFEEF4FF)],
+            colors: [_palette.pageBackground, _palette.primarySoft],
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
           ),
