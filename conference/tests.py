@@ -1,9 +1,10 @@
+import asyncio
+import base64
+import hashlib
+import importlib
 import json
 import os
 import tempfile
-import base64
-import hashlib
-import asyncio
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -47,6 +48,7 @@ from conference.models import (
 from conference.meeting_resolver import MeetingLookup
 from conference.meeting_refs import ensure_meeting_ref
 from conference.share import build_meeting_share_code
+import conference.views as conference_views
 from services.stt_worker.stt_worker.config import SttWorkerConfig
 from services.stt_worker.stt_worker.server import DEFAULT_WS_PATH, start_server
 from smart_meeting.asgi import application
@@ -3276,6 +3278,9 @@ class MeetingRealtimeBotControlTests(TestCase):
         client.force_authenticate(user=user)
         return client
 
+    def _reload_conference_views(self):
+        importlib.reload(conference_views)
+
     def test_ai_controls_patch_accepts_provider_specific_openai_fields(self):
         client = self._auth_client(self.host)
 
@@ -3353,6 +3358,116 @@ class MeetingRealtimeBotControlTests(TestCase):
         payload = response.json()
         self.assertEqual(payload["realtime_bot_volc_model"], "2.2.0.0")
         self.assertEqual(payload["realtime_bot_volc_voice"], "zh_female_vv_jupiter_bigtts")
+
+    def test_ai_controls_patch_uses_openai_defaults_from_settings(self):
+        client = self._auth_client(self.host)
+        self.meeting.realtime_bot_model = ""
+        self.meeting.realtime_bot_openai_model = ""
+        self.meeting.realtime_bot_openai_voice = ""
+        self.meeting.realtime_bot_voice = ""
+        self.meeting.save(
+            update_fields=[
+                "realtime_bot_model",
+                "realtime_bot_openai_model",
+                "realtime_bot_openai_voice",
+                "realtime_bot_voice",
+            ]
+        )
+
+        with override_settings(
+            REALTIME_BOT_DEFAULT_PROVIDER="openai",
+            REALTIME_BOT_DEFAULT_BASE_URL="https://api.custom-openai.test",
+            REALTIME_BOT_DEFAULT_MODEL="gpt-realtime-custom",
+            REALTIME_BOT_DEFAULT_VOICE="verse",
+            REALTIME_BOT_DEFAULT_DISPLAY_NAME="Env OpenAI Bot",
+            REALTIME_BOT_DEFAULT_API_KEY="env-openai-key",
+        ):
+            self._reload_conference_views()
+            try:
+                with patch("conference.views._sync_realtime_bot_presence"):
+                    response = client.patch(
+                        f"/api/meetings/{self.meeting.id}/ai-controls",
+                        {
+                            "realtime_bot_provider": "openai",
+                            "realtime_bot_enabled": True,
+                        },
+                        format="json",
+                    )
+                self.meeting.refresh_from_db()
+                self.assertEqual(conference_views._REALTIME_BOT_DEFAULT_BASE_URL, "https://api.custom-openai.test")
+                self.assertEqual(conference_views._meeting_realtime_bot_openai_model(self.meeting), "gpt-realtime-custom")
+                self.assertEqual(conference_views._meeting_realtime_bot_openai_voice(self.meeting), "verse")
+                self.assertEqual(conference_views._meeting_realtime_bot_api_key(self.meeting), "env-openai-key")
+                self.assertTrue(conference_views._meeting_realtime_bot_ready(self.meeting))
+            finally:
+                self._reload_conference_views()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["realtime_bot_provider"], "openai")
+
+    def test_ai_controls_patch_uses_volc_defaults_from_settings(self):
+        client = self._auth_client(self.host)
+        self.meeting.realtime_bot_model = ""
+        self.meeting.realtime_bot_volc_model = ""
+        self.meeting.realtime_bot_volc_voice = ""
+        self.meeting.realtime_bot_voice = ""
+        self.meeting.realtime_bot_volc_app_id = ""
+        self.meeting.realtime_bot_volc_access_key = ""
+        self.meeting.realtime_bot_volc_uid = ""
+        self.meeting.save(
+            update_fields=[
+                "realtime_bot_model",
+                "realtime_bot_volc_model",
+                "realtime_bot_volc_voice",
+                "realtime_bot_voice",
+                "realtime_bot_volc_app_id",
+                "realtime_bot_volc_access_key",
+                "realtime_bot_volc_uid",
+            ]
+        )
+
+        with override_settings(
+            REALTIME_BOT_DEFAULT_PROVIDER="volcengine",
+            REALTIME_BOT_DEFAULT_VOLC_MODEL="1.2.1.1",
+            REALTIME_BOT_DEFAULT_DISPLAY_NAME="Env Volc Bot",
+            REALTIME_BOT_DEFAULT_VOLC_WS_URL="wss://volc.example.test/realtime",
+            REALTIME_BOT_DEFAULT_VOLC_APP_ID="env-volc-app-id",
+            REALTIME_BOT_DEFAULT_VOLC_APP_KEY="env-volc-app-key",
+            REALTIME_BOT_DEFAULT_VOLC_ACCESS_KEY="env-volc-access-key",
+            REALTIME_BOT_DEFAULT_VOLC_RESOURCE_ID="env.volc.resource",
+            REALTIME_BOT_DEFAULT_VOLC_UID="env-meeting-{meeting_id}",
+            REALTIME_BOT_DEFAULT_VOLC_O_SPEAKER="zh_female_vv_jupiter_bigtts",
+            REALTIME_BOT_DEFAULT_VOLC_SC_SPEAKER="saturn_clone",
+        ):
+            self._reload_conference_views()
+            try:
+                with patch("conference.views._sync_realtime_bot_presence"):
+                    response = client.patch(
+                        f"/api/meetings/{self.meeting.id}/ai-controls",
+                        {
+                            "realtime_bot_provider": "volcengine",
+                            "realtime_bot_enabled": True,
+                        },
+                        format="json",
+                    )
+                self.meeting.refresh_from_db()
+                self.assertEqual(conference_views._REALTIME_BOT_DEFAULT_PROVIDER, "volcengine")
+                self.assertEqual(conference_views._meeting_realtime_bot_volc_model(self.meeting), "1.2.1.1")
+                self.assertEqual(conference_views._meeting_realtime_bot_volc_app_id(self.meeting), "env-volc-app-id")
+                self.assertEqual(
+                    conference_views._meeting_realtime_bot_volc_access_key(self.meeting),
+                    "env-volc-access-key",
+                )
+                self.assertEqual(
+                    conference_views._meeting_realtime_bot_volc_uid(self.meeting),
+                    f"env-meeting-{self.meeting.id}",
+                )
+                self.assertTrue(conference_views._meeting_realtime_bot_ready(self.meeting))
+            finally:
+                self._reload_conference_views()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["realtime_bot_provider"], "volcengine")
 
 
 class MeetingRealtimeAudioWebSocketTests(TestCase):

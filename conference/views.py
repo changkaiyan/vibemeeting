@@ -143,25 +143,115 @@ _MEETING_ROOM_LIMIT_TIMERS_LOCK = threading.Lock()
 _TECHCLOUD_OAUTH_STATE_KEY = "techcloud_oauth_state"
 _TECHCLOUD_OAUTH_NEXT_KEY = "techcloud_oauth_next"
 _TECHCLOUD_AUTHENTICATED_SESSION_KEY = "techcloud_oauth_authenticated"
+
+
+def _setting_int(name: str, default: int) -> int:
+    raw = getattr(settings, name, default)
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _setting_float(name: str, default: float) -> float:
+    raw = getattr(settings, name, default)
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return float(default)
+
+
 _REALTIME_BOT_SYSTEM_USERNAME = "__meeting_realtime_bot__"
 _REALTIME_BOT_SYSTEM_EMAIL = "meeting-realtime-bot@local.invalid"
-_REALTIME_BOT_DEFAULT_BASE_URL = "https://api.openai.com"
-_REALTIME_BOT_DEFAULT_MODEL = "gpt-realtime"
-_REALTIME_BOT_DEFAULT_VOICE = "marin"
-_REALTIME_BOT_DEFAULT_PROVIDER = RealtimeBotProvider.OPENAI
-_REALTIME_BOT_DEFAULT_VOLC_MODEL = "2.2.0.0"
-_REALTIME_BOT_DEFAULT_VOLC_WS_URL = "wss://openspeech.bytedance.com/api/v3/realtime/dialogue"
-_REALTIME_BOT_DEFAULT_VOLC_RESOURCE_ID = "volc.speech.dialog"
-_REALTIME_BOT_DEFAULT_VOLC_APP_KEY = "PlgvMymc7f3tQnJ6"
-_REALTIME_BOT_DEFAULT_VOLC_SPEAKER = "zh_female_vv_jupiter_bigtts"
-_REALTIME_BOT_DEFAULT_DISPLAY_NAME = "实时语音助手"
+_REALTIME_BOT_DEFAULT_BASE_URL = (
+    str(getattr(settings, "REALTIME_BOT_DEFAULT_BASE_URL", "https://api.openai.com") or "").strip()
+    or "https://api.openai.com"
+)
+_REALTIME_BOT_DEFAULT_MODEL = (
+    str(getattr(settings, "REALTIME_BOT_DEFAULT_MODEL", "gpt-realtime") or "").strip()
+    or "gpt-realtime"
+)
+_REALTIME_BOT_DEFAULT_VOLC_MODEL = (
+    str(getattr(settings, "REALTIME_BOT_DEFAULT_VOLC_MODEL", "2.2.0.0") or "").strip()
+    or "2.2.0.0"
+)
+_REALTIME_BOT_DEFAULT_VOICE = (
+    str(getattr(settings, "REALTIME_BOT_DEFAULT_VOICE", "marin") or "").strip()
+    or "marin"
+)
+_REALTIME_BOT_DEFAULT_PROVIDER = (
+    RealtimeBotProvider.VOLCENGINE
+    if str(getattr(settings, "REALTIME_BOT_DEFAULT_PROVIDER", RealtimeBotProvider.OPENAI)).strip().lower()
+    == RealtimeBotProvider.VOLCENGINE
+    else RealtimeBotProvider.OPENAI
+)
+_REALTIME_BOT_DEFAULT_API_KEY = str(getattr(settings, "REALTIME_BOT_DEFAULT_API_KEY", "") or "").strip()
+_REALTIME_BOT_DEFAULT_VOLC_APP_ID = str(getattr(settings, "REALTIME_BOT_DEFAULT_VOLC_APP_ID", "") or "").strip()
+_REALTIME_BOT_DEFAULT_VOLC_WS_URL = (
+    str(
+        getattr(
+            settings,
+            "REALTIME_BOT_DEFAULT_VOLC_WS_URL",
+            "wss://openspeech.bytedance.com/api/v3/realtime/dialogue",
+        )
+        or ""
+    ).strip()
+    or "wss://openspeech.bytedance.com/api/v3/realtime/dialogue"
+)
+_REALTIME_BOT_DEFAULT_VOLC_RESOURCE_ID = (
+    str(getattr(settings, "REALTIME_BOT_DEFAULT_VOLC_RESOURCE_ID", "volc.speech.dialog") or "").strip()
+    or "volc.speech.dialog"
+)
+_REALTIME_BOT_DEFAULT_VOLC_APP_KEY = (
+    str(getattr(settings, "REALTIME_BOT_DEFAULT_VOLC_APP_KEY", "PlgvMymc7f3tQnJ6") or "").strip()
+    or "PlgvMymc7f3tQnJ6"
+)
+_REALTIME_BOT_DEFAULT_VOLC_ACCESS_KEY = str(getattr(settings, "REALTIME_BOT_DEFAULT_VOLC_ACCESS_KEY", "") or "").strip()
+_REALTIME_BOT_DEFAULT_VOLC_UID = str(getattr(settings, "REALTIME_BOT_DEFAULT_VOLC_UID", "") or "").strip()
+_REALTIME_BOT_DEFAULT_VOLC_O_SPEAKER = (
+    str(getattr(settings, "REALTIME_BOT_DEFAULT_VOLC_O_SPEAKER", "zh_female_vv_jupiter_bigtts") or "").strip()
+    or "zh_female_vv_jupiter_bigtts"
+)
+_REALTIME_BOT_DEFAULT_VOLC_SC_SPEAKER = (
+    str(getattr(settings, "REALTIME_BOT_DEFAULT_VOLC_SC_SPEAKER", "") or "").strip()
+)
+_REALTIME_BOT_DEFAULT_DISPLAY_NAME = (
+    str(getattr(settings, "REALTIME_BOT_DEFAULT_DISPLAY_NAME", "实时语音助手") or "").strip()
+    or "实时语音助手"
+)
+_REALTIME_BOT_DEFAULT_VOLC_AUDIO_INPUT_MODE = (
+    str(getattr(settings, "REALTIME_BOT_VOLC_AUDIO_INPUT_MODE", "push_to_talk") or "").strip().lower()
+)
+if _REALTIME_BOT_DEFAULT_VOLC_AUDIO_INPUT_MODE not in {
+    "audio_file",
+    "push_to_talk",
+    "keep_alive",
+    "mic_silence",
+}:
+    _REALTIME_BOT_DEFAULT_VOLC_AUDIO_INPUT_MODE = "audio_file"
+_REALTIME_BOT_VOLC_JSON_COMPRESSION_MODE = (
+    str(getattr(settings, "REALTIME_BOT_VOLC_JSON_COMPRESSION", "none") or "").strip().lower()
+)
+if _REALTIME_BOT_VOLC_JSON_COMPRESSION_MODE not in {"none", "gzip"}:
+    _REALTIME_BOT_VOLC_JSON_COMPRESSION_MODE = "none"
+_REALTIME_BOT_VOLC_AUDIO_CHUNK_BYTES = max(320, _setting_int("REALTIME_BOT_VOLC_AUDIO_CHUNK_BYTES", 640))
+_REALTIME_BOT_VOLC_AUDIO_CHUNK_SLEEP_SECONDS = max(
+    0.0,
+    _setting_float("REALTIME_BOT_VOLC_AUDIO_CHUNK_INTERVAL_MS", 20.0) / 1000.0,
+)
 _REALTIME_BOT_VOLC_DEBUG_EVENTS = bool(getattr(settings, "REALTIME_BOT_VOLC_DEBUG_EVENTS", False))
 _REALTIME_BOT_VOLC_DEBUG_EVENTS_MAX_PAYLOAD_CHARS = max(
     200,
-    int(getattr(settings, "REALTIME_BOT_VOLC_DEBUG_EVENTS_MAX_PAYLOAD_CHARS", 2000) or 2000),
+    _setting_int("REALTIME_BOT_VOLC_DEBUG_EVENTS_MAX_PAYLOAD_CHARS", 2000),
 )
-_REALTIME_BOT_WS_CONNECT_TIMEOUT_SECONDS = 10
-_REALTIME_BOT_RESPONSE_TIMEOUT_SECONDS = 20
+_REALTIME_BOT_WS_CONNECT_TIMEOUT_SECONDS = max(
+    3,
+    _setting_int("REALTIME_BOT_WS_CONNECT_TIMEOUT_SECONDS", 10),
+)
+_REALTIME_BOT_RESPONSE_TIMEOUT_SECONDS = max(
+    5,
+    _setting_int("REALTIME_BOT_RESPONSE_TIMEOUT_SECONDS", 20),
+)
 _VOLCENGINE_EVENT_LOGGER = logging.getLogger("conference.volcengine.realtime")
 
 _VOLCENGINE_PROTOCOL_VERSION = 0b0001
@@ -199,6 +289,47 @@ _VOLCENGINE_EVENT_SESSION_STARTED = 150
 _VOLCENGINE_EVENT_SESSION_FAILED = 153
 _VOLCENGINE_EVENT_DIALOG_COMMON_ERROR = 599
 _VOLCENGINE_MAX_SESSION_ID_BYTES = 512
+_VOLCENGINE_ALLOWED_MODELS = {"1.2.1.1", "2.2.0.0"}
+_VOLCENGINE_MODEL_O2 = "1.2.1.1"
+_VOLCENGINE_MODEL_SC2 = "2.2.0.0"
+_VOLCENGINE_O2_SPEAKERS = {
+    "zh_female_vv_jupiter_bigtts",
+    "zh_female_xiaohe_jupiter_bigtts",
+    "zh_male_yunzhou_jupiter_bigtts",
+    "zh_male_xiaotian_jupiter_bigtts",
+}
+_VOLCENGINE_SC2_SPEAKERS = {
+    "saturn_zh_female_aojiaonvyou_tob",
+    "saturn_zh_female_bingjiaojiejie_tob",
+    "saturn_zh_female_chengshujiejie_tob",
+    "saturn_zh_female_keainvsheng_tob",
+    "saturn_zh_female_nuanxinxuejie_tob",
+    "saturn_zh_female_tiexinnvyou_tob",
+    "saturn_zh_female_wenrouwenya_tob",
+    "saturn_zh_female_wumeiyujie_tob",
+    "saturn_zh_female_xingganyujie_tob",
+    "saturn_zh_male_aiqilingren_tob",
+    "saturn_zh_male_aojiaogongzi_tob",
+    "saturn_zh_male_aojiaojingying_tob",
+    "saturn_zh_male_aomanshaoye_tob",
+    "saturn_zh_male_badaoshaoye_tob",
+    "saturn_zh_male_bingjiaobailian_tob",
+    "saturn_zh_male_bujiqingnian_tob",
+    "saturn_zh_male_chengshuzongcai_tob",
+    "saturn_zh_male_cixingnansang_tob",
+    "saturn_zh_male_dongbeilaotie_tob",
+    "saturn_zh_male_guangxibaobiao_tob",
+    "saturn_zh_male_jizhiqingnian_tob",
+    "saturn_zh_male_junlangnanyou_tob",
+    "saturn_zh_male_lengdanxueba_tob",
+    "saturn_zh_male_posuijsj_tob",
+    "saturn_zh_male_shenmidashu_tob",
+    "saturn_zh_male_tiancaixueba_tob",
+    "saturn_zh_male_wenrouxuezhang_tob",
+    "saturn_zh_male_yangguangqingnian_tob",
+    "saturn_zh_male_yujieboss_tob",
+    "saturn_zh_male_yuanqixuedi_tob",
+}
 
 
 def _host_without_port(host: str) -> str:
@@ -3058,9 +3189,13 @@ def _apply_meeting_payload(meeting, payload: dict):
 
 def _normalized_realtime_provider(raw_value: str) -> str:
     value = (raw_value or "").strip().lower()
+    if not value:
+        return _REALTIME_BOT_DEFAULT_PROVIDER
     if value == RealtimeBotProvider.VOLCENGINE:
         return RealtimeBotProvider.VOLCENGINE
-    return RealtimeBotProvider.OPENAI
+    if value == RealtimeBotProvider.OPENAI:
+        return RealtimeBotProvider.OPENAI
+    return _REALTIME_BOT_DEFAULT_PROVIDER
 
 
 def _normalized_realtime_base_url(raw_value: str) -> str:
@@ -3103,28 +3238,50 @@ def _meeting_realtime_bot_provider(meeting) -> str:
     return _normalized_realtime_provider(getattr(meeting, "realtime_bot_provider", ""))
 
 
+def _meeting_realtime_bot_api_key(meeting) -> str:
+    value = (getattr(meeting, "realtime_bot_api_key", "") or "").strip()
+    return value or _REALTIME_BOT_DEFAULT_API_KEY
+
+
 def _meeting_realtime_bot_openai_model(meeting) -> str:
     value = (getattr(meeting, "realtime_bot_openai_model", "") or "").strip()
     if value:
         return value
-    return (getattr(meeting, "realtime_bot_model", "") or "").strip() or _REALTIME_BOT_DEFAULT_MODEL
+    legacy_value = (getattr(meeting, "realtime_bot_model", "") or "").strip()
+    if legacy_value and legacy_value not in _VOLCENGINE_ALLOWED_MODELS:
+        return legacy_value
+    return _REALTIME_BOT_DEFAULT_MODEL
 
 
 def _meeting_realtime_bot_openai_voice(meeting) -> str:
     value = (getattr(meeting, "realtime_bot_openai_voice", "") or "").strip()
     if value:
         return value
-    return (getattr(meeting, "realtime_bot_voice", "") or "").strip() or _REALTIME_BOT_DEFAULT_VOICE
+    legacy_value = (getattr(meeting, "realtime_bot_voice", "") or "").strip()
+    if legacy_value:
+        normalized = legacy_value.lower()
+        if (
+            normalized not in _VOLCENGINE_O2_SPEAKERS
+            and normalized not in _VOLCENGINE_SC2_SPEAKERS
+            and not normalized.startswith("saturn_")
+            and not normalized.startswith("icl_")
+            and not normalized.startswith("zh_")
+        ):
+            return legacy_value
+    return _REALTIME_BOT_DEFAULT_VOICE
 
 
 def _meeting_realtime_bot_volc_model(meeting) -> str:
     value = (getattr(meeting, "realtime_bot_volc_model", "") or "").strip()
-    if value:
+    if value in _VOLCENGINE_ALLOWED_MODELS:
         return value
     legacy_value = (getattr(meeting, "realtime_bot_model", "") or "").strip()
-    if _meeting_realtime_bot_provider(meeting) == RealtimeBotProvider.VOLCENGINE and legacy_value:
+    if legacy_value in _VOLCENGINE_ALLOWED_MODELS:
         return legacy_value
-    return _REALTIME_BOT_DEFAULT_VOLC_MODEL
+    default_value = (_REALTIME_BOT_DEFAULT_VOLC_MODEL or "").strip()
+    if default_value in _VOLCENGINE_ALLOWED_MODELS:
+        return default_value
+    return _VOLCENGINE_MODEL_SC2
 
 
 def _meeting_realtime_bot_volc_raw_voice(meeting) -> str:
@@ -3132,7 +3289,7 @@ def _meeting_realtime_bot_volc_raw_voice(meeting) -> str:
     if value:
         return value
     legacy_value = (getattr(meeting, "realtime_bot_voice", "") or "").strip()
-    if _meeting_realtime_bot_provider(meeting) == RealtimeBotProvider.VOLCENGINE:
+    if legacy_value and legacy_value != _REALTIME_BOT_DEFAULT_VOICE:
         return legacy_value
     return ""
 
@@ -3141,12 +3298,15 @@ def _meeting_realtime_bot_volc_uid(meeting) -> str:
     value = (getattr(meeting, "realtime_bot_volc_uid", "") or "").strip()
     if value:
         return value
+    default_uid = (_REALTIME_BOT_DEFAULT_VOLC_UID or "").strip()
+    if default_uid:
+        return default_uid.replace("{meeting_id}", str(getattr(meeting, "id", "0")))
     return f"meeting-{getattr(meeting, 'id', '0')}"
 
 
 def _meeting_realtime_bot_volc_app_id(meeting) -> str:
     value = (getattr(meeting, "realtime_bot_volc_app_id", "") or "").strip()
-    return value
+    return value or _REALTIME_BOT_DEFAULT_VOLC_APP_ID
 
 
 def _meeting_realtime_bot_volc_app_key(meeting) -> str:
@@ -3156,14 +3316,55 @@ def _meeting_realtime_bot_volc_app_key(meeting) -> str:
 
 def _meeting_realtime_bot_volc_access_key(meeting) -> str:
     value = (getattr(meeting, "realtime_bot_volc_access_key", "") or "").strip()
-    return value
+    return value or _REALTIME_BOT_DEFAULT_VOLC_ACCESS_KEY
+
+
+def _meeting_realtime_bot_volc_model_legacy_fallback(meeting) -> str:
+    value = (getattr(meeting, "realtime_bot_model", "") or "").strip()
+    if value in _VOLCENGINE_ALLOWED_MODELS:
+        return value
+    default_value = (_REALTIME_BOT_DEFAULT_VOLC_MODEL or "").strip()
+    if default_value in _VOLCENGINE_ALLOWED_MODELS:
+        return default_value
+    return _VOLCENGINE_MODEL_SC2
+
+
+def _normalize_volc_speaker_for_model(*, speaker: str, dialog_model: str) -> str:
+    normalized = (speaker or "").strip()
+    if not normalized:
+        return ""
+    if normalized == _REALTIME_BOT_DEFAULT_VOICE:
+        return ""
+    normalized_lower = normalized.lower()
+    if dialog_model == _VOLCENGINE_MODEL_O2:
+        if normalized_lower.startswith("saturn_") or normalized_lower.startswith("icl_"):
+            return _REALTIME_BOT_DEFAULT_VOLC_O_SPEAKER
+        return normalized
+    if dialog_model == _VOLCENGINE_MODEL_SC2:
+        if normalized_lower in _VOLCENGINE_O2_SPEAKERS:
+            return ""
+        if normalized_lower.startswith("icl_"):
+            candidate = f"saturn_{normalized[4:]}"
+            return candidate if candidate in _VOLCENGINE_SC2_SPEAKERS else normalized
+        return normalized
+    return normalized
 
 
 def _meeting_realtime_bot_volc_speaker(meeting, dialog_model: str | None = None) -> str:
-    value = _meeting_realtime_bot_volc_raw_voice(meeting)
-    if not value:
-        return _REALTIME_BOT_DEFAULT_VOLC_SPEAKER
-    return value
+    model = (dialog_model or "").strip() or _meeting_realtime_bot_volc_model(meeting)
+    if not model:
+        model = _meeting_realtime_bot_volc_model_legacy_fallback(meeting)
+    raw_value = _meeting_realtime_bot_volc_raw_voice(meeting)
+    if not raw_value or raw_value == _REALTIME_BOT_DEFAULT_VOICE:
+        return (
+            _REALTIME_BOT_DEFAULT_VOLC_O_SPEAKER
+            if model == _VOLCENGINE_MODEL_O2
+            else _REALTIME_BOT_DEFAULT_VOLC_SC_SPEAKER
+        )
+    normalized = _normalize_volc_speaker_for_model(speaker=raw_value, dialog_model=model)
+    if model == _VOLCENGINE_MODEL_O2 and not normalized:
+        return _REALTIME_BOT_DEFAULT_VOLC_O_SPEAKER
+    return normalized
 
 
 def _meeting_realtime_bot_display_name(meeting) -> str:
@@ -3177,14 +3378,14 @@ def _meeting_realtime_bot_ready(meeting) -> bool:
     provider = _meeting_realtime_bot_provider(meeting)
     if provider == RealtimeBotProvider.VOLCENGINE:
         ws_url = _normalized_realtime_volc_ws_url(getattr(meeting, "realtime_bot_volc_ws_url", ""))
-        app_id = (getattr(meeting, "realtime_bot_volc_app_id", "") or "").strip()
+        app_id = _meeting_realtime_bot_volc_app_id(meeting)
         app_key = _meeting_realtime_bot_volc_app_key(meeting)
-        access_key = (getattr(meeting, "realtime_bot_volc_access_key", "") or "").strip()
+        access_key = _meeting_realtime_bot_volc_access_key(meeting)
         resource_id = _normalized_realtime_volc_resource_id(
             getattr(meeting, "realtime_bot_volc_resource_id", "")
         )
         return bool(ws_url and app_id and app_key and access_key and resource_id)
-    return bool((meeting.realtime_bot_api_key or "").strip())
+    return bool(_meeting_realtime_bot_api_key(meeting))
 
 
 def _meeting_realtime_bot_identity(meeting) -> str:
@@ -4342,6 +4543,7 @@ def _call_realtime_bot_via_volcengine_dialog_websocket(
     prompt: str,
     bot_name: str,
     speaker: str,
+    dialog_model: str,
     request_audio: bool,
 ) -> tuple[str, str, str]:
     try:
@@ -4393,9 +4595,10 @@ def _call_realtime_bot_via_volcengine_dialog_websocket(
                         "bot_name": bot_name,
                         "dialog_id": session_id,
                         "extra": {
-                            "strict_audit": False,
-                            "recv_timeout": 15,
+                            "strict_audit": True,
+                            "recv_timeout": _REALTIME_BOT_RESPONSE_TIMEOUT_SECONDS,
                             "input_mod": "text",
+                            "model": dialog_model,
                         },
                     },
                     "user": {"uid": uid},
@@ -4421,7 +4624,7 @@ def _call_realtime_bot_via_volcengine_dialog_websocket(
         audio_done = not request_audio
         ack_audio_chunks = 0
         event_audio_chunks = 0
-        deadline = time.time() + max(_REALTIME_BOT_RESPONSE_TIMEOUT_SECONDS, 35)
+        deadline = time.time() + max(_REALTIME_BOT_RESPONSE_TIMEOUT_SECONDS, 12)
         timeout_error = getattr(websocket, "WebSocketTimeoutException", Exception)
         while time.time() < deadline:
             try:
@@ -4546,6 +4749,10 @@ def _call_realtime_bot_via_volcengine_audio_dialog_websocket(
     audio_sample_rate: int,
     bot_name: str,
     speaker: str,
+    dialog_model: str,
+    input_mode: str,
+    audio_chunk_bytes: int,
+    audio_chunk_sleep_seconds: float,
     request_audio: bool,
 ) -> tuple[str, str, str]:
     try:
@@ -4555,6 +4762,16 @@ def _call_realtime_bot_via_volcengine_audio_dialog_websocket(
 
     if not audio_pcm16:
         raise RuntimeError("volcengine input audio is empty")
+
+    normalized_input_mode = (input_mode or "").strip().lower()
+    if normalized_input_mode not in {"audio_file", "push_to_talk", "keep_alive", "mic_silence"}:
+        normalized_input_mode = "audio_file"
+    chunk_bytes = max(320, int(audio_chunk_bytes or 6400))
+    chunk_sleep_seconds = max(0.0, float(audio_chunk_sleep_seconds or 0.0))
+    if normalized_input_mode == "push_to_talk":
+        chunk_bytes = 640
+        if chunk_sleep_seconds > 0:
+            chunk_sleep_seconds = min(chunk_sleep_seconds, 0.02)
 
     connect_id = str(uuid4())
     session_id = str(uuid4())
@@ -4607,9 +4824,10 @@ def _call_realtime_bot_via_volcengine_audio_dialog_websocket(
                         "bot_name": bot_name,
                         "dialog_id": session_id,
                         "extra": {
-                            "strict_audit": False,
-                            "recv_timeout": 20,
-                            "input_mod": "keep_alive",
+                            "strict_audit": True,
+                            "recv_timeout": _REALTIME_BOT_RESPONSE_TIMEOUT_SECONDS,
+                            "input_mod": normalized_input_mode,
+                            "model": dialog_model,
                         },
                     },
                     "user": {"uid": uid},
@@ -4618,7 +4836,7 @@ def _call_realtime_bot_via_volcengine_audio_dialog_websocket(
         )
         _ = ws.recv()
 
-        for audio_chunk in _iter_audio_chunks(audio_pcm16, chunk_size=6400):
+        for audio_chunk in _iter_audio_chunks(audio_pcm16, chunk_size=chunk_bytes):
             ws.send_binary(
                 _volcengine_build_audio_request(
                     event=_VOLCENGINE_EVENT_AUDIO_REQUEST,
@@ -4626,18 +4844,37 @@ def _call_realtime_bot_via_volcengine_audio_dialog_websocket(
                     audio_payload=audio_chunk,
                 )
             )
-            time.sleep(0.05)
+            if chunk_sleep_seconds > 0:
+                time.sleep(chunk_sleep_seconds)
 
-        # Ensure server-side VAD can close this turn when user stops speaking.
-        for _ in range(6):
+        if normalized_input_mode == "push_to_talk":
             ws.send_binary(
-                _volcengine_build_audio_request(
-                    event=_VOLCENGINE_EVENT_AUDIO_REQUEST,
+                _volcengine_build_request(
+                    event=_VOLCENGINE_EVENT_END_ASR,
                     session_id=session_id,
-                    audio_payload=b"\x00" * 6400,
+                    payload={},
                 )
             )
-            time.sleep(0.05)
+        elif normalized_input_mode in {"keep_alive", "mic_silence"}:
+            for _ in range(6):
+                ws.send_binary(
+                    _volcengine_build_audio_request(
+                        event=_VOLCENGINE_EVENT_AUDIO_REQUEST,
+                        session_id=session_id,
+                        audio_payload=b"\x00" * chunk_bytes,
+                    )
+                )
+                if chunk_sleep_seconds > 0:
+                    time.sleep(chunk_sleep_seconds)
+
+        if normalized_input_mode == "audio_file":
+            ws.send_binary(
+                _volcengine_build_request(
+                    event=_VOLCENGINE_EVENT_END_ASR,
+                    session_id=session_id,
+                    payload={},
+                )
+            )
 
         text_chunks: list[str] = []
         audio_pcm_bytes = bytearray()
@@ -4646,7 +4883,7 @@ def _call_realtime_bot_via_volcengine_audio_dialog_websocket(
         audio_done = not request_audio
         ack_audio_chunks = 0
         event_audio_chunks = 0
-        deadline = time.time() + max(_REALTIME_BOT_RESPONSE_TIMEOUT_SECONDS, 35)
+        deadline = time.time() + max(_REALTIME_BOT_RESPONSE_TIMEOUT_SECONDS, 12)
         timeout_error = getattr(websocket, "WebSocketTimeoutException", Exception)
         while time.time() < deadline:
             try:
@@ -4746,11 +4983,13 @@ def _call_realtime_bot_via_volcengine_websocket(
 ) -> tuple[str, str, str]:
     ws_url = _normalized_realtime_volc_ws_url(getattr(meeting, "realtime_bot_volc_ws_url", ""))
     app_id = (getattr(meeting, "realtime_bot_volc_app_id", "") or "").strip()
+    app_id = _meeting_realtime_bot_volc_app_id(meeting)
     app_key = _meeting_realtime_bot_volc_app_key(meeting)
-    access_key = (getattr(meeting, "realtime_bot_volc_access_key", "") or "").strip()
+    access_key = _meeting_realtime_bot_volc_access_key(meeting)
     resource_id = _normalized_realtime_volc_resource_id(getattr(meeting, "realtime_bot_volc_resource_id", ""))
     uid = _meeting_realtime_bot_volc_uid(meeting)
-    speaker = _meeting_realtime_bot_volc_speaker(meeting)
+    dialog_model = _meeting_realtime_bot_volc_model(meeting)
+    speaker = _meeting_realtime_bot_volc_speaker(meeting, dialog_model=dialog_model)
     if not app_id:
         raise RuntimeError("Volcengine App ID is empty")
     if not access_key:
@@ -4769,6 +5008,7 @@ def _call_realtime_bot_via_volcengine_websocket(
             prompt=prompt,
             bot_name=_meeting_realtime_bot_display_name(meeting),
             speaker=speaker,
+            dialog_model=dialog_model,
             request_audio=request_audio,
         )
     except Exception as exc:
@@ -4783,12 +5023,13 @@ def _call_realtime_bot_via_volcengine_audio_websocket(
     request_audio: bool,
 ) -> tuple[str, str, str]:
     ws_url = _normalized_realtime_volc_ws_url(getattr(meeting, "realtime_bot_volc_ws_url", ""))
-    app_id = (getattr(meeting, "realtime_bot_volc_app_id", "") or "").strip()
+    app_id = _meeting_realtime_bot_volc_app_id(meeting)
     app_key = _meeting_realtime_bot_volc_app_key(meeting)
-    access_key = (getattr(meeting, "realtime_bot_volc_access_key", "") or "").strip()
+    access_key = _meeting_realtime_bot_volc_access_key(meeting)
     resource_id = _normalized_realtime_volc_resource_id(getattr(meeting, "realtime_bot_volc_resource_id", ""))
     uid = _meeting_realtime_bot_volc_uid(meeting)
-    speaker = _meeting_realtime_bot_volc_speaker(meeting)
+    dialog_model = _meeting_realtime_bot_volc_model(meeting)
+    speaker = _meeting_realtime_bot_volc_speaker(meeting, dialog_model=dialog_model)
     if not app_id:
         raise RuntimeError("Volcengine App ID is empty")
     if not access_key:
@@ -4808,6 +5049,10 @@ def _call_realtime_bot_via_volcengine_audio_websocket(
             audio_sample_rate=audio_sample_rate,
             bot_name=_meeting_realtime_bot_display_name(meeting),
             speaker=speaker,
+            dialog_model=dialog_model,
+            input_mode=_REALTIME_BOT_DEFAULT_VOLC_AUDIO_INPUT_MODE,
+            audio_chunk_bytes=_REALTIME_BOT_VOLC_AUDIO_CHUNK_BYTES,
+            audio_chunk_sleep_seconds=_REALTIME_BOT_VOLC_AUDIO_CHUNK_SLEEP_SECONDS,
             request_audio=request_audio,
         )
     except Exception as exc:
@@ -4831,7 +5076,7 @@ def _call_realtime_bot(
 
     base_url = _normalized_realtime_base_url(meeting.realtime_bot_base_url)
     model = _meeting_realtime_bot_openai_model(meeting)
-    api_key = (meeting.realtime_bot_api_key or "").strip()
+    api_key = _meeting_realtime_bot_api_key(meeting)
     voice = _meeting_realtime_bot_openai_voice(meeting)
     if not api_key:
         raise RuntimeError("Realtime bot API key is empty")
@@ -8025,15 +8270,26 @@ def _meeting_ai_controls_impl(request, meeting, resource_id_for_log: int):
     next_base_url = _normalized_realtime_base_url(payload.get("realtime_bot_base_url", meeting.realtime_bot_base_url))
     next_openai_model = (
         payload.get("realtime_bot_openai_model", _meeting_realtime_bot_openai_model(meeting)) or ""
-    ).strip()
+    ).strip() or _REALTIME_BOT_DEFAULT_MODEL
     next_openai_voice = (
         payload.get("realtime_bot_openai_voice", _meeting_realtime_bot_openai_voice(meeting)) or ""
-    ).strip()
+    ).strip() or _REALTIME_BOT_DEFAULT_VOICE
     next_volc_model = (
         payload.get("realtime_bot_volc_model", _meeting_realtime_bot_volc_model(meeting)) or ""
     ).strip()
+    if next_volc_model not in _VOLCENGINE_ALLOWED_MODELS:
+        fallback_volc_model = (_REALTIME_BOT_DEFAULT_VOLC_MODEL or "").strip()
+        next_volc_model = (
+            fallback_volc_model
+            if fallback_volc_model in _VOLCENGINE_ALLOWED_MODELS
+            else _VOLCENGINE_MODEL_SC2
+        )
     next_volc_voice = (
-        payload.get("realtime_bot_volc_voice", _meeting_realtime_bot_volc_raw_voice(meeting)) or ""
+        payload.get(
+            "realtime_bot_volc_voice",
+            (getattr(meeting, "realtime_bot_volc_voice", "") or "").strip(),
+        )
+        or ""
     ).strip()
     next_volc_ws_url = _normalized_realtime_volc_ws_url(
         payload.get("realtime_bot_volc_ws_url", getattr(meeting, "realtime_bot_volc_ws_url", ""))
@@ -8050,7 +8306,12 @@ def _meeting_ai_controls_impl(request, meeting, resource_id_for_log: int):
             getattr(meeting, "realtime_bot_volc_resource_id", ""),
         )
     )
-    next_display_name = payload.get("realtime_bot_display_name", meeting.realtime_bot_display_name)
+    next_display_name = (
+        payload.get("realtime_bot_display_name", meeting.realtime_bot_display_name) or ""
+    ).strip() or _REALTIME_BOT_DEFAULT_DISPLAY_NAME
+    effective_openai_key = next_key or _REALTIME_BOT_DEFAULT_API_KEY
+    effective_volc_app_id = next_volc_app_id or _REALTIME_BOT_DEFAULT_VOLC_APP_ID
+    effective_volc_access_key = next_volc_access_key or _REALTIME_BOT_DEFAULT_VOLC_ACCESS_KEY
 
     payload["realtime_bot_model"] = (
         next_volc_model if next_provider == RealtimeBotProvider.VOLCENGINE else next_openai_model
@@ -8058,25 +8319,34 @@ def _meeting_ai_controls_impl(request, meeting, resource_id_for_log: int):
     payload["realtime_bot_voice"] = (
         next_volc_voice if next_provider == RealtimeBotProvider.VOLCENGINE else next_openai_voice
     )
-    payload.setdefault("realtime_bot_openai_model", next_openai_model)
-    payload.setdefault("realtime_bot_openai_voice", next_openai_voice)
-    payload.setdefault("realtime_bot_volc_model", next_volc_model)
-    payload.setdefault("realtime_bot_volc_voice", next_volc_voice)
+    if "realtime_bot_openai_model" in payload:
+        payload["realtime_bot_openai_model"] = next_openai_model
+    if "realtime_bot_openai_voice" in payload:
+        payload["realtime_bot_openai_voice"] = next_openai_voice
+    if "realtime_bot_volc_model" in payload:
+        payload["realtime_bot_volc_model"] = next_volc_model
+    if "realtime_bot_volc_voice" in payload:
+        payload["realtime_bot_volc_voice"] = next_volc_voice
 
     if next_provider == RealtimeBotProvider.VOLCENGINE:
+        if next_volc_model not in _VOLCENGINE_ALLOWED_MODELS:
+            return Response(
+                {"detail": "Volcengine model must be one of: 1.2.1.1, 2.2.0.0"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         if not next_volc_ws_url:
             return Response({"detail": "Volcengine WebSocket URL cannot be empty"}, status=status.HTTP_400_BAD_REQUEST)
-        if not next_volc_app_id:
+        if not effective_volc_app_id:
             return Response({"detail": "Volcengine App ID cannot be empty"}, status=status.HTTP_400_BAD_REQUEST)
         if not next_volc_resource_id:
             return Response({"detail": "Volcengine Resource ID cannot be empty"}, status=status.HTTP_400_BAD_REQUEST)
-        if next_enabled and not next_volc_access_key:
+        if next_enabled and not effective_volc_access_key:
             return Response(
                 {"detail": "Realtime voice is enabled but Volcengine Access Key is empty"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
     else:
-        if next_enabled and not next_key:
+        if next_enabled and not effective_openai_key:
             return Response(
                 {"detail": "Realtime voice is enabled but API key is empty"},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -8087,7 +8357,7 @@ def _meeting_ai_controls_impl(request, meeting, resource_id_for_log: int):
             return Response({"detail": "Realtime model cannot be empty"}, status=status.HTTP_400_BAD_REQUEST)
         if not next_openai_voice:
             return Response({"detail": "Realtime voice cannot be empty"}, status=status.HTTP_400_BAD_REQUEST)
-    if not (next_display_name or "").strip():
+    if not next_display_name:
         return Response({"detail": "Realtime display name cannot be empty"}, status=status.HTTP_400_BAD_REQUEST)
 
     _apply_meeting_payload(meeting, payload)
@@ -8140,24 +8410,36 @@ def _meeting_ai_controls_test_impl(request, meeting, resource_id_for_log: int):
     volc_model = raw_model or _meeting_realtime_bot_volc_model(meeting)
     volc_voice = raw_voice or _meeting_realtime_bot_volc_raw_voice(meeting)
     model = volc_model if provider == RealtimeBotProvider.VOLCENGINE else openai_model
-    api_key = (payload.get("api_key") or meeting.realtime_bot_api_key).strip()
+    api_key = (payload.get("api_key") or meeting.realtime_bot_api_key or _REALTIME_BOT_DEFAULT_API_KEY).strip()
     voice = volc_voice if provider == RealtimeBotProvider.VOLCENGINE else openai_voice
     volc_ws_url = _normalized_realtime_volc_ws_url(
         payload.get("volc_ws_url") or getattr(meeting, "realtime_bot_volc_ws_url", "")
     )
-    volc_app_id = (payload.get("volc_app_id") or getattr(meeting, "realtime_bot_volc_app_id", "")).strip()
+    volc_app_id = (
+        payload.get("volc_app_id")
+        or getattr(meeting, "realtime_bot_volc_app_id", "")
+        or _REALTIME_BOT_DEFAULT_VOLC_APP_ID
+    ).strip()
     volc_app_key = (
         payload.get("volc_app_key")
         or getattr(meeting, "realtime_bot_volc_app_key", "")
         or _REALTIME_BOT_DEFAULT_VOLC_APP_KEY
     ).strip()
     volc_access_key = (
-        payload.get("volc_access_key") or getattr(meeting, "realtime_bot_volc_access_key", "")
+        payload.get("volc_access_key")
+        or getattr(meeting, "realtime_bot_volc_access_key", "")
+        or _REALTIME_BOT_DEFAULT_VOLC_ACCESS_KEY
     ).strip()
     volc_resource_id = _normalized_realtime_volc_resource_id(
         payload.get("volc_resource_id") or getattr(meeting, "realtime_bot_volc_resource_id", "")
     )
-    volc_uid = (payload.get("volc_uid") or getattr(meeting, "realtime_bot_volc_uid", "")).strip()
+    volc_uid = (
+        payload.get("volc_uid")
+        or getattr(meeting, "realtime_bot_volc_uid", "")
+        or _REALTIME_BOT_DEFAULT_VOLC_UID
+    ).strip()
+    if not volc_uid:
+        volc_uid = f"meeting-{meeting.id}"
     prompt = (payload.get("prompt") or "请简要回复：连接成功。").strip()
     if provider == RealtimeBotProvider.VOLCENGINE:
         if not volc_app_id:
