@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:smart_meeting_app/meeting_room/models.dart';
+import 'package:smart_meeting_app/meeting_room/realtime_bot_protocol.dart';
 
 void main() {
   test('ChatMessage normalizes sender and timestamp fields', () {
@@ -65,5 +66,96 @@ void main() {
     expect(payload.muteOnEntry, isTrue);
     expect(payload.allowGuestLinkJoin, isFalse);
     expect(payload.canPublish, isTrue);
+  });
+
+  test('MeetingRealtimeBotConfig prefers provider-specific fields with legacy fallback', () {
+    final config = MeetingRealtimeBotConfig.fromMeetingJson(<String, dynamic>{
+      'realtime_bot_provider': 'volcengine',
+      'realtime_bot_openai_model': 'gpt-realtime-mini',
+      'realtime_bot_openai_voice': 'verse',
+      'realtime_bot_model': 'legacy-model',
+      'realtime_bot_voice': 'legacy-voice',
+      'realtime_bot_volc_model': '',
+      'realtime_bot_volc_voice': '',
+    });
+
+    expect(config.provider, 'volcengine');
+    expect(config.openaiModel, 'gpt-realtime-mini');
+    expect(config.openaiVoice, 'verse');
+    expect(config.volcModel, 'legacy-model');
+    expect(config.volcVoice, 'legacy-voice');
+  });
+
+  test('MeetingRealtimeBotControlsDraft builds provider-specific save payload', () {
+    final openaiPayload = MeetingRealtimeBotControlsDraft(
+      provider: 'openai',
+      enabled: true,
+      muted: false,
+      displayName: 'AI 助手',
+      baseUrl: 'https://api.openai.com',
+      openaiModel: 'gpt-realtime',
+      openaiVoice: 'marin',
+      volcModel: '',
+      volcVoice: '',
+      volcWsUrl: '',
+      volcAppId: '',
+      volcResourceId: '',
+      volcUid: '',
+      apiKeyAlreadySet: false,
+      volcAccessKeyAlreadySet: false,
+    ).buildSavePayload(apiKey: 'sk-test');
+
+    expect(openaiPayload['realtime_bot_openai_model'], 'gpt-realtime');
+    expect(openaiPayload['realtime_bot_openai_voice'], 'marin');
+    expect(openaiPayload.containsKey('realtime_bot_model'), isFalse);
+    expect(openaiPayload['realtime_bot_api_key'], 'sk-test');
+
+    final volcPayload = MeetingRealtimeBotControlsDraft(
+      provider: 'volcengine',
+      enabled: true,
+      muted: true,
+      displayName: '火山助手',
+      baseUrl: '',
+      openaiModel: '',
+      openaiVoice: '',
+      volcModel: '',
+      volcVoice: 'zh_female',
+      volcWsUrl: 'wss://openspeech.bytedance.com/api/v3/realtime/dialogue',
+      volcAppId: 'app-id',
+      volcResourceId: 'volc.speech.dialog',
+      volcUid: 'uid-1',
+      apiKeyAlreadySet: false,
+      volcAccessKeyAlreadySet: false,
+    ).buildSavePayload(volcAccessKey: 'ak-test');
+
+    expect(volcPayload['realtime_bot_volc_model'], '2.2.0.0');
+    expect(volcPayload['realtime_bot_volc_voice'], 'zh_female');
+    expect(volcPayload['realtime_bot_volc_access_key'], 'ak-test');
+  });
+
+  test('parseRealtimeBotIngressMessage normalizes websocket protocol events', () {
+    final asr = parseRealtimeBotIngressMessage(
+      '{"type":"asr","text":"你好","is_interim":false}',
+    )!;
+    expect(asr.kind, RealtimeBotIngressMessageKind.asrFinal);
+    expect(asr.previewText, '你好');
+
+    final result = parseRealtimeBotIngressMessage(<String, dynamic>{
+      'type': 'result',
+      'recognized_text': '测试识别',
+      'preview_text': '测试回复',
+      'message': <String, dynamic>{'id': 1},
+    })!;
+    expect(result.kind, RealtimeBotIngressMessageKind.result);
+    expect(result.recognizedText, '测试识别');
+    expect(result.previewText, '测试回复');
+    expect(result.message, isA<Map<String, dynamic>>());
+  });
+
+  test('meetingAiRealtimeAudioWsPath converts api path to websocket path', () {
+    expect(
+      meetingAiRealtimeAudioWsPath('/api/meetings/7/ai-controls/realtime-audio'),
+      '/ws/meetings/7/ai-controls/realtime-audio',
+    );
   });
 }

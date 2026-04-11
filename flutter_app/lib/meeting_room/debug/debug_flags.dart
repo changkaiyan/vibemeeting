@@ -8,7 +8,7 @@ bool shouldShowRealtimeBotDebugPanel({
   required bool isSuperAdminUser,
   required bool debugPanelVisible,
 }) {
-  return projectDebugUiEnabled && isSuperAdminUser && debugPanelVisible;
+  return isSuperAdminUser && debugPanelVisible;
 }
 
 bool shouldShowWorkspaceSttDebug({

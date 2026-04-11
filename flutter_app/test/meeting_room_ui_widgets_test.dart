@@ -215,17 +215,33 @@ void main() {
     expect(find.text('聊天内容可以直接选中复制'), findsOneWidget);
   });
 
-  test('debug panels stay hidden unless project debug is enabled', () {
+  test('realtime bot debug follows superuser visibility from kaiyan', () {
     expect(
       shouldShowRealtimeBotDebugPanel(
         projectDebugUiEnabled: false,
         isSuperAdminUser: true,
         debugPanelVisible: true,
       ),
-      isFalse,
+      isTrue,
     );
     expect(
       shouldShowWorkspaceSttDebug(projectDebugUiEnabled: false),
+      isFalse,
+    );
+    expect(
+      shouldShowRealtimeBotDebugPanel(
+        projectDebugUiEnabled: true,
+        isSuperAdminUser: false,
+        debugPanelVisible: true,
+      ),
+      isFalse,
+    );
+    expect(
+      shouldShowRealtimeBotDebugPanel(
+        projectDebugUiEnabled: true,
+        isSuperAdminUser: true,
+        debugPanelVisible: false,
+      ),
       isFalse,
     );
     expect(
