@@ -81,4 +81,6 @@ urlpatterns = [
     path("api/orgs/<int:org_id>/members", views.org_members),
     path("api/audit/logs", views.audit_logs),
     path("", include("conference.routes.controls")),
+    path("", include("conference.routes.meeting_context")),
+    path("", include("conference.routes.speech_to_text")),
 ]

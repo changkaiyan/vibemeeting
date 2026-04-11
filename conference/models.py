@@ -233,6 +233,134 @@ class MeetingMessage(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
 
+class MeetingTranscriptSource(models.TextChoices):
+    LIVE = "live_stream", "Live Stream"
+    MANUAL = "manual", "Manual"
+    STT_UPLOAD = "stt_upload", "STT Upload"
+    MOCK = "mock", "Mock"
+
+
+class MeetingAgentType(models.TextChoices):
+    CODEX = "codex", "Codex"
+    CLAUDE = "claude", "Claude"
+
+
+class MeetingAgentPresence(models.TextChoices):
+    OFFLINE = "offline", "Offline"
+    CONNECTING = "connecting", "Connecting"
+    IDLE = "idle", "Idle"
+    LISTENING = "listening", "Listening"
+    THINKING = "thinking", "Thinking"
+    WORKING = "working", "Working"
+    DONE = "done", "Done"
+    ERROR = "error", "Error"
+
+
+class MeetingArtifactType(models.TextChoices):
+    SUMMARY = "summary", "Summary"
+    TODO = "todo", "Todo"
+    DECISION = "decision", "Decision"
+    CODE_TASK = "code_task", "Code Task"
+    REPLY = "reply", "Reply"
+
+
+class MeetingTranscriptChunk(models.Model):
+    meeting = models.ForeignKey(Meeting, on_delete=models.CASCADE, related_name="transcript_chunks")
+    speaker_identity = models.CharField(max_length=120, blank=True, default="")
+    speaker_name = models.CharField(max_length=80, blank=True, default="")
+    source = models.CharField(
+        max_length=16,
+        choices=MeetingTranscriptSource.choices,
+        default=MeetingTranscriptSource.MANUAL,
+    )
+    text = models.TextField()
+    start_ms = models.PositiveIntegerField(default=0)
+    end_ms = models.PositiveIntegerField(default=0)
+    is_final = models.BooleanField(default=True)
+    confidence = models.FloatField(default=1.0)
+    sequence_no = models.PositiveIntegerField(default=0, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["sequence_no", "created_at", "id"]
+
+
+class MeetingContextSnapshot(models.Model):
+    meeting = models.ForeignKey(Meeting, on_delete=models.CASCADE, related_name="context_snapshots")
+    window_start_ms = models.PositiveIntegerField(default=0)
+    window_end_ms = models.PositiveIntegerField(default=0)
+    topic_label = models.CharField(max_length=120, blank=True, default="")
+    summary_text = models.TextField(blank=True, default="")
+    open_questions = models.JSONField(default=list, blank=True)
+    decisions = models.JSONField(default=list, blank=True)
+    todos = models.JSONField(default=list, blank=True)
+    source_chunk_ids = models.JSONField(default=list, blank=True)
+    version = models.PositiveIntegerField(default=1)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+
+
+class MeetingAgentSession(models.Model):
+    meeting = models.ForeignKey(Meeting, on_delete=models.CASCADE, related_name="agent_sessions")
+    owner_user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="meeting_agent_sessions")
+    agent_type = models.CharField(max_length=16, choices=MeetingAgentType.choices)
+    display_name = models.CharField(max_length=80, blank=True, default="")
+    presence_status = models.CharField(
+        max_length=16,
+        choices=MeetingAgentPresence.choices,
+        default=MeetingAgentPresence.OFFLINE,
+    )
+    current_task_title = models.CharField(max_length=200, blank=True, default="")
+    current_task_status = models.CharField(max_length=40, blank=True, default="")
+    current_context_chunk_ids = models.JSONField(default=list, blank=True)
+    latest_short_reply = models.TextField(blank=True, default="")
+    latest_result_artifact = models.ForeignKey(
+        "MeetingArtifact",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="latest_for_sessions",
+    )
+    queue_size = models.PositiveIntegerField(default=0)
+    bridge_online = models.BooleanField(default=False)
+    last_latency_ms = models.PositiveIntegerField(null=True, blank=True)
+    last_error = models.TextField(blank=True, default="")
+    last_used_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["meeting", "owner_user", "agent_type"],
+                name="uq_meeting_agent_session_owner_agent",
+            ),
+        ]
+        ordering = ["agent_type", "id"]
+
+
+class MeetingArtifact(models.Model):
+    meeting = models.ForeignKey(Meeting, on_delete=models.CASCADE, related_name="artifacts")
+    agent_session = models.ForeignKey(
+        MeetingAgentSession,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="artifacts",
+    )
+    artifact_type = models.CharField(max_length=24, choices=MeetingArtifactType.choices)
+    title = models.CharField(max_length=200, blank=True, default="")
+    content = models.TextField()
+    source_chunk_ids = models.JSONField(default=list, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+
+
 class RecordingStorageConfig(models.Model):
     storage_root = models.CharField(max_length=500, blank=True, default="")
     updated_by = models.ForeignKey(
