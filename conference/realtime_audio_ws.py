@@ -124,6 +124,23 @@ class _VolcengineRealtimeStreamBridge:
         self._receiver_thread: threading.Thread | None = None
         self._session_id = str(uuid4())
         self._connect_id = str(uuid4())
+        self._audio_chunk_bytes = max(
+            320,
+            int(getattr(meeting_views, "_REALTIME_BOT_VOLC_AUDIO_CHUNK_BYTES", 640) or 640),
+        )
+        self._audio_chunk_sleep_seconds = max(
+            0.0,
+            float(getattr(meeting_views, "_REALTIME_BOT_VOLC_AUDIO_CHUNK_SLEEP_SECONDS", 0.02) or 0.0),
+        )
+        self._next_audio_send_at = 0.0
+        self._turn_min_audio_bytes_before_end = max(
+            640,
+            int(getattr(meeting_views, "_REALTIME_BOT_VOLC_MIN_TURN_AUDIO_BYTES", 9600) or 9600),
+        )
+        self._turn_end_tail_seconds = max(
+            0.0,
+            float(getattr(meeting_views, "_REALTIME_BOT_VOLC_END_TAIL_MS", 120) or 0.0) / 1000.0,
+        )
 
         self._request_audio = not bool(getattr(meeting, "realtime_bot_muted", False))
         self._turn_active = False
@@ -141,6 +158,11 @@ class _VolcengineRealtimeStreamBridge:
         self._turn_last_audio_at = 0.0
         self._turn_asr_done_at = 0.0
         self._turn_fallback_attempted = False
+        self._turn_end_asr_retry_count = 0
+        self._turn_last_end_asr_retry_at = 0.0
+        self._turn_out_audio_bytes = 0
+        self._turn_last_out_audio_sent_mono = 0.0
+        self._turn_end_asr_sent_at = 0.0
 
     def start(self) -> None:
         close_old_connections()
@@ -282,6 +304,15 @@ class _VolcengineRealtimeStreamBridge:
                 pass
         self._finalize_turn_if_needed()
 
+    def is_healthy(self) -> bool:
+        if self._ws is None:
+            return False
+        if self._stop_event.is_set():
+            return False
+        if self._receiver_thread is None:
+            return False
+        return bool(self._receiver_thread.is_alive())
+
     def start_turn(self) -> None:
         had_active = False
         with self._state_lock:
@@ -301,6 +332,12 @@ class _VolcengineRealtimeStreamBridge:
             self._turn_last_audio_at = 0.0
             self._turn_asr_done_at = 0.0
             self._turn_fallback_attempted = False
+            self._turn_end_asr_retry_count = 0
+            self._turn_last_end_asr_retry_at = 0.0
+            self._turn_out_audio_bytes = 0
+            self._turn_last_out_audio_sent_mono = 0.0
+            self._turn_end_asr_sent_at = 0.0
+            self._next_audio_send_at = 0.0
         if had_active:
             self._safe_send_request(meeting_views._VOLCENGINE_EVENT_CLIENT_INTERRUPT, {})
 
@@ -310,7 +347,7 @@ class _VolcengineRealtimeStreamBridge:
         with self._state_lock:
             if not self._turn_active:
                 self._turn_active = True
-        chunk_size = 640
+        chunk_size = self._audio_chunk_bytes
         for offset in range(0, len(audio_pcm16), chunk_size):
             chunk = audio_pcm16[offset : offset + chunk_size]
             if not chunk:
@@ -322,15 +359,42 @@ class _VolcengineRealtimeStreamBridge:
                 session_id=self._session_id,
                 extra={"audio_bytes": len(chunk)},
             )
-            self._send_binary(
-                meeting_views._volcengine_build_audio_request(
-                    event=meeting_views._VOLCENGINE_EVENT_AUDIO_REQUEST,
-                    session_id=self._session_id,
-                    audio_payload=chunk,
-                )
-            )
+            self._send_audio_chunk(chunk)
+            with self._state_lock:
+                self._turn_out_audio_bytes += len(chunk)
+                self._turn_last_out_audio_sent_mono = time.monotonic()
 
     def end_turn(self) -> None:
+        pending_padding_bytes = 0
+        with self._state_lock:
+            sent_bytes = self._turn_out_audio_bytes
+            if 0 < sent_bytes < self._turn_min_audio_bytes_before_end:
+                pending_padding_bytes = self._turn_min_audio_bytes_before_end - sent_bytes
+
+        while pending_padding_bytes > 0:
+            chunk_size = min(self._audio_chunk_bytes, pending_padding_bytes)
+            pad_chunk = bytes(chunk_size)
+            meeting_views._volcengine_debug_emit(
+                direction="out",
+                phase="send_audio_padding",
+                event=meeting_views._VOLCENGINE_EVENT_AUDIO_REQUEST,
+                session_id=self._session_id,
+                extra={"audio_bytes": len(pad_chunk), "padding": True},
+            )
+            self._send_audio_chunk(pad_chunk)
+            with self._state_lock:
+                self._turn_out_audio_bytes += len(pad_chunk)
+                self._turn_last_out_audio_sent_mono = time.monotonic()
+            pending_padding_bytes -= len(pad_chunk)
+
+        tail_sleep = 0.0
+        with self._state_lock:
+            last_audio_sent_at = self._turn_last_out_audio_sent_mono
+        if self._turn_end_tail_seconds > 0 and last_audio_sent_at > 0:
+            elapsed_since_last_audio = time.monotonic() - last_audio_sent_at
+            tail_sleep = self._turn_end_tail_seconds - elapsed_since_last_audio
+        if tail_sleep > 0:
+            time.sleep(tail_sleep)
         self._safe_send_request(meeting_views._VOLCENGINE_EVENT_END_ASR, {})
 
     def _safe_send_request(self, event: int, payload: dict) -> None:
@@ -349,6 +413,9 @@ class _VolcengineRealtimeStreamBridge:
                     payload=payload,
                 )
             )
+            if event == meeting_views._VOLCENGINE_EVENT_END_ASR:
+                with self._state_lock:
+                    self._turn_end_asr_sent_at = time.time()
         except Exception:
             pass
 
@@ -357,7 +424,33 @@ class _VolcengineRealtimeStreamBridge:
         if ws is None:
             raise RuntimeError("volcengine websocket is closed")
         with self._send_lock:
-            ws.send_binary(payload)
+            try:
+                ws.send_binary(payload)
+            except Exception as exc:
+                self._ws = None
+                raise RuntimeError(f"volcengine websocket send failed: {exc}") from exc
+
+    def _send_audio_chunk(self, chunk: bytes) -> None:
+        ws = self._ws
+        if ws is None:
+            raise RuntimeError("volcengine websocket is closed")
+        payload = meeting_views._volcengine_build_audio_request(
+            event=meeting_views._VOLCENGINE_EVENT_AUDIO_REQUEST,
+            session_id=self._session_id,
+            audio_payload=chunk,
+        )
+        with self._send_lock:
+            if self._audio_chunk_sleep_seconds > 0:
+                now = time.monotonic()
+                if now < self._next_audio_send_at:
+                    time.sleep(self._next_audio_send_at - now)
+                    now = time.monotonic()
+                self._next_audio_send_at = max(self._next_audio_send_at, now) + self._audio_chunk_sleep_seconds
+            try:
+                ws.send_binary(payload)
+            except Exception as exc:
+                self._ws = None
+                raise RuntimeError(f"volcengine websocket send failed: {exc}") from exc
 
     def _recv_loop(self) -> None:
         close_old_connections()
@@ -376,11 +469,21 @@ class _VolcengineRealtimeStreamBridge:
             except Exception as exc:
                 if not self._stop_event.is_set():
                     self._emit_error(str(exc))
+                self._ws = None
                 break
             if not raw:
                 continue
             event = meeting_views._volcengine_parse_ws_response(raw)
             if event is None:
+                meeting_views._volcengine_debug_emit(
+                    direction="in",
+                    phase="recv_unparsed",
+                    session_id=self._session_id,
+                    extra={
+                        "raw_type": type(raw).__name__,
+                        "raw_bytes": len(raw) if isinstance(raw, (bytes, bytearray)) else 0,
+                    },
+                )
                 continue
             event_code = int(event.get("event") or 0)
             event_name = str(event.get("event_name") or "").strip().lower()
@@ -451,6 +554,9 @@ class _VolcengineRealtimeStreamBridge:
                         self._turn_last_audio_at = 0.0
                         self._turn_asr_done_at = 0.0
                         self._turn_fallback_attempted = False
+                        self._turn_out_audio_bytes = 0
+                        self._turn_last_out_audio_sent_mono = 0.0
+                        self._turn_end_asr_sent_at = 0.0
                     self._emit({"type": "no_content", "detail": "asr no content"})
                 else:
                     with self._state_lock:
@@ -516,6 +622,7 @@ class _VolcengineRealtimeStreamBridge:
         emit_no_content = False
         fallback_prompt = ""
         forced_text_done = False
+        retry_end_asr = False
         now = time.time()
         with self._state_lock:
             if not self._turn_active:
@@ -548,7 +655,7 @@ class _VolcengineRealtimeStreamBridge:
                 if recognized_text and not self._turn_fallback_attempted and asr_wait >= 1.6:
                     self._turn_fallback_attempted = True
                     fallback_prompt = recognized_text
-                elif asr_wait >= 4.5:
+                elif asr_wait >= 12.0:
                     self._turn_active = False
                     self._turn_text_done = False
                     self._turn_audio_done = not self._request_audio
@@ -564,6 +671,54 @@ class _VolcengineRealtimeStreamBridge:
                     self._turn_last_audio_at = 0.0
                     self._turn_asr_done_at = 0.0
                     self._turn_fallback_attempted = False
+                    self._turn_end_asr_retry_count = 0
+                    self._turn_last_end_asr_retry_at = 0.0
+                    self._turn_out_audio_bytes = 0
+                    self._turn_last_out_audio_sent_mono = 0.0
+                    self._turn_end_asr_sent_at = 0.0
+                    emit_no_content = True
+            # Guard rail: end_asr sent but server never returns any ASR/text/audio events.
+            # Use a conservative policy: retry end_asr once before force timeout.
+            if (
+                self._turn_started_at > 0
+                and not self._turn_text_chunks
+                and not self._turn_audio_pcm_bytes
+                and self._turn_asr_done_at <= 0
+            ):
+                has_end_asr = self._turn_end_asr_sent_at > 0
+                baseline = self._turn_end_asr_sent_at if has_end_asr else self._turn_started_at
+                elapsed = now - baseline
+                retry_after = 3.0 if has_end_asr else 15.0
+                force_timeout_after = 10.0 if has_end_asr else 25.0
+                if (
+                    elapsed >= retry_after
+                    and self._turn_end_asr_retry_count < 1
+                    and (now - self._turn_last_end_asr_retry_at) >= 1.0
+                ):
+                    self._turn_end_asr_retry_count += 1
+                    self._turn_last_end_asr_retry_at = now
+                    retry_end_asr = True
+                elif elapsed >= force_timeout_after and self._turn_end_asr_retry_count >= 1:
+                    self._turn_active = False
+                    self._turn_text_done = False
+                    self._turn_audio_done = not self._request_audio
+                    self._turn_text_chunks = []
+                    self._turn_audio_pcm_bytes = bytearray()
+                    self._turn_ack_audio_chunks = 0
+                    self._turn_usage = {}
+                    self._turn_asr_final_chunks = []
+                    self._turn_asr_latest_interim = ""
+                    self._turn_started_at = 0.0
+                    self._turn_text_done_at = 0.0
+                    self._turn_last_text_at = 0.0
+                    self._turn_last_audio_at = 0.0
+                    self._turn_asr_done_at = 0.0
+                    self._turn_fallback_attempted = False
+                    self._turn_end_asr_retry_count = 0
+                    self._turn_last_end_asr_retry_at = 0.0
+                    self._turn_out_audio_bytes = 0
+                    self._turn_last_out_audio_sent_mono = 0.0
+                    self._turn_end_asr_sent_at = 0.0
                     emit_no_content = True
         if forced_text_done:
             meeting_views._volcengine_debug_emit(
@@ -571,6 +726,13 @@ class _VolcengineRealtimeStreamBridge:
                 phase="turn_timeout_force_text_done",
                 session_id=self._session_id,
             )
+        if retry_end_asr:
+            meeting_views._volcengine_debug_emit(
+                direction="internal",
+                phase="turn_timeout_retry_end_asr",
+                session_id=self._session_id,
+            )
+            self._safe_send_request(meeting_views._VOLCENGINE_EVENT_END_ASR, {})
         if fallback_prompt:
             try:
                 fallback_text, fallback_audio_base64, fallback_audio_mime = meeting_views._call_realtime_bot_via_volcengine_websocket(
@@ -603,6 +765,9 @@ class _VolcengineRealtimeStreamBridge:
                         self._turn_last_audio_at = 0.0
                         self._turn_asr_done_at = 0.0
                         self._turn_fallback_attempted = False
+                        self._turn_out_audio_bytes = 0
+                        self._turn_last_out_audio_sent_mono = 0.0
+                        self._turn_end_asr_sent_at = 0.0
                     return
             except Exception:
                 pass
@@ -636,6 +801,11 @@ class _VolcengineRealtimeStreamBridge:
             self._turn_last_audio_at = 0.0
             self._turn_asr_done_at = 0.0
             self._turn_fallback_attempted = False
+            self._turn_end_asr_retry_count = 0
+            self._turn_last_end_asr_retry_at = 0.0
+            self._turn_out_audio_bytes = 0
+            self._turn_last_out_audio_sent_mono = 0.0
+            self._turn_end_asr_sent_at = 0.0
 
         text = "".join(part for part in text_chunks if part.strip()).strip()
         recognized_text = "".join(part for part in asr_final_chunks if part.strip()).strip()
@@ -843,14 +1013,87 @@ async def realtime_audio_ws_application(scope, receive, send):
     stream_open = False
     bridge_queue: asyncio.Queue[dict] = asyncio.Queue()
     bridge = None
-    if ready_payload["streaming"]:
-        loop = asyncio.get_running_loop()
+    loop = asyncio.get_running_loop() if ready_payload["streaming"] else None
 
-        def _emit_from_bridge(payload: dict) -> None:
+    def _emit_from_bridge(payload: dict) -> None:
+        if loop is not None:
             loop.call_soon_threadsafe(bridge_queue.put_nowait, payload)
 
-        bridge = _VolcengineRealtimeStreamBridge(meeting=meeting, emit=_emit_from_bridge)
-        await sync_to_async(bridge.start, thread_sensitive=True)()
+    async def _close_bridge() -> None:
+        nonlocal bridge
+        if bridge is None:
+            return
+        current = bridge
+        bridge = None
+        try:
+            await sync_to_async(current.close, thread_sensitive=True)()
+        except Exception:
+            pass
+
+    async def _ensure_bridge() -> bool:
+        nonlocal bridge
+        if not ready_payload["streaming"]:
+            return False
+        if bridge is not None:
+            try:
+                healthy = await sync_to_async(bridge.is_healthy, thread_sensitive=True)()
+            except Exception:
+                healthy = False
+            if healthy:
+                return True
+            await _close_bridge()
+        candidate = _VolcengineRealtimeStreamBridge(meeting=meeting, emit=_emit_from_bridge)
+        try:
+            await sync_to_async(candidate.start, thread_sensitive=True)()
+        except Exception as exc:
+            await _send_json(
+                send,
+                {
+                    "type": "error",
+                    "status": 502,
+                    "detail": f"Realtime bridge init failed: {exc}",
+                },
+            )
+            return False
+        bridge = candidate
+        return True
+
+    async def _start_turn_with_recovery() -> bool:
+        if not await _ensure_bridge():
+            return False
+        try:
+            await sync_to_async(bridge.start_turn, thread_sensitive=True)()  # type: ignore[union-attr]
+            return True
+        except Exception as exc:
+            await _send_json(
+                send,
+                {
+                    "type": "error",
+                    "status": 502,
+                    "detail": f"Realtime bridge start_turn failed: {exc}",
+                },
+            )
+            await _close_bridge()
+            if not await _ensure_bridge():
+                return False
+            try:
+                await sync_to_async(bridge.start_turn, thread_sensitive=True)()  # type: ignore[union-attr]
+                return True
+            except Exception as retry_exc:
+                await _send_json(
+                    send,
+                    {
+                        "type": "error",
+                        "status": 502,
+                        "detail": f"Realtime bridge restart failed: {retry_exc}",
+                    },
+                )
+                await _close_bridge()
+                return False
+
+    # Eager warmup for quicker first-turn response; non-fatal if it fails.
+    if ready_payload["streaming"]:
+        await _ensure_bridge()
 
     while True:
         receive_task = asyncio.create_task(receive())
@@ -867,8 +1110,7 @@ async def realtime_audio_ws_application(scope, receive, send):
             continue
         event = receive_task.result()
         if event["type"] == "websocket.disconnect":
-            if bridge is not None:
-                await sync_to_async(bridge.close, thread_sensitive=True)()
+            await _close_bridge()
             return
         if event["type"] != "websocket.receive":
             continue
@@ -895,14 +1137,16 @@ async def realtime_audio_ws_application(scope, receive, send):
         if ready_payload["streaming"]:
             if message_type in {"speech_start", "start"}:
                 stream_open = True
-                if bridge is not None:
-                    await sync_to_async(bridge.start_turn, thread_sensitive=True)()
+                if not await _start_turn_with_recovery():
+                    stream_open = False
+                    continue
                 await _send_json(send, {"type": "ack", "event": "speech_start"})
                 continue
             if message_type in {"interrupt", "client_interrupt"}:
                 stream_open = True
-                if bridge is not None:
-                    await sync_to_async(bridge.start_turn, thread_sensitive=True)()
+                if not await _start_turn_with_recovery():
+                    stream_open = False
+                    continue
                 await _send_json(send, {"type": "ack", "event": "interrupt"})
                 continue
             if message_type in {"audio_chunk", "chunk"}:
@@ -912,10 +1156,40 @@ async def realtime_audio_ws_application(scope, receive, send):
                     continue
                 if not stream_open:
                     stream_open = True
-                    if bridge is not None:
-                        await sync_to_async(bridge.start_turn, thread_sensitive=True)()
-                if bridge is not None:
-                    await sync_to_async(bridge.send_audio_pcm16, thread_sensitive=True)(audio_pcm16)
+                    if not await _start_turn_with_recovery():
+                        stream_open = False
+                        continue
+                elif bridge is None:
+                    if not await _start_turn_with_recovery():
+                        stream_open = False
+                        continue
+                try:
+                    await sync_to_async(bridge.send_audio_pcm16, thread_sensitive=True)(audio_pcm16)  # type: ignore[union-attr]
+                except Exception as exc:
+                    await _send_json(
+                        send,
+                        {
+                            "type": "error",
+                            "status": 502,
+                            "detail": f"Realtime bridge send failed: {exc}; retrying",
+                        },
+                    )
+                    if not await _start_turn_with_recovery():
+                        stream_open = False
+                        continue
+                    try:
+                        await sync_to_async(bridge.send_audio_pcm16, thread_sensitive=True)(audio_pcm16)  # type: ignore[union-attr]
+                    except Exception as retry_exc:
+                        await _send_json(
+                            send,
+                            {
+                                "type": "error",
+                                "status": 502,
+                                "detail": f"Realtime bridge send retry failed: {retry_exc}",
+                            },
+                        )
+                        await _close_bridge()
+                        stream_open = False
                 continue
             if message_type in {"speech_end", "end_asr", "end"}:
                 await _send_json(send, {"type": "ack", "event": "speech_end"})
@@ -924,7 +1198,18 @@ async def realtime_audio_ws_application(scope, receive, send):
                     stream_open = False
                     continue
                 stream_open = False
-                await sync_to_async(bridge.end_turn, thread_sensitive=True)()
+                try:
+                    await sync_to_async(bridge.end_turn, thread_sensitive=True)()
+                except Exception as exc:
+                    await _send_json(
+                        send,
+                        {
+                            "type": "error",
+                            "status": 502,
+                            "detail": f"Realtime bridge end_turn failed: {exc}",
+                        },
+                    )
+                    await _close_bridge()
                 continue
 
         if message_type not in {"", "audio_ingress", "ingress", "audio"}:

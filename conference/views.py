@@ -239,6 +239,14 @@ _REALTIME_BOT_VOLC_AUDIO_CHUNK_SLEEP_SECONDS = max(
     0.0,
     _setting_float("REALTIME_BOT_VOLC_AUDIO_CHUNK_INTERVAL_MS", 20.0) / 1000.0,
 )
+_REALTIME_BOT_VOLC_MIN_TURN_AUDIO_BYTES = max(
+    640,
+    _setting_int("REALTIME_BOT_VOLC_MIN_TURN_AUDIO_BYTES", 9600),
+)
+_REALTIME_BOT_VOLC_END_TAIL_MS = max(
+    0,
+    min(500, _setting_int("REALTIME_BOT_VOLC_END_TAIL_MS", 120)),
+)
 _REALTIME_BOT_VOLC_DEBUG_EVENTS = bool(getattr(settings, "REALTIME_BOT_VOLC_DEBUG_EVENTS", False))
 _REALTIME_BOT_VOLC_DEBUG_EVENTS_MAX_PAYLOAD_CHARS = max(
     200,
@@ -4149,35 +4157,87 @@ def _extract_text_from_volcengine_ws_event(payload) -> str:
     if text:
         return text
     candidates: list[str] = []
+
+    def _append_text_candidate(raw_value) -> None:
+        if isinstance(raw_value, str):
+            value = raw_value.strip()
+            if value:
+                candidates.append(value)
+            return
+        if isinstance(raw_value, (list, tuple)):
+            for item in raw_value:
+                _append_text_candidate(item)
+            return
+        if isinstance(raw_value, dict):
+            for nested_key in (
+                "text",
+                "content",
+                "answer",
+                "reply",
+                "reply_text",
+                "response_text",
+                "bot_reply",
+                "bot_content",
+                "sentence",
+                "transcript",
+                "final_text",
+                "utterance",
+            ):
+                _append_text_candidate(raw_value.get(nested_key))
+
     for node in _iter_json_nodes(payload):
         if not isinstance(node, dict):
             continue
+        role = str(
+            node.get("role")
+            or node.get("speaker")
+            or node.get("speaker_role")
+            or node.get("from")
+            or ""
+        ).strip().lower()
+        query_like = bool(node.get("query")) and not (
+            node.get("answer")
+            or node.get("reply")
+            or node.get("reply_text")
+            or node.get("response_text")
+            or node.get("bot_reply")
+            or node.get("bot_content")
+        )
         for key in (
             "text",
+            "content",
             "answer",
             "reply",
+            "reply_text",
+            "response_text",
+            "bot_reply",
+            "bot_content",
             "message",
             "sentence",
             "transcript",
             "final_text",
             "utterance",
         ):
-            value = node.get(key)
-            if isinstance(value, str) and value.strip():
-                lowered_key = key.lower()
-                # Avoid echoing user input/query payloads as assistant output.
-                if lowered_key in {"text", "message"}:
-                    role = str(node.get("role") or node.get("speaker") or "").strip().lower()
-                    if role in {"user", "human", "client"}:
-                        continue
-                if lowered_key == "text" and node.get("query") and not node.get("answer"):
-                    continue
-                candidates.append(value.strip())
-            elif isinstance(value, (list, tuple)):
-                for item in value:
-                    if isinstance(item, str) and item.strip():
-                        candidates.append(item.strip())
-    return " ".join(candidates).strip()
+            lowered_key = key.lower()
+            # Avoid echoing user input/query payloads as assistant output.
+            if lowered_key in {"text", "message", "content"} and role in {"user", "human", "client"}:
+                continue
+            if lowered_key in {"text", "message", "content"} and query_like:
+                continue
+            _append_text_candidate(node.get(key))
+    if not candidates:
+        return ""
+    unique_candidates: list[str] = []
+    seen: set[str] = set()
+    for item in candidates:
+        normalized = item.strip()
+        if not normalized:
+            continue
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        unique_candidates.append(normalized)
+    return " ".join(unique_candidates).strip()
 
 
 def _extract_asr_text_from_volcengine_payload(payload_msg) -> tuple[str, bool]:
@@ -4213,9 +4273,6 @@ def _normalized_realtime_reply_text(text: str, *, audio_base64: str = "") -> str
     normalized = (text or "").strip()
     if normalized:
         return normalized
-    if (audio_base64 or "").strip():
-        # Some volcengine realtime turns may only return TTS audio chunks.
-        return "（语音回复）"
     return ""
 
 
