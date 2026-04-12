@@ -317,7 +317,7 @@ extension _MeetingRoomWorkspaceWidgets on _MeetingRoomPageState {
 
   Widget _buildWorkspaceAgentCard({
     required String displayName,
-    required _WorkspaceAgentSession? session,
+    required WorkspaceAgentSession? session,
     required VoidCallback onConnect,
     required VoidCallback onSummarize,
     required VoidCallback onTodos,

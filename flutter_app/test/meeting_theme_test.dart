@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:smart_meeting_app/app/app.dart';
 import 'package:smart_meeting_app/app/theme/meeting_theme.dart';
+import 'package:smart_meeting_app/app/theme/theme_controller.dart';
 
 void main() {
   test('buildMeetingTheme returns different palettes for presets', () {
@@ -58,5 +59,37 @@ void main() {
 
     expect(palette.heroGradientStart, const Color(0xFF223B63));
     expect(palette.primarySoft, const Color(0xFFE9F0FF));
+  });
+
+  testWidgets('MeetingThemeController switches the active app theme', (
+    tester,
+  ) async {
+    late MeetingThemePalette palette;
+
+    await tester.pumpWidget(
+      SmartMeetingApp(
+        home: Builder(
+          builder: (context) {
+            palette = MeetingTheme.of(context);
+            return Scaffold(
+              body: TextButton(
+                onPressed: () => MeetingThemeControllerScope.of(
+                  context,
+                ).updatePreset(MeetingThemePreset.graphite),
+                child: const Text('switch'),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+
+    expect(palette.primary, const Color(0xFF155EEF));
+
+    await tester.tap(find.text('switch'));
+    await tester.pumpAndSettle();
+
+    expect(palette.primary, const Color(0xFF2F6FED));
+    expect(palette.heroGradientStart, const Color(0xFF223B63));
   });
 }

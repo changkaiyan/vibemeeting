@@ -210,9 +210,13 @@ class MeetingRealtimeBotControlSerializer(serializers.Serializer):
     realtime_bot_enabled = serializers.BooleanField(required=False)
     realtime_bot_muted = serializers.BooleanField(required=False)
     realtime_bot_base_url = serializers.CharField(required=False, allow_blank=False, max_length=255)
+    realtime_bot_openai_model = serializers.CharField(required=False, allow_blank=False, max_length=120)
+    realtime_bot_openai_voice = serializers.CharField(required=False, allow_blank=False, max_length=40)
+    realtime_bot_volc_model = serializers.CharField(required=False, allow_blank=False, max_length=20)
+    realtime_bot_volc_voice = serializers.CharField(required=False, allow_blank=True, max_length=120)
     realtime_bot_model = serializers.CharField(required=False, allow_blank=False, max_length=120)
     realtime_bot_api_key = serializers.CharField(required=False, allow_blank=True, max_length=255)
-    realtime_bot_voice = serializers.CharField(required=False, allow_blank=False, max_length=40)
+    realtime_bot_voice = serializers.CharField(required=False, allow_blank=True, max_length=120)
     realtime_bot_volc_ws_url = serializers.CharField(required=False, allow_blank=False, max_length=255)
     realtime_bot_volc_app_id = serializers.CharField(required=False, allow_blank=False, max_length=64)
     realtime_bot_volc_app_key = serializers.CharField(required=False, allow_blank=True, max_length=255)
@@ -290,6 +294,10 @@ class MeetingSerializer(serializers.ModelSerializer):
             "realtime_bot_enabled",
             "realtime_bot_muted",
             "realtime_bot_base_url",
+            "realtime_bot_openai_model",
+            "realtime_bot_openai_voice",
+            "realtime_bot_volc_model",
+            "realtime_bot_volc_voice",
             "realtime_bot_model",
             "realtime_bot_voice",
             "realtime_bot_volc_ws_url",

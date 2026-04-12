@@ -1,9 +1,12 @@
-import json
-import os
-import tempfile
+import asyncio
 import base64
 import hashlib
-import asyncio
+import inspect
+import importlib
+import json
+import os
+import sys
+import tempfile
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -47,6 +50,8 @@ from conference.models import (
 from conference.meeting_resolver import MeetingLookup
 from conference.meeting_refs import ensure_meeting_ref
 from conference.share import build_meeting_share_code
+import conference.realtime_audio_ws as conference_realtime_audio_ws
+import conference.views as conference_views
 from services.stt_worker.stt_worker.config import SttWorkerConfig
 from services.stt_worker.stt_worker.server import DEFAULT_WS_PATH, start_server
 from smart_meeting.asgi import application
@@ -3239,3 +3244,647 @@ class MeetingRealtimeSpeechToTextTests(TestCase):
         self.assertEqual(MeetingTranscriptChunk.objects.filter(meeting=self.meeting).count(), 1)
         chunk = MeetingTranscriptChunk.objects.get(meeting=self.meeting)
         self.assertIn("Mock realtime transcript", chunk.text)
+
+
+class MeetingRealtimeBotControlTests(TestCase):
+    def setUp(self):
+        self.host = User.objects.create_user(username="host_ai", password="pass1234")
+        self.cohost = User.objects.create_user(username="cohost_ai", password="pass1234")
+        self.meeting = Meeting.objects.create(
+            title="AI Control Test",
+            room_name="room-ai-control-test",
+            owner=self.host,
+            waiting_room_enabled=False,
+            allow_chat=True,
+            allow_screen_share=True,
+            allow_self_unmute=True,
+            allow_member_video=True,
+            mute_on_entry=False,
+            allow_recording=True,
+            max_participants=20,
+        )
+        MeetingMember.objects.create(
+            meeting=self.meeting,
+            user=self.host,
+            role=MeetingRole.HOST,
+            muted_by_host=False,
+        )
+        MeetingMember.objects.create(
+            meeting=self.meeting,
+            user=self.cohost,
+            role=MeetingRole.COHOST,
+            muted_by_host=False,
+        )
+
+    def _auth_client(self, user):
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def _reload_conference_views(self):
+        importlib.reload(conference_views)
+
+    def test_ai_controls_patch_accepts_provider_specific_openai_fields(self):
+        client = self._auth_client(self.host)
+
+        with patch("conference.views._sync_realtime_bot_presence"):
+            response = client.patch(
+                f"/api/meetings/{self.meeting.id}/ai-controls",
+                {
+                    "realtime_bot_provider": "openai",
+                    "realtime_bot_openai_model": "gpt-realtime-mini",
+                    "realtime_bot_openai_voice": "cedar",
+                    "realtime_bot_api_key": "openai-secret",
+                    "realtime_bot_display_name": "OpenAI Bot",
+                },
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.meeting.refresh_from_db()
+        self.assertEqual(self.meeting.realtime_bot_provider, "openai")
+        self.assertEqual(self.meeting.realtime_bot_openai_model, "gpt-realtime-mini")
+        self.assertEqual(self.meeting.realtime_bot_openai_voice, "cedar")
+
+        payload = response.json()
+        self.assertEqual(payload["realtime_bot_openai_model"], "gpt-realtime-mini")
+        self.assertEqual(payload["realtime_bot_openai_voice"], "cedar")
+
+    def test_ai_controls_patch_maps_legacy_openai_fields_to_provider_specific_fields(self):
+        client = self._auth_client(self.host)
+
+        with patch("conference.views._sync_realtime_bot_presence"):
+            response = client.patch(
+                f"/api/meetings/{self.meeting.id}/ai-controls",
+                {
+                    "realtime_bot_provider": "openai",
+                    "realtime_bot_model": "gpt-realtime-nano",
+                    "realtime_bot_voice": "alloy",
+                    "realtime_bot_api_key": "openai-secret",
+                    "realtime_bot_display_name": "Legacy OpenAI Bot",
+                },
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.meeting.refresh_from_db()
+        self.assertEqual(self.meeting.realtime_bot_openai_model, "gpt-realtime-nano")
+        self.assertEqual(self.meeting.realtime_bot_openai_voice, "alloy")
+
+        payload = response.json()
+        self.assertEqual(payload["realtime_bot_openai_model"], "gpt-realtime-nano")
+        self.assertEqual(payload["realtime_bot_openai_voice"], "alloy")
+
+    def test_ai_controls_patch_maps_legacy_volc_fields_to_provider_specific_fields(self):
+        client = self._auth_client(self.host)
+
+        with patch("conference.views._sync_realtime_bot_presence"):
+            response = client.patch(
+                f"/api/meetings/{self.meeting.id}/ai-controls",
+                {
+                    "realtime_bot_provider": "volcengine",
+                    "realtime_bot_model": "2.2.0.0",
+                    "realtime_bot_voice": "zh_female_vv_jupiter_bigtts",
+                    "realtime_bot_volc_app_id": "app-id",
+                    "realtime_bot_volc_access_key": "access-key",
+                    "realtime_bot_display_name": "Volc Bot",
+                },
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.meeting.refresh_from_db()
+        self.assertEqual(self.meeting.realtime_bot_provider, "volcengine")
+        self.assertEqual(self.meeting.realtime_bot_volc_model, "2.2.0.0")
+        self.assertEqual(self.meeting.realtime_bot_volc_voice, "zh_female_vv_jupiter_bigtts")
+
+        payload = response.json()
+        self.assertEqual(payload["realtime_bot_volc_model"], "2.2.0.0")
+        self.assertEqual(payload["realtime_bot_volc_voice"], "zh_female_vv_jupiter_bigtts")
+
+    def test_ai_controls_patch_uses_openai_defaults_from_settings(self):
+        client = self._auth_client(self.host)
+        self.meeting.realtime_bot_model = ""
+        self.meeting.realtime_bot_openai_model = ""
+        self.meeting.realtime_bot_openai_voice = ""
+        self.meeting.realtime_bot_voice = ""
+        self.meeting.save(
+            update_fields=[
+                "realtime_bot_model",
+                "realtime_bot_openai_model",
+                "realtime_bot_openai_voice",
+                "realtime_bot_voice",
+            ]
+        )
+
+        with override_settings(
+            REALTIME_BOT_DEFAULT_PROVIDER="openai",
+            REALTIME_BOT_DEFAULT_BASE_URL="https://api.custom-openai.test",
+            REALTIME_BOT_DEFAULT_MODEL="gpt-realtime-custom",
+            REALTIME_BOT_DEFAULT_VOICE="verse",
+            REALTIME_BOT_DEFAULT_DISPLAY_NAME="Env OpenAI Bot",
+            REALTIME_BOT_DEFAULT_API_KEY="env-openai-key",
+        ):
+            self._reload_conference_views()
+            try:
+                with patch("conference.views._sync_realtime_bot_presence"):
+                    response = client.patch(
+                        f"/api/meetings/{self.meeting.id}/ai-controls",
+                        {
+                            "realtime_bot_provider": "openai",
+                            "realtime_bot_enabled": True,
+                        },
+                        format="json",
+                    )
+                self.meeting.refresh_from_db()
+                self.assertEqual(conference_views._REALTIME_BOT_DEFAULT_BASE_URL, "https://api.custom-openai.test")
+                self.assertEqual(conference_views._meeting_realtime_bot_openai_model(self.meeting), "gpt-realtime-custom")
+                self.assertEqual(conference_views._meeting_realtime_bot_openai_voice(self.meeting), "verse")
+                self.assertEqual(conference_views._meeting_realtime_bot_api_key(self.meeting), "env-openai-key")
+                self.assertTrue(conference_views._meeting_realtime_bot_ready(self.meeting))
+            finally:
+                self._reload_conference_views()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["realtime_bot_provider"], "openai")
+
+    def test_ai_controls_patch_uses_volc_defaults_from_settings(self):
+        client = self._auth_client(self.host)
+        self.meeting.realtime_bot_model = ""
+        self.meeting.realtime_bot_volc_model = ""
+        self.meeting.realtime_bot_volc_voice = ""
+        self.meeting.realtime_bot_voice = ""
+        self.meeting.realtime_bot_volc_app_id = ""
+        self.meeting.realtime_bot_volc_access_key = ""
+        self.meeting.realtime_bot_volc_uid = ""
+        self.meeting.save(
+            update_fields=[
+                "realtime_bot_model",
+                "realtime_bot_volc_model",
+                "realtime_bot_volc_voice",
+                "realtime_bot_voice",
+                "realtime_bot_volc_app_id",
+                "realtime_bot_volc_access_key",
+                "realtime_bot_volc_uid",
+            ]
+        )
+
+        with override_settings(
+            REALTIME_BOT_DEFAULT_PROVIDER="volcengine",
+            REALTIME_BOT_DEFAULT_VOLC_MODEL="1.2.1.1",
+            REALTIME_BOT_DEFAULT_DISPLAY_NAME="Env Volc Bot",
+            REALTIME_BOT_DEFAULT_VOLC_WS_URL="wss://volc.example.test/realtime",
+            REALTIME_BOT_DEFAULT_VOLC_APP_ID="env-volc-app-id",
+            REALTIME_BOT_DEFAULT_VOLC_APP_KEY="env-volc-app-key",
+            REALTIME_BOT_DEFAULT_VOLC_ACCESS_KEY="env-volc-access-key",
+            REALTIME_BOT_DEFAULT_VOLC_RESOURCE_ID="env.volc.resource",
+            REALTIME_BOT_DEFAULT_VOLC_UID="env-meeting-{meeting_id}",
+            REALTIME_BOT_DEFAULT_VOLC_O_SPEAKER="zh_female_vv_jupiter_bigtts",
+            REALTIME_BOT_DEFAULT_VOLC_SC_SPEAKER="saturn_clone",
+        ):
+            self._reload_conference_views()
+            try:
+                with patch("conference.views._sync_realtime_bot_presence"):
+                    response = client.patch(
+                        f"/api/meetings/{self.meeting.id}/ai-controls",
+                        {
+                            "realtime_bot_provider": "volcengine",
+                            "realtime_bot_enabled": True,
+                        },
+                        format="json",
+                    )
+                self.meeting.refresh_from_db()
+                self.assertEqual(conference_views._REALTIME_BOT_DEFAULT_PROVIDER, "volcengine")
+                self.assertEqual(conference_views._meeting_realtime_bot_volc_model(self.meeting), "1.2.1.1")
+                self.assertEqual(conference_views._meeting_realtime_bot_volc_app_id(self.meeting), "env-volc-app-id")
+                self.assertEqual(
+                    conference_views._meeting_realtime_bot_volc_access_key(self.meeting),
+                    "env-volc-access-key",
+                )
+                self.assertEqual(
+                    conference_views._meeting_realtime_bot_volc_uid(self.meeting),
+                    f"env-meeting-{self.meeting.id}",
+                )
+                self.assertTrue(conference_views._meeting_realtime_bot_ready(self.meeting))
+            finally:
+                self._reload_conference_views()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["realtime_bot_provider"], "volcengine")
+
+
+class MeetingRealtimeAudioWebSocketTests(TestCase):
+    def setUp(self):
+        self.host = User.objects.create_user(username="host_ai_ws", password="pass1234")
+        self.meeting = Meeting.objects.create(
+            title="AI WS Meeting",
+            room_name="room-ai-ws-test",
+            owner=self.host,
+            realtime_bot_enabled=True,
+            realtime_bot_provider="openai",
+            realtime_bot_api_key="openai-secret",
+        )
+        MeetingMember.objects.create(
+            meeting=self.meeting,
+            user=self.host,
+            role=MeetingRole.HOST,
+            muted_by_host=False,
+        )
+        self.meeting_ref = ensure_meeting_ref(self.meeting, self.host)
+
+    @patch("conference.realtime_audio_ws.meeting_views._volcengine_wait_for_event")
+    @patch("conference.realtime_audio_ws.meeting_views._volcengine_build_request", return_value=b"req")
+    @patch("conference.realtime_audio_ws.meeting_views._volcengine_ws_headers", return_value=["X-Test: 1"])
+    @patch("conference.realtime_audio_ws.threading.Thread")
+    def test_stream_bridge_start_matches_kaiyan_session_audio_params(
+        self,
+        mock_thread_cls,
+        mock_headers,
+        mock_build_request,
+        mock_wait_for_event,
+    ):
+        self.meeting.realtime_bot_provider = "volcengine"
+        self.meeting.realtime_bot_volc_app_id = "app-id"
+        self.meeting.realtime_bot_volc_access_key = "access-key"
+        self.meeting.realtime_bot_volc_resource_id = "volc.resource"
+        self.meeting.realtime_bot_volc_ws_url = "wss://volc.example.test/realtime"
+        self.meeting.realtime_bot_volc_model = "2.2.0.0"
+        self.meeting.realtime_bot_volc_voice = "saturn_zh_female_aojiaonvyou_tob"
+        self.meeting.save(
+            update_fields=[
+                "realtime_bot_provider",
+                "realtime_bot_volc_app_id",
+                "realtime_bot_volc_access_key",
+                "realtime_bot_volc_resource_id",
+                "realtime_bot_volc_ws_url",
+                "realtime_bot_volc_model",
+                "realtime_bot_volc_voice",
+            ]
+        )
+
+        class FakeWebSocket:
+            def __init__(self):
+                self.timeout = None
+                self.binary_payloads = []
+
+            def settimeout(self, value):
+                self.timeout = value
+
+            def send_binary(self, payload):
+                self.binary_payloads.append(payload)
+
+            def close(self):
+                return None
+
+        fake_ws = FakeWebSocket()
+        fake_websocket_module = SimpleNamespace(
+            create_connection=lambda *args, **kwargs: fake_ws,
+            WebSocketTimeoutException=TimeoutError,
+        )
+        mock_thread = SimpleNamespace(start=lambda: None)
+        mock_thread_cls.return_value = mock_thread
+
+        with patch.dict(sys.modules, {"websocket": fake_websocket_module}):
+            bridge = conference_realtime_audio_ws._VolcengineRealtimeStreamBridge(
+                meeting=self.meeting,
+                emit=lambda payload: None,
+            )
+            bridge.start()
+
+        self.assertEqual(mock_build_request.call_count, 2)
+        start_session_payload = mock_build_request.call_args_list[1].kwargs["payload"]
+        self.assertEqual(start_session_payload["asr"]["audio_config"]["format"], "pcm")
+        self.assertEqual(start_session_payload["asr"]["audio_config"]["sample_rate"], 16000)
+        self.assertEqual(start_session_payload["asr"]["extra"]["end_smooth_window_ms"], 1200)
+        self.assertEqual(start_session_payload["tts"]["audio_config"]["format"], "pcm")
+        self.assertEqual(start_session_payload["tts"]["audio_config"]["sample_rate"], 24000)
+        self.assertEqual(
+            start_session_payload["tts"]["speaker"],
+            conference_views._meeting_realtime_bot_volc_speaker(
+                self.meeting,
+                dialog_model=conference_views._meeting_realtime_bot_volc_model(self.meeting),
+            ),
+        )
+        self.assertEqual(start_session_payload["dialog"]["extra"]["input_mod"], "push_to_talk")
+        self.assertTrue(start_session_payload["dialog"]["extra"]["strict_audit"])
+        self.assertEqual(
+            start_session_payload["dialog"]["extra"]["recv_timeout"],
+            conference_views._REALTIME_BOT_RESPONSE_TIMEOUT_SECONDS,
+        )
+        self.assertEqual(start_session_payload["dialog"]["extra"]["model"], "2.2.0.0")
+
+    @patch("conference.realtime_audio_ws.meeting_views._auto_gain_pcm16_for_asr")
+    @patch("conference.realtime_audio_ws.meeting_views._decode_and_normalize_pcm16_audio")
+    def test_decode_audio_chunk_applies_same_auto_gain_path_as_kaiyan_streaming(
+        self,
+        mock_decode_audio,
+        mock_auto_gain,
+    ):
+        mock_decode_audio.return_value = b"\x01\x02\x03\x04"
+        mock_auto_gain.return_value = (
+            b"\x05\x06\x07\x08",
+            {"rms": 0.01},
+            {"rms": 0.03},
+            3.0,
+        )
+
+        audio_pcm16, err = async_to_sync(conference_realtime_audio_ws._decode_audio_chunk)(
+            {
+                "audio_base64": base64.b64encode(b"fake").decode("ascii"),
+                "sample_rate": 16000,
+                "channels": 1,
+            }
+        )
+
+        self.assertEqual(err, "")
+        self.assertEqual(audio_pcm16, b"\x05\x06\x07\x08")
+        mock_auto_gain.assert_called_once_with(
+            b"\x01\x02\x03\x04",
+            sample_rate=16000,
+            target_rms=0.03,
+            min_rms_to_boost=0.01,
+            max_gain=48.0,
+        )
+
+    def test_stream_bridge_treats_session_stop_as_turn_done_event(self):
+        self.assertTrue(conference_realtime_audio_ws._is_turn_done_event_name("session.stop"))
+        self.assertTrue(conference_realtime_audio_ws._is_turn_done_event_name("response.completed"))
+        self.assertFalse(conference_realtime_audio_ws._is_turn_done_event_name("response.delta"))
+
+    def test_volc_text_websocket_source_uses_pcm_tts_format(self):
+        source = inspect.getsource(conference_views._call_realtime_bot_via_volcengine_dialog_websocket)
+        self.assertIn('"format": "pcm"', source)
+        self.assertNotIn('"format": "pcm_s16le"', source)
+
+    def test_volc_audio_websocket_source_uses_pcm_tts_format(self):
+        source = inspect.getsource(conference_views._call_realtime_bot_via_volcengine_audio_dialog_websocket)
+        self.assertIn('"format": "pcm"', source)
+        self.assertNotIn('"format": "pcm_s16le"', source)
+
+    async def _run_ws_session(self, path: str, token: str, frames: list[dict]):
+        communicator = ApplicationCommunicator(
+            application,
+            {
+                "type": "websocket",
+                "path": path,
+                "query_string": f"token={token}".encode("utf-8"),
+                "headers": [],
+                "client": ("127.0.0.1", 12345),
+                "server": ("testserver", 80),
+                "subprotocols": [],
+            },
+        )
+        await communicator.send_input({"type": "websocket.connect"})
+        accepted = await communicator.receive_output(timeout=3)
+        outputs = [accepted, await communicator.receive_output(timeout=3)]
+        for frame in frames:
+            await communicator.send_input(
+                {
+                    "type": "websocket.receive",
+                    "text": json.dumps(frame),
+                }
+            )
+            outputs.append(await communicator.receive_output(timeout=5))
+        await communicator.send_input({"type": "websocket.disconnect", "code": 1000})
+        await communicator.wait()
+        return outputs
+
+    async def _open_ws(self, path: str, token: str):
+        communicator = ApplicationCommunicator(
+            application,
+            {
+                "type": "websocket",
+                "path": path,
+                "query_string": f"token={token}".encode("utf-8"),
+                "headers": [],
+                "client": ("127.0.0.1", 12345),
+                "server": ("testserver", 80),
+                "subprotocols": [],
+            },
+        )
+        await communicator.send_input({"type": "websocket.connect"})
+        accepted = await communicator.receive_output(timeout=3)
+        ready = await communicator.receive_output(timeout=3)
+        return communicator, accepted, ready
+
+    def test_realtime_ai_websocket_accepts_id_route_and_returns_ready(self):
+        token = str(AccessToken.for_user(self.host))
+
+        outputs = async_to_sync(self._run_ws_session)(
+            f"/ws/meetings/{self.meeting.id}/ai-controls/realtime-audio",
+            token,
+            [],
+        )
+
+        self.assertEqual(outputs[0]["type"], "websocket.accept")
+        ready_payload = json.loads(outputs[1]["text"])
+        self.assertEqual(ready_payload["type"], "ready")
+        self.assertEqual(ready_payload["meeting_id"], self.meeting.id)
+        self.assertEqual(ready_payload["provider"], "openai")
+        self.assertFalse(ready_payload["streaming"])
+
+    @patch("conference.views._meeting_ai_audio_ingress_impl")
+    def test_realtime_ai_websocket_ref_route_relays_existing_audio_ingress_impl(self, mock_ingress):
+        mock_ingress.return_value = SimpleNamespace(
+            status_code=200,
+            data={
+                "ok": True,
+                "preview_text": "hello from ai ws",
+            },
+        )
+        token = str(AccessToken.for_user(self.host))
+
+        outputs = async_to_sync(self._run_ws_session)(
+            f"/ws/my/meetings/{self.meeting_ref}/ai-controls/realtime-audio",
+            token,
+            [
+                {
+                    "type": "audio_ingress",
+                    "audio_base64": base64.b64encode(b"fake").decode("ascii"),
+                    "sample_rate": 16000,
+                    "channels": 1,
+                },
+            ],
+        )
+
+        self.assertEqual(outputs[0]["type"], "websocket.accept")
+        ready_payload = json.loads(outputs[1]["text"])
+        result_payload = json.loads(outputs[2]["text"])
+        self.assertEqual(ready_payload["type"], "ready")
+        self.assertEqual(result_payload["type"], "result")
+        self.assertTrue(result_payload["ok"])
+        self.assertEqual(result_payload["preview_text"], "hello from ai ws")
+        self.assertEqual(mock_ingress.call_count, 1)
+
+    @patch("conference.views._decode_and_normalize_pcm16_audio")
+    @patch("conference.realtime_audio_ws._VolcengineRealtimeStreamBridge")
+    def test_realtime_ai_websocket_supports_streaming_turn_protocol(
+        self,
+        mock_bridge_cls,
+        mock_decode_audio,
+    ):
+        self.meeting.realtime_bot_provider = "volcengine"
+        self.meeting.realtime_bot_volc_app_id = "app-id"
+        self.meeting.realtime_bot_volc_access_key = "access-key"
+        self.meeting.save(
+            update_fields=[
+                "realtime_bot_provider",
+                "realtime_bot_volc_app_id",
+                "realtime_bot_volc_access_key",
+            ]
+        )
+        mock_decode_audio.return_value = b"\x01\x02\x03\x04"
+        class FakeBridge:
+            def __init__(self, *, meeting, emit):
+                self.meeting = meeting
+                self.emit = emit
+                self.audio_chunks = []
+
+            def start(self):
+                return None
+
+            def close(self):
+                return None
+
+            def start_turn(self):
+                self.audio_chunks = []
+
+            def send_audio_pcm16(self, audio_pcm16: bytes):
+                self.audio_chunks.append(audio_pcm16)
+
+            def end_turn(self):
+                self.emit({"type": "result", "ok": True, "preview_text": "stream reply"})
+
+        mock_bridge_cls.side_effect = lambda **kwargs: FakeBridge(**kwargs)
+        token = str(AccessToken.for_user(self.host))
+
+        async def runner():
+            communicator, accepted, ready = await self._open_ws(
+                f"/ws/meetings/{self.meeting.id}/ai-controls/realtime-audio",
+                token,
+            )
+            await communicator.send_input(
+                {"type": "websocket.receive", "text": json.dumps({"type": "speech_start"})}
+            )
+            start_ack = await communicator.receive_output(timeout=3)
+            await communicator.send_input(
+                {
+                    "type": "websocket.receive",
+                    "text": json.dumps(
+                        {
+                            "type": "audio_chunk",
+                            "audio_base64": base64.b64encode(b"fake").decode("ascii"),
+                            "sample_rate": 16000,
+                            "channels": 1,
+                        }
+                    ),
+                }
+            )
+            await communicator.send_input(
+                {"type": "websocket.receive", "text": json.dumps({"type": "speech_end"})}
+            )
+            end_ack = await communicator.receive_output(timeout=3)
+            result = await communicator.receive_output(timeout=3)
+            await communicator.send_input({"type": "websocket.disconnect", "code": 1000})
+            await communicator.wait()
+            return accepted, ready, start_ack, end_ack, result
+
+        accepted, ready, start_ack, end_ack, result = async_to_sync(runner)()
+        ready_payload = json.loads(ready["text"])
+        start_ack_payload = json.loads(start_ack["text"])
+        end_ack_payload = json.loads(end_ack["text"])
+        result_payload = json.loads(result["text"])
+
+        self.assertEqual(accepted["type"], "websocket.accept")
+        self.assertEqual(ready_payload["type"], "ready")
+        self.assertTrue(ready_payload["streaming"])
+        self.assertEqual(start_ack_payload, {"type": "ack", "event": "speech_start"})
+        self.assertEqual(end_ack_payload, {"type": "ack", "event": "speech_end"})
+        self.assertEqual(result_payload["type"], "result")
+        self.assertTrue(result_payload["ok"])
+        self.assertEqual(result_payload["preview_text"], "stream reply")
+        self.assertEqual(mock_bridge_cls.call_count, 1)
+
+    @patch("conference.views._decode_and_normalize_pcm16_audio")
+    @patch("conference.realtime_audio_ws._VolcengineRealtimeStreamBridge")
+    def test_realtime_ai_websocket_relays_bridge_events_and_interrupt(self, mock_bridge_cls, mock_decode_audio):
+        self.meeting.realtime_bot_provider = "volcengine"
+        self.meeting.realtime_bot_volc_app_id = "app-id"
+        self.meeting.realtime_bot_volc_access_key = "access-key"
+        self.meeting.save(
+            update_fields=[
+                "realtime_bot_provider",
+                "realtime_bot_volc_app_id",
+                "realtime_bot_volc_access_key",
+            ]
+        )
+        mock_decode_audio.return_value = b"\x01\x02\x03\x04"
+        token = str(AccessToken.for_user(self.host))
+
+        class FakeBridge:
+            def __init__(self, *, meeting, emit):
+                self.meeting = meeting
+                self.emit = emit
+                self.start_turn_calls = 0
+                self.closed = False
+
+            def start(self):
+                return None
+
+            def close(self):
+                self.closed = True
+
+            def start_turn(self):
+                self.start_turn_calls += 1
+
+            def send_audio_pcm16(self, audio_pcm16: bytes):
+                self.emit({"type": "asr", "text": "heard", "is_interim": True})
+                self.emit({"type": "reply_delta", "content": "hello"})
+
+            def end_turn(self):
+                self.emit({"type": "result", "ok": True, "preview_text": "done"})
+
+        fake_bridge = FakeBridge(meeting=self.meeting, emit=lambda payload: None)
+        mock_bridge_cls.side_effect = lambda **kwargs: FakeBridge(**kwargs)
+
+        async def runner():
+            communicator, accepted, ready = await self._open_ws(
+                f"/ws/meetings/{self.meeting.id}/ai-controls/realtime-audio",
+                token,
+            )
+            await communicator.send_input(
+                {"type": "websocket.receive", "text": json.dumps({"type": "interrupt"})}
+            )
+            interrupt_ack = await communicator.receive_output(timeout=3)
+            await communicator.send_input(
+                {
+                    "type": "websocket.receive",
+                    "text": json.dumps(
+                        {
+                            "type": "audio_chunk",
+                            "audio_base64": base64.b64encode(b"fake").decode("ascii"),
+                            "sample_rate": 16000,
+                            "channels": 1,
+                        }
+                    ),
+                }
+            )
+            asr_payload = await communicator.receive_output(timeout=3)
+            delta_payload = await communicator.receive_output(timeout=3)
+            await communicator.send_input(
+                {"type": "websocket.receive", "text": json.dumps({"type": "speech_end"})}
+            )
+            end_ack = await communicator.receive_output(timeout=3)
+            result_payload = await communicator.receive_output(timeout=3)
+            await communicator.send_input({"type": "websocket.disconnect", "code": 1000})
+            await communicator.wait()
+            return accepted, ready, interrupt_ack, asr_payload, delta_payload, end_ack, result_payload
+
+        accepted, ready, interrupt_ack, asr_payload, delta_payload, end_ack, result_payload = async_to_sync(runner)()
+        self.assertEqual(accepted["type"], "websocket.accept")
+        self.assertEqual(json.loads(ready["text"])["streaming"], True)
+        self.assertEqual(json.loads(interrupt_ack["text"]), {"type": "ack", "event": "interrupt"})
+        self.assertEqual(json.loads(asr_payload["text"]), {"type": "asr", "text": "heard", "is_interim": True})
+        self.assertEqual(json.loads(delta_payload["text"]), {"type": "reply_delta", "content": "hello"})
+        self.assertEqual(json.loads(end_ack["text"]), {"type": "ack", "event": "speech_end"})
+        self.assertEqual(json.loads(result_payload["text"]), {"type": "result", "ok": True, "preview_text": "done"})

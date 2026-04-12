@@ -25,7 +25,7 @@ extension _MeetingRoomChatWidgets on _MeetingRoomPageState {
         .toList();
   }
 
-  Widget _buildChatMessageBubble(_ChatMessage message) {
+  Widget _buildChatMessageBubble(ChatMessage message) {
     final isMine = _isMyMessage(message);
     final senderName = _displayNameForMessage(message);
     final canRecall = _canRecallMessage(message);

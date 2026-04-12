@@ -198,10 +198,10 @@ extension _MeetingRoomModerationLogic on _MeetingRoomPageState {
       );
       final payload = await _jsonOrThrow(res);
       if (payload is Map<String, dynamic>) {
-        final profile = _MeetingMemberProfile.fromJson(payload);
+        final profile = MeetingMemberProfile.fromJson(payload);
         if (mounted) {
           setState(() {
-            _memberProfiles = <int, _MeetingMemberProfile>{
+            _memberProfiles = <int, MeetingMemberProfile>{
               ..._memberProfiles,
               profile.userId: profile,
             };
@@ -224,7 +224,7 @@ extension _MeetingRoomModerationLogic on _MeetingRoomPageState {
         final profile = _memberProfiles[userId];
         if (profile != null) {
           setState(() {
-            _memberProfiles = <int, _MeetingMemberProfile>{
+            _memberProfiles = <int, MeetingMemberProfile>{
               ..._memberProfiles,
               userId: _memberProfileWithDisplayName(profile, nextName),
             };
@@ -235,7 +235,7 @@ extension _MeetingRoomModerationLogic on _MeetingRoomPageState {
           });
         }
       }
-    } on _ApiException catch (e) {
+    } on MeetingApiException catch (e) {
       if (e.statusCode == 409 && e.payload != null && mounted) {
         final payload = e.payload!;
         final currentName =
@@ -247,7 +247,7 @@ extension _MeetingRoomModerationLogic on _MeetingRoomPageState {
         final profile = _memberProfiles[userId];
         if (profile != null && currentName.isNotEmpty) {
           setState(() {
-            _memberProfiles = <int, _MeetingMemberProfile>{
+            _memberProfiles = <int, MeetingMemberProfile>{
               ..._memberProfiles,
               userId: _memberProfileWithDisplayName(
                 profile,
@@ -331,7 +331,7 @@ extension _MeetingRoomModerationLogic on _MeetingRoomPageState {
         resolvedName,
         displayNameVersion: resolvedVersion > 0 ? resolvedVersion : null,
       );
-    } on _ApiException catch (e) {
+    } on MeetingApiException catch (e) {
       if (e.statusCode == 409 && e.payload != null) {
         final payload = e.payload!;
         final currentName =
@@ -546,11 +546,11 @@ extension _MeetingRoomModerationLogic on _MeetingRoomPageState {
     }
   }
 
-  Future<List<_WaitingRoomEntry>> _loadWaitingRoomEntries() async {
+  Future<List<WaitingRoomEntry>> _loadWaitingRoomEntries() async {
     final res = await _request('GET', _meetingWaitingRoomApiPath());
     final list = await _jsonOrThrow(res) as List<dynamic>;
     return list
-        .map((item) => _WaitingRoomEntry.fromJson(item as Map<String, dynamic>))
+        .map((item) => WaitingRoomEntry.fromJson(item as Map<String, dynamic>))
         .toList();
   }
 

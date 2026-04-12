@@ -26,38 +26,7 @@ extension _MeetingRoomSessionLogic on _MeetingRoomPageState {
     final realtimeBotEnabled =
         _boolFromJson(data['realtime_bot_enabled'], false);
     final realtimeBotMuted = _boolFromJson(data['realtime_bot_muted'], false);
-    final realtimeBotProvider = (data['realtime_bot_provider'] ?? 'openai')
-        .toString()
-        .trim()
-        .toLowerCase();
-    final realtimeBotBaseUrl =
-        (data['realtime_bot_base_url'] ?? 'https://api.openai.com')
-            .toString()
-            .trim();
-    final realtimeBotModel =
-        (data['realtime_bot_model'] ?? 'gpt-realtime').toString().trim();
-    final realtimeBotVoice =
-        (data['realtime_bot_voice'] ?? 'marin').toString().trim();
-    final realtimeBotVolcWsUrl = (data['realtime_bot_volc_ws_url'] ??
-            'wss://openspeech.bytedance.com/api/v3/realtime/dialogue')
-        .toString()
-        .trim();
-    final realtimeBotVolcAppId =
-        (data['realtime_bot_volc_app_id'] ?? '').toString().trim();
-    final realtimeBotVolcResourceId =
-        (data['realtime_bot_volc_resource_id'] ?? 'volc.speech.dialog')
-            .toString()
-            .trim();
-    final realtimeBotVolcUid =
-        (data['realtime_bot_volc_uid'] ?? '').toString().trim();
-    final realtimeBotDisplayName =
-        (data['realtime_bot_display_name'] ?? '实时语音助手').toString().trim();
-    final realtimeBotApiKeySet =
-        _boolFromJson(data['realtime_bot_api_key_set'], false);
-    final realtimeBotVolcAppKeySet =
-        _boolFromJson(data['realtime_bot_volc_app_key_set'], false);
-    final realtimeBotVolcAccessKeySet =
-        _boolFromJson(data['realtime_bot_volc_access_key_set'], false);
+    final realtimeBotConfig = MeetingRealtimeBotConfig.fromMeetingJson(data);
     final realtimeBotUserId = _intFromJson(data['realtime_bot_user_id'], 0);
     final realtimeBotIdentity =
         (data['realtime_bot_identity'] ?? '').toString().trim();
@@ -82,28 +51,29 @@ extension _MeetingRoomSessionLogic on _MeetingRoomPageState {
       _allowMemberVideo = allowMemberVideo;
       _realtimeBotEnabled = realtimeBotEnabled;
       _realtimeBotMuted = realtimeBotMuted;
-      _realtimeBotProvider =
-          realtimeBotProvider == 'volcengine' ? 'volcengine' : 'openai';
-      _realtimeBotBaseUrl = realtimeBotBaseUrl.isEmpty
+      _realtimeBotProvider = realtimeBotConfig.provider;
+      _realtimeBotBaseUrl = realtimeBotConfig.baseUrl.isEmpty
           ? 'https://api.openai.com'
-          : realtimeBotBaseUrl;
-      _realtimeBotModel =
-          realtimeBotModel.isEmpty ? 'gpt-realtime' : realtimeBotModel;
-      _realtimeBotVoice = realtimeBotVoice.isEmpty ? 'marin' : realtimeBotVoice;
-      _realtimeBotVolcWsUrl = realtimeBotVolcWsUrl.isEmpty
+          : realtimeBotConfig.baseUrl;
+      _realtimeBotOpenaiModel = realtimeBotConfig.openaiModel;
+      _realtimeBotOpenaiVoice = realtimeBotConfig.openaiVoice;
+      _realtimeBotVolcModel = realtimeBotConfig.volcModel;
+      _realtimeBotVolcVoice = realtimeBotConfig.volcVoice;
+      _realtimeBotVolcWsUrl = realtimeBotConfig.volcWsUrl.isEmpty
           ? 'wss://openspeech.bytedance.com/api/v3/realtime/dialogue'
-          : realtimeBotVolcWsUrl;
-      _realtimeBotVolcAppId = realtimeBotVolcAppId;
-      _realtimeBotVolcResourceId = realtimeBotVolcResourceId.isEmpty
+          : realtimeBotConfig.volcWsUrl;
+      _realtimeBotVolcAppId = realtimeBotConfig.volcAppId;
+      _realtimeBotVolcResourceId = realtimeBotConfig.volcResourceId.isEmpty
           ? 'volc.speech.dialog'
-          : realtimeBotVolcResourceId;
-      _realtimeBotVolcUid = realtimeBotVolcUid;
-      _realtimeBotDisplayName =
-          realtimeBotDisplayName.isEmpty ? '实时语音助手' : realtimeBotDisplayName;
+          : realtimeBotConfig.volcResourceId;
+      _realtimeBotVolcUid = realtimeBotConfig.volcUid;
+      _realtimeBotDisplayName = realtimeBotConfig.displayName.isEmpty
+          ? '实时语音助手'
+          : realtimeBotConfig.displayName;
       _realtimeBotIdentity = realtimeBotIdentity;
-      _realtimeBotApiKeySet = realtimeBotApiKeySet;
-      _realtimeBotVolcAppKeySet = realtimeBotVolcAppKeySet;
-      _realtimeBotVolcAccessKeySet = realtimeBotVolcAccessKeySet;
+      _realtimeBotApiKeySet = realtimeBotConfig.apiKeySet;
+      _realtimeBotVolcAppKeySet = realtimeBotConfig.volcAppKeySet;
+      _realtimeBotVolcAccessKeySet = realtimeBotConfig.volcAccessKeySet;
       _realtimeBotUserId = realtimeBotUserId > 0 ? realtimeBotUserId : null;
       _isSuperAdminUser = isSuperAdminUser;
       if (!isSuperAdminUser) {
@@ -132,7 +102,7 @@ extension _MeetingRoomSessionLogic on _MeetingRoomPageState {
     _syncRealtimeBotAudioIngress();
   }
 
-  Future<_JoinTokenPayload> _fetchJoinToken() async {
+  Future<JoinTokenPayload> _fetchJoinToken() async {
     if (_isShareEntry && _accessToken.isEmpty) {
       try {
         await _ensureJwt(force: true);
@@ -152,7 +122,7 @@ extension _MeetingRoomSessionLogic on _MeetingRoomPageState {
       requireAuth: shouldRequireAuth,
     );
     final data = await _jsonOrThrow(res) as Map<String, dynamic>;
-    return _JoinTokenPayload.fromJson(data);
+    return JoinTokenPayload.fromJson(data);
   }
 
   void _onRoomUpdated() {
