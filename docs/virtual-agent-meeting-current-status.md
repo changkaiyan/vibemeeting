@@ -232,7 +232,7 @@ Browser Workspace Action
 
 本仓库的本地开发部署说明已经统一收敛到：
 
-- [docs/development.md](/Users/zhaoyilun/workspace/vibemeeting/docs/development.md)
+- [development.md](/home/zhaoyilun/vibemeeting/docs/development.md)
 
 这里不再重复完整的启动步骤，只保留和当前虚拟 agent / realtime STT 场景直接相关的说明。
 
@@ -254,7 +254,7 @@ Browser Workspace Action
 
 真实 `faster-whisper` 模型下载和代理细节，继续参考：
 
-- [services/stt_worker/README.md](/Users/zhaoyilun/workspace/vibemeeting/services/stt_worker/README.md)
+- [stt-worker.md](/home/zhaoyilun/vibemeeting/docs/stt-worker.md)
 
 ## 当前测试方法
 
