@@ -565,6 +565,7 @@ class _VolcengineRealtimeStreamBridge:
 
             with self._state_lock:
                 if not self._turn_active and event_code in {
+                    meeting_views._VOLCENGINE_EVENT_TTS_TEXT,
                     meeting_views._VOLCENGINE_EVENT_TEXT_DELTA,
                     meeting_views._VOLCENGINE_EVENT_TEXT_DONE,
                     meeting_views._VOLCENGINE_EVENT_TTS_AUDIO,
@@ -583,7 +584,10 @@ class _VolcengineRealtimeStreamBridge:
                         self._turn_ack_audio_chunks += 1
                         self._turn_last_audio_at = time.time()
 
-            if event_code == meeting_views._VOLCENGINE_EVENT_TEXT_DELTA:
+            if event_code in {
+                meeting_views._VOLCENGINE_EVENT_TTS_TEXT,
+                meeting_views._VOLCENGINE_EVENT_TEXT_DELTA,
+            }:
                 chunk_text = meeting_views._extract_text_from_volcengine_ws_event(
                     payload_msg if payload_msg is not None else event
                 )
