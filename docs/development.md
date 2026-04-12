@@ -40,19 +40,21 @@ cd ..
 
 ### 1.2 每次开发启动
 
+### 1.2.1 HTTP 本机开发模式
+
 使用 4 个终端分别执行以下命令。
 
 终端 1：
 
 ```bash
-cd /Users/zhaoyilun/workspace/vibemeeting
+cd /path/to/vibemeeting
 livekit-server --dev --bind 127.0.0.1 --port 7880 --keys "devkey: secret"
 ```
 
 终端 2：
 
 ```bash
-cd /Users/zhaoyilun/workspace/vibemeeting
+cd /path/to/vibemeeting
 STT_WORKER_PROVIDER=faster_whisper \
 STT_WORKER_MODEL_SIZE=tiny \
 STT_WORKER_COMPUTE_TYPE=int8 \
@@ -64,7 +66,7 @@ uv run --python .venv/bin/python -m services.stt_worker.stt_worker.server
 终端 3：
 
 ```bash
-cd /Users/zhaoyilun/workspace/vibemeeting
+cd /path/to/vibemeeting
 MEETING_AGENT_BRIDGE_HOST=127.0.0.1 \
 MEETING_AGENT_BRIDGE_PORT=8787 \
 MEETING_AGENT_BRIDGE_WORKSPACE_ROOT="$(pwd)" \
@@ -75,25 +77,38 @@ uv run --python .venv/bin/python -m services.meeting_agent_bridge.server
 终端 4：
 
 ```bash
-cd /Users/zhaoyilun/workspace/vibemeeting
+cd /path/to/vibemeeting
 MEETING_REALTIME_STT_WORKER_URL=ws://127.0.0.1:8765/ws/realtime-transcribe \
 MEETING_AGENT_BRIDGE_MODE=http \
 MEETING_AGENT_BRIDGE_URL=http://127.0.0.1:8787 \
 uv run --python .venv/bin/python -m uvicorn smart_meeting.asgi:application --host 127.0.0.1 --port 8000
 ```
 
+### 1.2.2 HTTPS / 内网联调模式
+
+直接按 [https-testing.md](./https-testing.md) 启动。
+
 ### 1.3 功能验证
 
-1. 打开 `http://127.0.0.1:8000`
-2. 注册或登录
-3. 创建一个会议
-4. 进入会议页，确认能看到 `会议工作区`
-5. 在工作区点击 `开始`
-6. 说几句话后点击 `停止`
-7. 确认 `Live Transcript` 中出现转录文本
-8. 确认 `Current Context` 中出现上下文
-9. 点击 `Alice / Codex` 的 `总结`
-10. 确认 `Outputs` 中出现结果
+1. 本机 HTTP 模式打开 `http://127.0.0.1:8000`
+2. 内网 HTTPS 模式打开 `https://<LAN_IP>:8443`
+   其中 `<LAN_IP>` 请替换为运行 HTTPS 服务那台机器的实际内网 IP
+3. 首次访问自签名证书页面时，先手动信任证书
+4. 注册或登录
+5. 创建一个会议
+6. 进入会议页，确认能看到 `会议工作区`
+7. 在工作区点击 `开始`
+8. 说几句话后点击 `停止`
+9. 确认 `Live Transcript` 中出现转录文本
+10. 确认 `Current Context` 中出现上下文
+11. 点击 `Alice / Codex` 的 `总结`
+12. 确认 `Outputs` 中出现结果
+
+如果你是从另一台内网机器访问 HTTPS 页面，且浏览器仍然拒绝麦克风：
+
+1. 确认证书 SAN 包含该服务端 IP
+2. 把 `.certs/localhost.crt` 导入访问机器的受信任根证书
+3. 重新打开浏览器
 
 ## 2. 先理解当前开发形态
 
@@ -127,13 +142,14 @@ rsync -av --delete build/web/ ../artifacts/flutter_app_web/
 
 ## 3. 推荐本地联调方案
 
-当前推荐的本机完整联调方案是：
+当前推荐的完整联调方案是：
 
 - Python 环境用 `uv`
 - Django 用 ASGI 启动
 - STT 默认走真实 `faster-whisper`
 - Agent 默认走本地 HTTP bridge
 - Flutter 页面通过 `flutter build web` 后挂到 Django
+- 需要浏览器麦克风 / 内网跨机器访问时，优先使用 `HTTPS + WSS`
 
 不再推荐把本地开发默认建立在 `mock` STT 或 `disabled` bridge 之上。
 
@@ -236,9 +252,18 @@ MEETING_AGENT_BRIDGE_CODEX_BIN=codex
 MEETING_AGENT_BRIDGE_ENABLE_CLAUDE_VIA_CODEX=0
 ```
 
+如果你切到 HTTPS / 内网联调模式，建议覆盖为：
+
+```dotenv
+ALLOWED_HOSTS=127.0.0.1,localhost,<LAN_IP>
+HTTPS_TEST=1
+CSRF_TRUSTED_ORIGINS=https://localhost:8443,https://127.0.0.1:8443,https://<LAN_IP>:8443
+LIVEKIT_PUBLIC_URL=wss://<LAN_IP>:7443
+```
+
 重点说明：
 
-- `MEETING_REALTIME_STT_WORKER_URL` 控制会议页“实时字幕”按钮背后的 WebSocket 链路
+- `MEETING_REALTIME_STT_WORKER_URL` 是 Django 服务端桥接到 STT worker 的地址，不是浏览器直接连接的地址
 - `MEETING_AGENT_BRIDGE_MODE=http` 表示会议工作区里的 agent 默认走本地 bridge
 - `STT_WORKER_PROVIDER=faster_whisper` 表示本地默认不是 mock
 - `MEETING_AGENT_BRIDGE_ENABLE_CLAUDE_VIA_CODEX=0` 表示当前默认只保证 `codex` 可用
@@ -439,7 +464,7 @@ curl -fsS 'http://127.0.0.1:8787/health?agent_type=codex'
 ## 11. 相关文档
 
 - 部署边界说明：`docs/deployment.md`
-- HTTPS 本地联调：`HTTPS_TESTING.md`
-- LiveKit SSL：`LIVEKIT_SSL_STARTUP.md`
-- STT worker 运行时说明：`services/stt_worker/README.md`
+- HTTPS 本地联调：`docs/https-testing.md`
+- LiveKit SSL：`docs/livekit-ssl-startup.md`
+- STT worker 运行时说明：`docs/stt-worker.md`
 - 虚拟 agent 方案与状态：`docs/virtual-agent-meeting-design.md`、`docs/virtual-agent-meeting-current-status.md`

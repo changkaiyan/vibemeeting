@@ -32,10 +32,30 @@
 - 会议控制台：`/dashboard`
 - Django 管理后台：`/admin`
 
-## 设计文档
+## 文档索引
+
+开发与联调：
+
+- [本地开发指南](./docs/development.md)
+- [HTTPS 启动](./docs/https-testing.md)
+- [部署说明](./docs/deployment.md)
+- [Git 工作流](./docs/git-workflow.md)
+
+架构与方案：
 
 - [会议上下文驱动 AI 架构方案](./docs/meeting-context-agent-architecture.md)
+- [会议上下文 MVP 实施计划](./docs/meeting-context-mvp-implementation-plan.md)
 - [虚拟 Agent 参会设计方案](./docs/virtual-agent-meeting-design.md)
+- [虚拟 Agent 参会当前实现状态](./docs/virtual-agent-meeting-current-status.md)
+- [Kaiyan / Zhaoyilun 集成方案](./docs/kaiyan-zhaoyilun-integration-plan.md)
+
+运行组件：
+
+- [LiveKit SSL 启动](./docs/livekit-ssl-startup.md)
+- [LiveKit Egress 配置](./docs/livekit-egress-setup.md)
+- [STT Worker 说明](./docs/stt-worker.md)
+- [Flutter App 说明](./docs/flutter-app.md)
+- [构建产物说明](./docs/artifacts.md)
 
 ## 功能概览
 
@@ -67,6 +87,14 @@ uv run --python .venv/bin/python -m uvicorn smart_meeting.asgi:application --hos
 启动后访问 `http://127.0.0.1:8000`，或检查 `http://127.0.0.1:8000/healthz`。
 
 完整的本地开发部署说明见 [docs/development.md](./docs/development.md)。
+
+如果你要从同一内网的另一台机器访问，尤其要测试：
+
+- 浏览器麦克风权限
+- Flutter 会议页里的实时字幕
+- LiveKit 实时音视频
+
+请优先使用 `HTTPS + WSS` 拓扑，而不是 `http://内网IP:8000`。原因是多数浏览器不会把 `http://内网IP` 视为安全上下文，麦克风与部分 WebSocket 能力会被拦截。
 
 如果需要刷新 Flutter Web 静态产物：
 
@@ -137,15 +165,6 @@ cp .env.example .env
   - 是否允许本地注册（`/accounts/register`、`/api/auth/register`）
   - 是否允许本地用户名密码登录（`/accounts/login`、`/api/auth/login`）
 - 超级管理员可在计费管理界面导出用户信息 CSV（包含邮箱、套餐、用量和限制信息）。
-
-## HTTPS 本地联调
-
-参考 [HTTPS_TESTING.md](./HTTPS_TESTING.md) 与 [LIVEKIT_SSL_STARTUP.md](./LIVEKIT_SSL_STARTUP.md)。
-
-## 本地开发部署文档
-
-- [Development Guide](./docs/development.md)
-- [Deployment Notes](./docs/deployment.md)
 
 ## 主要 API
 

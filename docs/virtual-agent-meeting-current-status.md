@@ -2,7 +2,7 @@
 
 ## 文档目的
 
-这份文档对照 [virtual-agent-meeting-design.md](/home/zhaoyilun/vibemeeting/docs/virtual-agent-meeting-design.md) 和 [virtual-agent-meeting-overview.mmd](/home/zhaoyilun/vibemeeting/docs/diagrams/virtual-agent-meeting-overview.mmd)，说明当前代码库里**已经实现**了什么、**还没有实现**什么，以及当前系统的**部署方式**和**测试方法**。
+这份文档对照 [virtual-agent-meeting-design.md](./virtual-agent-meeting-design.md) 和 [virtual-agent-meeting-overview.mmd](./diagrams/virtual-agent-meeting-overview.mmd)，说明当前代码库里**已经实现**了什么、**还没有实现**什么，以及当前系统的**部署方式**和**测试方法**。
 
 这不是目标方案文档，而是当前代码状态文档。
 
@@ -29,8 +29,8 @@
 
 当前状态：
 
-- 已实现会议页模板 [meeting_room.html](/home/zhaoyilun/vibemeeting/app/templates/meeting_room.html)
-- 已实现会议页前端逻辑 [meeting-room.js](/home/zhaoyilun/vibemeeting/app/static/meeting-room.js)
+- 已实现会议页模板 `app/templates/meeting_room.html`
+- 已实现会议页前端逻辑 `app/static/meeting-room.js`
 - 已有：
   - Join / Leave
   - 打开 LiveKit Meet UI
@@ -57,7 +57,7 @@
 
 当前状态：
 
-- 会议房间和媒体加入逻辑已存在于前端 [meeting-room.js](/home/zhaoyilun/vibemeeting/app/static/meeting-room.js)
+- 会议房间和媒体加入逻辑已存在于前端 `app/static/meeting-room.js`
 - Django 提供 join token
 - 前端可加入 LiveKit 房间、发布麦克风/摄像头/屏幕共享
 - 当前没有实现“Agent 虚拟参会者”加入 LiveKit 房间
@@ -76,7 +76,7 @@
 
 当前状态：
 
-- transcript API 已存在，路由在 [meeting_context.py](/home/zhaoyilun/vibemeeting/conference/routes/meeting_context.py)
+- transcript API 已存在，路由在 `conference/routes/meeting_context.py`
 - 目前支持：
   - `GET /api/meetings/{meeting_id}/transcripts`
   - 手动 transcript 写入
@@ -98,14 +98,14 @@
 
 当前状态：
 
-- Django WebSocket gateway 已存在：[realtime.py](/home/zhaoyilun/vibemeeting/conference/speech_to_text/realtime.py)
+- Django WebSocket gateway 已存在：`conference/speech_to_text/realtime.py`
 - WebSocket 路径：
   - `/ws/meetings/{meeting_id}/stt`
 - 前端已能：
   - 采集本地音频
   - 通过 `MediaRecorder` 切块
   - 发送 `start / audio_chunk / stop`
-- 独立 STT worker 已存在：[server.py](/home/zhaoyilun/vibemeeting/services/stt_worker/stt_worker/server.py)
+- 独立 STT worker 已存在：`services/stt_worker/stt_worker/server.py`
 - worker WebSocket 路径：
   - `/ws/realtime-transcribe`
 - 当前 worker 支持两种 provider：
@@ -130,7 +130,7 @@
 
 当前状态：
 
-- 当前上下文核心逻辑位于 [services.py](/home/zhaoyilun/vibemeeting/conference/meeting_context/services.py)
+- 当前上下文核心逻辑位于 `conference/meeting_context/services.py`
 - 已能基于 transcript 构建当前 context snapshot
 - 当前 context 已被 UI 展示在 Current Context 面板
 - 当前 context 也已经被 agent action API 复用
@@ -150,8 +150,8 @@
 
 当前状态：
 
-- agent bridge 客户端模块已存在：[client.py](/home/zhaoyilun/vibemeeting/conference/meeting_agent_bridge/client.py)
-- 相关配置已存在于 [settings.py](/home/zhaoyilun/vibemeeting/smart_meeting/settings.py)
+- agent bridge 客户端模块已存在：`conference/meeting_agent_bridge/client.py`
+- 相关配置已存在于 `smart_meeting/settings.py`
   - `MEETING_AGENT_BRIDGE_MODE`
   - `MEETING_AGENT_BRIDGE_URL`
   - `MEETING_AGENT_BRIDGE_TIMEOUT_SECONDS`
@@ -192,18 +192,18 @@
 ### 代码结构
 
 - 会议主应用：
-  - [conference/](/home/zhaoyilun/vibemeeting/conference)
+  - `conference/`
 - meeting workspace：
-  - [conference/meeting_context/](/home/zhaoyilun/vibemeeting/conference/meeting_context)
+  - `conference/meeting_context/`
 - STT HTTP + realtime gateway：
-  - [conference/speech_to_text/](/home/zhaoyilun/vibemeeting/conference/speech_to_text)
+  - `conference/speech_to_text/`
 - agent bridge：
-  - [conference/meeting_agent_bridge/](/home/zhaoyilun/vibemeeting/conference/meeting_agent_bridge)
+  - `conference/meeting_agent_bridge/`
 - 独立 STT worker：
-  - [services/stt_worker/](/home/zhaoyilun/vibemeeting/services/stt_worker)
+  - `services/stt_worker/`
 - 会议页前端：
-  - [meeting_room.html](/home/zhaoyilun/vibemeeting/app/templates/meeting_room.html)
-  - [meeting-room.js](/home/zhaoyilun/vibemeeting/app/static/meeting-room.js)
+  - `app/templates/meeting_room.html`
+  - `app/static/meeting-room.js`
 
 ### 当前运行时数据流
 
@@ -232,7 +232,7 @@ Browser Workspace Action
 
 本仓库的本地开发部署说明已经统一收敛到：
 
-- [docs/development.md](/Users/zhaoyilun/workspace/vibemeeting/docs/development.md)
+- [development.md](./development.md)
 
 这里不再重复完整的启动步骤，只保留和当前虚拟 agent / realtime STT 场景直接相关的说明。
 
@@ -254,7 +254,7 @@ Browser Workspace Action
 
 真实 `faster-whisper` 模型下载和代理细节，继续参考：
 
-- [services/stt_worker/README.md](/Users/zhaoyilun/workspace/vibemeeting/services/stt_worker/README.md)
+- [stt-worker.md](./stt-worker.md)
 
 ## 当前测试方法
 

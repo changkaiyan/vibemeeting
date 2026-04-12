@@ -70,9 +70,9 @@
 
 ## 4. 当前仓库的相关专题文档
 
-- HTTPS 本地联调：`HTTPS_TESTING.md`
-- LiveKit SSL：`LIVEKIT_SSL_STARTUP.md`
-- STT worker 运行时说明：`services/stt_worker/README.md`
+- HTTPS 本地联调：`docs/https-testing.md`
+- LiveKit SSL：`docs/livekit-ssl-startup.md`
+- STT worker 运行时说明：`docs/stt-worker.md`
 - 开发与本机联调：`docs/development.md`
 
 ## 5. 后续建议
