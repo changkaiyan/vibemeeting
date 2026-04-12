@@ -223,15 +223,15 @@
 ## 8. 相关代码位置
 
 - 火山默认配置：
-  - `/home/zhaoyilun/vibemeeting/.env.example`
+  - `.env.example`
 - 运行时配置读取：
-  - `/home/zhaoyilun/vibemeeting/smart_meeting/settings.py`
+  - `smart_meeting/settings.py`
 - 火山 WebSocket header 组装：
-  - `/home/zhaoyilun/vibemeeting/conference/views.py`
+  - `conference/views.py`
 - 火山连通性测试接口：
-  - `/home/zhaoyilun/vibemeeting/conference/views.py`
+  - `conference/views.py`
 - 前端 AI 管控弹窗：
-  - `/home/zhaoyilun/vibemeeting/flutter_app/lib/meeting_room/page.dart`
+  - `flutter_app/lib/meeting_room/page.dart`
 
 ## 9. 手工验证记录
 

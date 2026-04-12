@@ -105,6 +105,42 @@ git merge origin/main
 
 关键点不是一定要用哪一种，而是团队必须统一，不要混用。
 
+### 3.2.1 当前仓库强制推荐：优先 `rebase origin/main`
+
+本仓库默认推荐短分支 + `rebase origin/main`，尤其在下面这些场景里，尽量不要继续堆旧提交链：
+
+- 你的前一个 PR 刚刚以 `squash` 方式合并到了 `main`
+- 你当前分支是从一个尚未合并的功能分支再切出来的
+- 你只是想在前一个 PR 基础上再补一个很小的后续 PR
+
+原因：
+
+- `squash merge` 会改变提交哈希
+- 如果后续分支继续保留旧提交链，GitHub 很容易把“已经进 main 的内容”再次算进新 PR
+- 最终表现就是：
+  - PR 文件列表很脏
+  - 和 `main` 冲突
+  - review 时看起来像把前一个 PR 又做了一遍
+
+推荐做法：
+
+```bash
+git fetch origin
+git rebase origin/main
+```
+
+如果 rebase 过程中遇到“这个提交其实已经在 main 里了”的情况：
+
+- 优先判断它是否只是前一个已合并 PR 的重复提交
+- 如果是，直接 `git rebase --skip`
+- 不要为了“保住原提交历史”去手工重解一堆已经在 `main` 中存在的冲突
+
+强制规则：
+
+- 新 PR 打开前，先确认 `git diff origin/main...HEAD` 只包含这次 PR 真正想提交的文件
+- 如果你看到前一个 PR 的文件又大面积出现，先不要开 PR，先 rebase 整理干净
+- 文档分支尤其要避免“文档重组 PR + 新文档 PR”叠在一起
+
 ### 3.3 开发完成后
 
 改完就尽快开 PR，优先走 Draft PR，让其他人尽早知道你在碰哪里。
@@ -150,6 +186,29 @@ git merge origin/main
 - 顺手重构目录结构
 
 这样的 PR 即使文本冲突不多，逻辑冲突也会很重。
+
+### 4.1 不要基于待合并 PR 继续堆新 PR
+
+除非明确要做 stacked PR，并且团队都接受这种方式，否则默认不要这样做：
+
+1. 从 `branch-A` 切出 `branch-B`
+2. `branch-A` 先被 squash 合并到 `main`
+3. `branch-B` 不做 rebase，直接继续提 PR
+
+这会导致：
+
+- `branch-B` 继续带着 `branch-A` 的旧提交哈希
+- GitHub 无法天然识别这些旧提交已经以另一种哈希进入了 `main`
+- 最终出现大量重复 diff 和冲突
+
+正确做法：
+
+```bash
+git fetch origin
+git rebase origin/main
+```
+
+整理完后再提新 PR。
 
 ## 5. Django 后端协作规则
 
