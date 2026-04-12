@@ -54,6 +54,7 @@
 - [LiveKit SSL 启动](./docs/livekit-ssl-startup.md)
 - [LiveKit Egress 配置](./docs/livekit-egress-setup.md)
 - [STT Worker 说明](./docs/stt-worker.md)
+- [火山实时语音测试](./docs/volcengine-realtime-voice-testing.md)
 - [Flutter App 说明](./docs/flutter-app.md)
 - [构建产物说明](./docs/artifacts.md)
 

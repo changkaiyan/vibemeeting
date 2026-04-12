@@ -36,3 +36,15 @@ This repository requires test-driven development by default.
 
 1. If a test cannot be added before the fix, say so explicitly and explain why.
 2. In that case, add the test immediately after the fix in the same task unless truly impossible.
+
+## Documentation Rules
+
+1. Project documentation must live under the repository root `docs/` directory unless there is a strong reason to colocate it elsewhere.
+2. New top-level docs in `docs/` must use lowercase kebab-case English filenames, for example:
+   - `volcengine-realtime-voice-testing.md`
+   - `livekit-ssl-startup.md`
+3. Avoid ad-hoc Chinese filenames, spaces, timestamps, or vague names like `notes.md`, `temp.md`, `misc.md`, or `new-doc.md`.
+4. Prefer one document per concrete topic. If a document is about setup, testing, deployment, architecture, or workflow, the filename should say so explicitly.
+5. When adding a new user-relevant document under `docs/`, update the `README.md` document index in the most relevant section.
+6. If a new doc introduces a new local convention or operator workflow, record the lasting convention in `AGENTS.md` when future agents would benefit from it.
+7. Do not scatter permanent project docs into branch-only artifacts, downloaded HTML bundles, or random subdirectories when the content should be maintained as first-class Markdown under `docs/`.
