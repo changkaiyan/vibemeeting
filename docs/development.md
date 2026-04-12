@@ -86,12 +86,13 @@ uv run --python .venv/bin/python -m uvicorn smart_meeting.asgi:application --hos
 
 ### 1.2.2 HTTPS / 内网联调模式
 
-直接按 [docs/https-testing.md](/home/zhaoyilun/vibemeeting/docs/https-testing.md) 启动。
+直接按 [https-testing.md](./https-testing.md) 启动。
 
 ### 1.3 功能验证
 
 1. 本机 HTTP 模式打开 `http://127.0.0.1:8000`
-2. 内网 HTTPS 模式打开 `https://10.208.128.244:8443`
+2. 内网 HTTPS 模式打开 `https://<LAN_IP>:8443`
+   其中 `<LAN_IP>` 请替换为运行 HTTPS 服务那台机器的实际内网 IP
 3. 首次访问自签名证书页面时，先手动信任证书
 4. 注册或登录
 5. 创建一个会议
@@ -106,7 +107,7 @@ uv run --python .venv/bin/python -m uvicorn smart_meeting.asgi:application --hos
 如果你是从另一台内网机器访问 HTTPS 页面，且浏览器仍然拒绝麦克风：
 
 1. 确认证书 SAN 包含该服务端 IP
-2. 把 [`.certs/localhost.crt`](/home/zhaoyilun/vibemeeting/.certs/localhost.crt) 导入访问机器的受信任根证书
+2. 把 `.certs/localhost.crt` 导入访问机器的受信任根证书
 3. 重新打开浏览器
 
 ## 2. 先理解当前开发形态
@@ -254,10 +255,10 @@ MEETING_AGENT_BRIDGE_ENABLE_CLAUDE_VIA_CODEX=0
 如果你切到 HTTPS / 内网联调模式，建议覆盖为：
 
 ```dotenv
-ALLOWED_HOSTS=127.0.0.1,localhost,10.208.128.244
+ALLOWED_HOSTS=127.0.0.1,localhost,<LAN_IP>
 HTTPS_TEST=1
-CSRF_TRUSTED_ORIGINS=https://localhost:8443,https://127.0.0.1:8443,https://10.208.128.244:8443
-LIVEKIT_PUBLIC_URL=wss://10.208.128.244:7443
+CSRF_TRUSTED_ORIGINS=https://localhost:8443,https://127.0.0.1:8443,https://<LAN_IP>:8443
+LIVEKIT_PUBLIC_URL=wss://<LAN_IP>:7443
 ```
 
 重点说明：

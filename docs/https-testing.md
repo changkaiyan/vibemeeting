@@ -19,7 +19,7 @@ uv run --python .venv/bin/python manage.py gendevcert --hosts "localhost,127.0.0
 如果要让同内网其他机器访问，把服务端 IP 也加进去：
 
 ```bash
-uv run --python .venv/bin/python manage.py gendevcert --hosts "localhost,127.0.0.1,10.208.128.244" --force
+uv run --python .venv/bin/python manage.py gendevcert --hosts "localhost,127.0.0.1,<LAN_IP>" --force
 ```
 
 证书输出到：
@@ -31,10 +31,10 @@ uv run --python .venv/bin/python manage.py gendevcert --hosts "localhost,127.0.0
 
 ```dotenv
 HTTPS_TEST=1
-ALLOWED_HOSTS=127.0.0.1,localhost,10.208.128.244
-CSRF_TRUSTED_ORIGINS=https://localhost:8443,https://127.0.0.1:8443,https://10.208.128.244:8443
+ALLOWED_HOSTS=127.0.0.1,localhost,<LAN_IP>
+CSRF_TRUSTED_ORIGINS=https://localhost:8443,https://127.0.0.1:8443,https://<LAN_IP>:8443
 LIVEKIT_URL=ws://127.0.0.1:7880
-LIVEKIT_PUBLIC_URL=wss://10.208.128.244:7443
+LIVEKIT_PUBLIC_URL=wss://<LAN_IP>:7443
 MEETING_REALTIME_STT_WORKER_URL=ws://127.0.0.1:8765/ws/realtime-transcribe
 MEETING_AGENT_BRIDGE_MODE=http
 MEETING_AGENT_BRIDGE_URL=http://127.0.0.1:8787
@@ -95,4 +95,4 @@ uv run --python .venv/bin/python -m uvicorn smart_meeting.asgi:application \
 ## 5. 访问地址
 
 - 本机：`https://127.0.0.1:8443`
-- 内网其他机器：`https://10.208.128.244:8443`
+- 内网其他机器：`https://<LAN_IP>:8443`
