@@ -70,6 +70,21 @@ export HTTP_PROXY=socks5://127.0.0.1:10808
 - `STT_WORKER_MODEL_SIZE`
 - `STT_WORKER_COMPUTE_TYPE`
 - `STT_WORKER_LANGUAGE`
+- `STT_WORKER_VOLCENGINE_APP_ID`
+- `STT_WORKER_VOLCENGINE_ACCESS_TOKEN`
+- `STT_WORKER_VOLCENGINE_RESOURCE_ID`
+- `STT_WORKER_VOLCENGINE_WS_URL`
+
+## 官方参考链接
+
+工作区 STT 接入豆包流式语音识别当前主要参考这三条官方文档：
+
+- 流式语音识别大模型 API
+  - https://www.volcengine.com/docs/6561/1354869?lang=zh
+- 请求协议 / 资源 ID 说明
+  - https://www.volcengine.com/docs/6561/1476625
+- 响应协议 / 返回包说明
+  - https://www.volcengine.com/docs/6561/1476626
 
 下一步再接：
 

@@ -1,0 +1,31 @@
+flowchart LR
+    mic["Browser Mic"]
+    worklet["AudioWorklet / PCM Capture"]
+    float32["Float32 Samples"]
+    downsample["Downsample\n48k -> 16k"]
+    pcm16["PCM16 Encode"]
+    chunk["Fixed Chunk Split\n200ms / 320ms"]
+    ws["Workspace STT WebSocket"]
+    worker["STT Worker"]
+    partial["Partial Transcript"]
+    final["Final Transcript"]
+    context["Meeting Context / Todo Engine"]
+
+    mic --> worklet
+    worklet --> float32
+    float32 --> downsample
+    downsample --> pcm16
+    pcm16 --> chunk
+    chunk --> ws
+    ws --> worker
+    worker --> partial
+    worker --> final
+    final --> context
+
+    classDef audio fill:#dfeefe,stroke:#2b5c90,color:#111,stroke-width:1.5px;
+    classDef pipeline fill:#e7f0d8,stroke:#406325,color:#111,stroke-width:1.5px;
+    classDef output fill:#f6ecd7,stroke:#8b5e1d,color:#111,stroke-width:1.5px;
+
+    class mic,worklet,float32,downsample,pcm16,chunk audio;
+    class ws,worker,context pipeline;
+    class partial,final output;

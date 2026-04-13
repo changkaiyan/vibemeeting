@@ -20,6 +20,12 @@ import 'debug/stt_debug.dart';
 import 'models.dart';
 import 'realtime_bot_protocol.dart';
 import 'realtime_bot_streaming.dart';
+import 'workspace/workspace_state.dart';
+import 'workspace_stt/workspace_stt_capture.dart';
+import 'workspace_stt/workspace_stt_capture_mode.dart';
+import 'workspace_stt/workspace_stt_pcm_capture_web.dart';
+import 'workspace_stt/workspace_stt_protocol.dart';
+import 'workspace_stt/workspace_stt_runtime.dart';
 import 'participant_menu/participant_menu_builder.dart';
 import 'utils/audio_level.dart';
 import 'widgets/media_test_widgets.dart';
@@ -64,8 +70,7 @@ class MeetingRoomPage extends StatefulWidget {
 class _MeetingRoomPageState extends State<MeetingRoomPage> {
   final TextEditingController _chatController = TextEditingController();
   final ScrollController _chatScrollController = ScrollController();
-  final TextEditingController _workspaceTranscriptController =
-      TextEditingController();
+  final MeetingWorkspaceState _workspace = MeetingWorkspaceState();
 
   String _accessToken = '';
   String _meetingTitle = '会议';
@@ -298,7 +303,6 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
   Timer? _meetingElapsedTimer;
   Timer? _chatTimer;
   Timer? _memberTimer;
-  Timer? _workspaceTimer;
   Timer? _waitingRoomTimer;
   Timer? _recordingStatusTimer;
   Timer? _realtimeBotCaptureKeepaliveTimer;
@@ -311,39 +315,6 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
   final Set<int> _playingRealtimeBotAudioMessageIds = <int>{};
   final Set<int> _recallingMessageIds = <int>{};
   int _localDraftMessageSequence = -1;
-  bool _workspaceLoading = false;
-  bool _workspaceReady = false;
-  bool _workspaceSttActive = false;
-  bool _workspaceSttStopping = false;
-  String _workspacePartialText = '';
-  String _workspaceSttDebugState = 'idle';
-  String _workspaceSttDebugMimeType = '';
-  int _workspaceSttDebugBlobEventCount = 0;
-  int _workspaceSttDebugLastBlobSize = 0;
-  String _workspaceSttDebugLastError = '';
-  String _workspaceSttDebugWsState = 'not-created';
-  int _workspaceSttDebugAudioTrackCount = 0;
-  int _workspaceSttDebugStartTapCount = 0;
-  int _workspaceSttDebugStopTapCount = 0;
-  String _workspaceSttDebugLastAction = '-';
-  html.WebSocket? _workspaceSttSocket;
-  html.MediaRecorder? _workspaceSttRecorder;
-  html.MediaStream? _workspaceSttStream;
-  StreamSubscription<html.Event>? _workspaceSttDataSubscription;
-  StreamSubscription<html.Event>? _workspaceSttStopSubscription;
-  StreamSubscription<html.MessageEvent>? _workspaceSttMessageSubscription;
-  StreamSubscription<html.Event>? _workspaceSttOpenSubscription;
-  StreamSubscription<html.Event>? _workspaceSttCloseSubscription;
-  StreamSubscription<html.Event>? _workspaceSttErrorSubscription;
-  Completer<void>? _workspaceSttRecorderStopCompleter;
-  Completer<void>? _workspaceSttFlushDataCompleter;
-  int _workspacePendingAudioChunkSends = 0;
-  List<WorkspaceAgentSession> _workspaceAgentSessions =
-      const <WorkspaceAgentSession>[];
-  WorkspaceContextSnapshot? _workspaceContext;
-  List<WorkspaceTranscriptChunk> _workspaceTranscripts =
-      const <WorkspaceTranscriptChunk>[];
-  List<WorkspaceArtifact> _workspaceArtifacts = const <WorkspaceArtifact>[];
   Map<int, MeetingMemberProfile> _memberProfiles = {};
   final Map<String, String> _runtimeDisplayNamesByIdentity = <String, String>{};
   final Map<String, int> _guestDisplayNameVersionsByIdentity = <String, int>{};
@@ -655,11 +626,9 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     _recordingStatusTimer = null;
     _realtimeBotCaptureKeepaliveTimer?.cancel();
     _realtimeBotCaptureKeepaliveTimer = null;
-    _workspaceTimer?.cancel();
-    _workspaceTimer = null;
     _chatController.dispose();
     _chatScrollController.dispose();
-    _workspaceTranscriptController.dispose();
+    _workspace.dispose();
     _meetingElapsedTimer?.cancel();
     _meetingElapsedTimer = null;
     _stopChatPolling();

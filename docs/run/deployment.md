@@ -12,7 +12,7 @@
 - 将 Django、LiveKit、STT worker、agent bridge 作为长期运行服务托管
 - 提供局域网或公网可访问地址
 
-如果你的目标只是本机开发和功能联调，请使用 `docs/development.md`。
+如果你的目标只是本机开发和功能联调，请使用 `docs/run/development.md`。
 
 ## 2. 组件清单
 
@@ -70,10 +70,10 @@
 
 ## 4. 当前仓库的相关专题文档
 
-- HTTPS 本地联调：`docs/https-testing.md`
-- LiveKit SSL：`docs/livekit-ssl-startup.md`
-- STT worker 运行时说明：`docs/stt-worker.md`
-- 开发与本机联调：`docs/development.md`
+- HTTPS 本地联调：`docs/run/https-testing.md`
+- LiveKit SSL：`docs/run/livekit-ssl-startup.md`
+- STT worker 运行时说明：`docs/run/stt-worker.md`
+- 开发与本机联调：`docs/run/development.md`
 
 ## 5. 后续建议
 

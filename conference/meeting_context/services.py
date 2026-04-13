@@ -2,7 +2,12 @@ from dataclasses import dataclass
 
 from django.utils import timezone
 
-from conference.meeting_agent_bridge import is_mock_mode, run_bridge_action
+from conference.meeting_agent_bridge import (
+    MeetingAgentBridgeError,
+    ensure_bridge_available,
+    is_mock_mode,
+    run_bridge_action,
+)
 from conference.models import (
     Meeting,
     MeetingAgentPresence,
@@ -282,3 +287,65 @@ def store_agent_result(
         ]
     )
     return artifact
+
+
+def auto_dispatch_for_final_transcript(
+    *,
+    meeting: Meeting,
+    chunk: MeetingTranscriptChunk,
+) -> list[MeetingArtifact]:
+    if not chunk.is_final:
+        return []
+
+    snapshot = get_or_build_current_context(meeting)
+    sessions = list(
+        MeetingAgentSession.objects.filter(meeting=meeting, bridge_online=True).order_by("id")
+    )
+    artifacts: list[MeetingArtifact] = []
+    for session in sessions:
+        if agent_session_is_busy(session):
+            continue
+        try:
+            ensure_bridge_available(session.agent_type)
+        except MeetingAgentBridgeError as exc:
+            mark_agent_session_error(session, str(exc))
+            continue
+
+        session.presence_status = MeetingAgentPresence.WORKING
+        session.current_task_title = "Auto Extract Todos"
+        session.current_task_status = "running"
+        session.current_context_chunk_ids = [chunk.id]
+        session.queue_size = 1
+        session.save(
+            update_fields=[
+                "presence_status",
+                "current_task_title",
+                "current_task_status",
+                "current_context_chunk_ids",
+                "queue_size",
+                "updated_at",
+            ]
+        )
+        try:
+            result = dispatch_agent_action(
+                meeting=meeting,
+                session=session,
+                task_type="extract_todos",
+                instruction="Auto-extract actionable todo items from the latest finalized meeting transcript.",
+                chunks=[chunk],
+                snapshot=snapshot,
+            )
+        except MeetingAgentBridgeError as exc:
+            mark_agent_session_error(session, str(exc))
+            continue
+
+        artifacts.append(
+            store_agent_result(
+                meeting=meeting,
+                session=session,
+                result=result,
+                source_chunk_ids=[chunk.id],
+                task_type="extract_todos",
+            )
+        )
+    return artifacts

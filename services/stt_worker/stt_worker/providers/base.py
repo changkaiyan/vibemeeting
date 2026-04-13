@@ -9,5 +9,9 @@ class RealtimeTranscriptionProvider(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def decode_partial(self, audio_window: bytes | None = None) -> str:
+        raise NotImplementedError
+
+    @abstractmethod
     def finalize(self) -> TranscriptDelta:
         raise NotImplementedError

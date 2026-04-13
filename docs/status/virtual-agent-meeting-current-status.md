@@ -2,7 +2,7 @@
 
 ## 文档目的
 
-这份文档对照 [virtual-agent-meeting-design.md](./virtual-agent-meeting-design.md) 和 [virtual-agent-meeting-overview.mmd](./diagrams/virtual-agent-meeting-overview.mmd)，说明当前代码库里**已经实现**了什么、**还没有实现**什么，以及当前系统的**部署方式**和**测试方法**。
+这份文档对照 [virtual-agent-meeting-design.md](../design/virtual-agent-meeting-design.md) 和 [virtual-agent-meeting-overview.mmd](../diagrams/virtual-agent-meeting-overview.mmd)，说明当前代码库里**已经实现**了什么、**还没有实现**什么，以及当前系统的**部署方式**和**测试方法**。
 
 这不是目标方案文档，而是当前代码状态文档。
 
@@ -232,7 +232,7 @@ Browser Workspace Action
 
 本仓库的本地开发部署说明已经统一收敛到：
 
-- [development.md](./development.md)
+- [development.md](../run/development.md)
 
 这里不再重复完整的启动步骤，只保留和当前虚拟 agent / realtime STT 场景直接相关的说明。
 
@@ -243,7 +243,7 @@ Browser Workspace Action
 - LiveKit server
 - 可选 agent bridge service
 
-如果你只是要把仓库在本地跑起来，按 `docs/development.md` 先完成 Django 最小启动即可。
+如果你只是要把仓库在本地跑起来，按 `docs/run/development.md` 先完成 Django 最小启动即可。
 
 如果你要验证当前这份文档描述的实时 transcript / context / artifact 链路，再额外补：
 
@@ -254,7 +254,7 @@ Browser Workspace Action
 
 真实 `faster-whisper` 模型下载和代理细节，继续参考：
 
-- [stt-worker.md](./stt-worker.md)
+- [stt-worker.md](../run/stt-worker.md)
 
 ## 当前测试方法
 

@@ -1,0 +1,30 @@
+sequenceDiagram
+    participant F as Flutter Workspace STT
+    participant D as Django Workspace WS
+    participant W as STT Worker
+    participant V as Volcengine ASR
+
+    F->>D: start
+    D->>W: start
+    W->>V: connect(ws_url, Authorization)
+    W->>V: full client request(appid/token/resource_id/audio/request)
+    W-->>D: session_started
+    D-->>F: session_started
+
+    loop during meeting
+        F->>D: audio_chunk(PCM16 base64)
+        D->>W: audio_chunk
+        W->>V: binary audio frame
+        V-->>W: partial event
+        W-->>D: partial_transcript
+        D-->>F: partial_transcript
+    end
+
+    F->>D: stop
+    D->>W: stop
+    W->>V: last frame
+    V-->>W: final event
+    W-->>D: final_transcript
+    D-->>F: final_transcript
+    D->>D: persist transcript + update workspace context
+    W->>V: close websocket

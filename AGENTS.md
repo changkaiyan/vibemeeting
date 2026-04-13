@@ -32,6 +32,19 @@ This repository requires test-driven development by default.
    - the relevant tests pass,
    - and the verification steps are reported clearly.
 
+## Environment And Docs Sync
+
+1. When adding, renaming, or removing environment variables in code, update `.env.example` in the same task.
+2. If the variable is user-facing or needed for local/dev/prod setup, update the relevant docs in the same task.
+3. Do not leave the repository in a state where code supports config that is missing from `.env.example`.
+
+## PR Naming And Review
+
+1. Before opening or editing a PR title, review the full diff scope, not just the latest commit message.
+2. PR titles and descriptions must reflect the main user-visible outcome of the branch.
+3. Do not name a PR only after the last small fix, refactor, or support commit if the branch's core feature is larger.
+4. If a branch mixes one primary feature with support changes, title the PR after the primary feature and describe the support changes in the body.
+
 ## Exceptions
 
 1. If a test cannot be added before the fix, say so explicitly and explain why.

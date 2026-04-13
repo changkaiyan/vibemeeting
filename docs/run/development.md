@@ -21,10 +21,58 @@
 - `livekit-server --version`
 - `codex login status`
 
+### 1.0 先选启动模式
+
+当前开发有两套模式，不要混用：
+
+### A. HTTP 本机开发模式
+
+适用场景：
+
+- 你只在当前机器本机浏览器里调试
+- 你不需要跨机器访问
+- 你不需要解决浏览器对内网 `http://<ip>` 的麦克风安全限制
+
+关键端口：
+
+- Django: `http://127.0.0.1:8000`
+- LiveKit: `ws://127.0.0.1:7880`
+
+配置特点：
+
+- `.env` 里 `HTTPS_TEST=0`
+- `.env` 里 `LIVEKIT_PUBLIC_URL=` 保持为空
+- Django 会把本地 `LIVEKIT_URL` 自动改写给浏览器使用
+
+### B. HTTPS / 内网联调模式
+
+适用场景：
+
+- 你要从另一台内网机器访问
+- 你要测试浏览器麦克风
+- 你要验证 HTTPS 页面下的完整会议体验
+
+关键端口：
+
+- Django: `https://<LAN_IP>:8443`
+- LiveKit 对浏览器暴露地址: `wss://<LAN_IP>:7443`
+- LiveKit 内部服务端地址: `ws://127.0.0.1:7880`
+
+配置特点：
+
+- `.env` 里 `HTTPS_TEST=1`
+- `.env` 里 `LIVEKIT_PUBLIC_URL=wss://<LAN_IP>:7443`
+- `.env` 里 `ALLOWED_HOSTS` 和 `CSRF_TRUSTED_ORIGINS` 必须包含 `<LAN_IP>`
+
+最重要的一条：
+
+- `7880` 是 LiveKit 内部服务端口，不是 HTTPS 页面里给浏览器直连的端口
+- HTTPS 模式下浏览器应该连 `7443`，不是 `7880`
+
 ### 1.1 一次性初始化
 
 ```bash
-uv venv --python 3.10 .venv
+uv venv .venv
 uv pip install -r requirements.txt --python .venv
 uv pip install -r services/stt_worker/requirements.txt --python .venv
 cp .env.example .env
@@ -41,6 +89,19 @@ cd ..
 ### 1.2 每次开发启动
 
 ### 1.2.1 HTTP 本机开发模式
+
+这套模式只用于本机开发。
+
+推荐 `.env` 关键项：
+
+```dotenv
+HTTPS_TEST=0
+LIVEKIT_URL=ws://localhost:7880
+LIVEKIT_PUBLIC_URL=
+MEETING_REALTIME_STT_WORKER_URL=ws://127.0.0.1:8765/ws/realtime-transcribe
+MEETING_AGENT_BRIDGE_MODE=http
+MEETING_AGENT_BRIDGE_URL=http://127.0.0.1:8787
+```
 
 使用 4 个终端分别执行以下命令。
 
@@ -86,6 +147,21 @@ uv run --python .venv/bin/python -m uvicorn smart_meeting.asgi:application --hos
 
 ### 1.2.2 HTTPS / 内网联调模式
 
+这套模式用于“另一台机器通过内网 IP 打开页面”和“浏览器麦克风联调”。
+
+推荐 `.env` 关键项：
+
+```dotenv
+HTTPS_TEST=1
+ALLOWED_HOSTS=127.0.0.1,localhost,<LAN_IP>
+CSRF_TRUSTED_ORIGINS=https://localhost:8443,https://127.0.0.1:8443,https://<LAN_IP>:8443
+LIVEKIT_URL=ws://localhost:7880
+LIVEKIT_PUBLIC_URL=wss://<LAN_IP>:7443
+MEETING_REALTIME_STT_WORKER_URL=ws://127.0.0.1:8765/ws/realtime-transcribe
+MEETING_AGENT_BRIDGE_MODE=http
+MEETING_AGENT_BRIDGE_URL=http://127.0.0.1:8787
+```
+
 直接按 [https-testing.md](./https-testing.md) 启动。
 
 ### 1.3 功能验证
@@ -109,6 +185,12 @@ uv run --python .venv/bin/python -m uvicorn smart_meeting.asgi:application --hos
 1. 确认证书 SAN 包含该服务端 IP
 2. 把 `.certs/localhost.crt` 导入访问机器的受信任根证书
 3. 重新打开浏览器
+
+如果你能打开会议页，但点“入会”后始终进不去房间，优先检查：
+
+1. 当前页面是不是 `https://<LAN_IP>:8443`
+2. `.env` 里 `LIVEKIT_PUBLIC_URL` 是不是 `wss://<LAN_IP>:7443`
+3. 不要把 HTTPS 页面错误地配成去连 `wss://<LAN_IP>:7880`
 
 ## 2. 先理解当前开发形态
 
@@ -160,7 +242,7 @@ rsync -av --delete build/web/ ../artifacts/flutter_app_web/
 ### 4.1 必备工具
 
 - `uv`
-- Python `3.10.x`
+- Python `3.10+`
 
 检查方式：
 
@@ -199,7 +281,7 @@ codex login status
 ### 5.1 Python 环境
 
 ```bash
-uv venv --python 3.10 .venv
+uv venv .venv
 uv pip install -r requirements.txt --python .venv
 uv pip install -r services/stt_worker/requirements.txt --python .venv
 cp .env.example .env
@@ -210,6 +292,9 @@ cp .env.example .env
 - 仓库当前使用 `requirements.txt`，不是 `pyproject.toml`
 - `.env.example` 已经按当前本地联调方案提供默认值
 - `.venv` 已存在时，`uv venv` 会复用该目录
+- 当前 pin 的依赖按包元数据支持 `Python >=3.10`
+- 因此不要求必须使用 `3.10`；机器上如果已有 `3.11` / `3.12`，也可以直接用
+- 当前这台开发机实际验证过的是 `3.10`
 
 ### 5.2 数据库
 
@@ -261,12 +346,20 @@ CSRF_TRUSTED_ORIGINS=https://localhost:8443,https://127.0.0.1:8443,https://<LAN_
 LIVEKIT_PUBLIC_URL=wss://<LAN_IP>:7443
 ```
 
+补充说明：
+
+- 这里的 `<LAN_IP>` 必须替换成运行 Django HTTPS 服务那台机器的真实内网 IP，比如 `10.208.128.244`
+- 如果你能打开 `https://127.0.0.1:8443/`，但打开 `https://<LAN_IP>:8443/` 出现 `DisallowedHost`，通常就是 `.env` 里的 `ALLOWED_HOSTS` 或 `CSRF_TRUSTED_ORIGINS` 漏了这个 IP
+- 改完 `.env` 之后要重启 Django 相关进程，再重新访问
+- 如果你能打开 HTTPS 页面，但点“入会”后进不去会议，通常是 `LIVEKIT_PUBLIC_URL` 没配成 `wss://<LAN_IP>:7443`
+
 重点说明：
 
 - `MEETING_REALTIME_STT_WORKER_URL` 是 Django 服务端桥接到 STT worker 的地址，不是浏览器直接连接的地址
 - `MEETING_AGENT_BRIDGE_MODE=http` 表示会议工作区里的 agent 默认走本地 bridge
 - `STT_WORKER_PROVIDER=faster_whisper` 表示本地默认不是 mock
 - `MEETING_AGENT_BRIDGE_ENABLE_CLAUDE_VIA_CODEX=0` 表示当前默认只保证 `codex` 可用
+- HTTP 本机模式下 `LIVEKIT_PUBLIC_URL` 应为空；HTTPS / 内网模式下应显式写成 `wss://<LAN_IP>:7443`
 
 ## 7. 启动顺序
 
@@ -461,10 +554,20 @@ curl -fsS 'http://127.0.0.1:8787/health?agent_type=codex'
 
 如果你切到旧提交上执行迁移，可能会遇到并行叶子迁移冲突。
 
+### 10.6 HTTPS 页面能打开，但无法进入会议
+
+优先检查：
+
+- 当前访问地址是不是 `https://<LAN_IP>:8443`
+- `.env` 里的 `HTTPS_TEST` 是否为 `1`
+- `.env` 里的 `LIVEKIT_PUBLIC_URL` 是否为 `wss://<LAN_IP>:7443`
+- `7443` 的 TLS 代理是否真的已经启动
+- 不要让浏览器去连 `7880`
+
 ## 11. 相关文档
 
-- 部署边界说明：`docs/deployment.md`
-- HTTPS 本地联调：`docs/https-testing.md`
-- LiveKit SSL：`docs/livekit-ssl-startup.md`
-- STT worker 运行时说明：`docs/stt-worker.md`
-- 虚拟 agent 方案与状态：`docs/virtual-agent-meeting-design.md`、`docs/virtual-agent-meeting-current-status.md`
+- 部署边界说明：`docs/run/deployment.md`
+- HTTPS 本地联调：`docs/run/https-testing.md`
+- LiveKit SSL：`docs/run/livekit-ssl-startup.md`
+- STT worker 运行时说明：`docs/run/stt-worker.md`
+- 虚拟 agent 方案与状态：`docs/design/virtual-agent-meeting-design.md`、`docs/status/virtual-agent-meeting-current-status.md`

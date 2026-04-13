@@ -2810,6 +2810,65 @@ class MeetingContextWorkspaceApiTests(TestCase):
         self.assertEqual(artifacts_payload[0]["id"], session.latest_result_artifact_id)
         self.assertEqual(MeetingArtifact.objects.filter(meeting=self.meeting).count(), 1)
 
+    def test_final_transcript_auto_dispatches_todo_artifact_for_online_agent_session(self):
+        client = self._auth_client(self.owner)
+        connect_response = client.post(
+            f"/api/meetings/{self.meeting.id}/agents",
+            {"agent_type": "codex"},
+            format="json",
+        )
+        self.assertEqual(connect_response.status_code, 201)
+
+        transcript_response = client.post(
+            f"/api/meetings/{self.meeting.id}/transcripts",
+            {
+                "speaker_name": "Owner",
+                "text": "We should finalize the streaming STT MVP today and assign follow-up tasks.",
+                "source": "live_stream",
+                "is_final": True,
+            },
+            format="json",
+        )
+
+        self.assertEqual(transcript_response.status_code, 201)
+        artifacts = list(MeetingArtifact.objects.filter(meeting=self.meeting).order_by("id"))
+        self.assertEqual(len(artifacts), 1)
+        self.assertEqual(artifacts[0].artifact_type, MeetingArtifactType.TODO)
+        self.assertIn("todo", artifacts[0].title.lower())
+        self.assertEqual(artifacts[0].source_chunk_ids, [transcript_response.json()["id"]])
+
+        session = MeetingAgentSession.objects.get(
+            meeting=self.meeting,
+            owner_user=self.owner,
+            agent_type="codex",
+        )
+        self.assertEqual(session.current_task_status, "done")
+        self.assertEqual(session.presence_status, "idle")
+        self.assertEqual(session.latest_result_artifact_id, artifacts[0].id)
+
+    def test_partial_transcript_does_not_auto_dispatch_agent_artifact(self):
+        client = self._auth_client(self.owner)
+        connect_response = client.post(
+            f"/api/meetings/{self.meeting.id}/agents",
+            {"agent_type": "codex"},
+            format="json",
+        )
+        self.assertEqual(connect_response.status_code, 201)
+
+        transcript_response = client.post(
+            f"/api/meetings/{self.meeting.id}/transcripts",
+            {
+                "speaker_name": "Owner",
+                "text": "This is still an unstable partial transcript.",
+                "source": "live_stream",
+                "is_final": False,
+            },
+            format="json",
+        )
+
+        self.assertEqual(transcript_response.status_code, 201)
+        self.assertEqual(MeetingArtifact.objects.filter(meeting=self.meeting).count(), 0)
+
     def test_connect_agent_reuses_same_session_row(self):
         client = self._auth_client(self.owner)
 
@@ -3214,6 +3273,74 @@ class MeetingRealtimeSpeechToTextTests(TestCase):
         self.assertEqual(chunk.source, "live_stream")
         self.assertEqual(chunk.speaker_name, "Owner")
         self.assertEqual(chunk.text, "Worker final transcript")
+
+    @override_settings(MEETING_REALTIME_STT_WORKER_URL="ws://worker.test/ws/realtime-transcribe")
+    @patch("conference.speech_to_text.realtime.WorkerRealtimeBridge")
+    def test_realtime_stt_websocket_accepts_cloud_style_partial_and_final_payloads(self, mock_bridge_cls):
+        bridge = mock_bridge_cls.return_value
+
+        async def _connect():
+            return None
+
+        async def _close():
+            return None
+
+        async def _start_session(**kwargs):
+            return {
+                "type": "session_started",
+                "speaker_name": kwargs["speaker_name"],
+                "speaker_identity": kwargs["speaker_identity"],
+                "provider": "volcengine_realtime",
+            }
+
+        async def _push_audio_chunk(**kwargs):
+            self.assertEqual(kwargs["mime_type"], "audio/pcm;rate=16000")
+            return {
+                "type": "partial_transcript",
+                "text": "今天先定这个方案",
+                "chunk_count": 2,
+                "byte_count": 6400,
+            }
+
+        async def _stop_session():
+            return {
+                "type": "final_transcript",
+                "text": "今天先定这个方案，明天开始拆任务。",
+                "chunk_count": 2,
+                "byte_count": 6400,
+            }
+
+        bridge.connect.side_effect = _connect
+        bridge.close.side_effect = _close
+        bridge.start_session.side_effect = _start_session
+        bridge.push_audio_chunk.side_effect = _push_audio_chunk
+        bridge.stop_session.side_effect = _stop_session
+
+        token = str(AccessToken.for_user(self.owner))
+
+        outputs = async_to_sync(self._run_ws_session)(
+            token,
+            [
+                {"type": "start", "speaker_name": "Owner", "speaker_identity": "owner-1"},
+                {
+                    "type": "audio_chunk",
+                    "mime_type": "audio/pcm;rate=16000",
+                    "data_base64": base64.b64encode(b"\x01\x00\x02\x00").decode("ascii"),
+                },
+                {"type": "stop"},
+            ],
+        )
+
+        start_payload = json.loads(outputs[1]["text"])
+        partial_payload = json.loads(outputs[2]["text"])
+        final_payload = json.loads(outputs[3]["text"])
+        self.assertEqual(start_payload["provider"], "volcengine_realtime")
+        self.assertEqual(partial_payload["type"], "partial_transcript")
+        self.assertEqual(partial_payload["text"], "今天先定这个方案")
+        self.assertEqual(final_payload["type"], "final_transcript")
+        self.assertEqual(final_payload["text"], "今天先定这个方案，明天开始拆任务。")
+        chunk = MeetingTranscriptChunk.objects.get(meeting=self.meeting)
+        self.assertEqual(chunk.text, "今天先定这个方案，明天开始拆任务。")
 
     def test_realtime_stt_websocket_works_with_real_mock_worker_server(self):
         token = str(AccessToken.for_user(self.owner))
