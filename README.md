@@ -43,6 +43,10 @@
 
 架构与方案：
 
+- [AI 双工作流总览](./docs/design/ai-workflows-overview.md)
+- [工作区近实时 STT 设计](./docs/design/near-realtime-stt-design.md)
+- [流式 STT worker 设计](./docs/design/streaming-stt-worker-design.md)
+- [火山云端 STT 设计](./docs/design/volcengine-cloud-stt-design.md)
 - [会议上下文驱动 AI 架构方案](./docs/meeting-context-agent-architecture.md)
 - [会议上下文 MVP 实施计划](./docs/meeting-context-mvp-implementation-plan.md)
 - [虚拟 Agent 参会设计方案](./docs/virtual-agent-meeting-design.md)
@@ -127,6 +131,11 @@ cp .env.example .env
 - `LIVEKIT_MEET_URL`：打开 LiveKit Meet 的地址（默认官方托管）
 - `MEETING_STT_PROVIDER`：上传音频转写模式；当前本地默认对齐 `faster_whisper`
 - `MEETING_REALTIME_STT_WORKER_URL`：主应用连接实时 STT worker 的 WebSocket 地址
+- `STT_WORKER_PROVIDER`：独立 STT worker 的 provider，当前支持 `faster_whisper` 与 `volcengine_realtime`
+- `STT_WORKER_VOLCENGINE_APP_ID`：火山流式语音识别大模型 appid
+- `STT_WORKER_VOLCENGINE_ACCESS_TOKEN`：火山流式语音识别大模型 access token
+- `STT_WORKER_VOLCENGINE_RESOURCE_ID`：火山资源 ID，当前默认 `volc.bigasr.sauc.duration`
+- `STT_WORKER_VOLCENGINE_WS_URL`：火山 WebSocket 地址，当前默认 `wss://openspeech.bytedance.com/api/v3/sauc/bigmodel`
 - `MEETING_AGENT_BRIDGE_MODE`：Agent bridge 模式；当前本地默认对齐 `http`
 - `MEETING_AGENT_BRIDGE_URL`：HTTP 模式下的 Agent bridge 地址
 - `TECHCLOUD_OAUTH_CLIENT_ID`：中国科技云通行证应用 `client_id`

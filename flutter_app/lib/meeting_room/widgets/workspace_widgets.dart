@@ -3,8 +3,9 @@ part of '../page.dart';
 extension _MeetingRoomWorkspaceWidgets on _MeetingRoomPageState {
   Widget _buildWorkspacePanel({List<Widget>? headerActions}) {
     final workspaceAvailable = _hasPrivateMeetingApiScope;
-    final sttLabel = _workspaceSttActive
-        ? (_workspaceSttStopping ? '实时字幕停止中...' : '实时字幕采集中')
+    final sttRuntime = _workspace.sttRuntime;
+    final sttLabel = sttRuntime.active
+        ? (sttRuntime.stopping ? '实时字幕停止中...' : '实时字幕采集中')
         : '实时字幕空闲';
     final codex = _workspaceAgentSessionFor('codex');
     final claude = _workspaceAgentSessionFor('claude');
@@ -81,14 +82,14 @@ extension _MeetingRoomWorkspaceWidgets on _MeetingRoomPageState {
                       spacing: 6,
                       children: [
                         OutlinedButton.icon(
-                          onPressed: _workspaceSttActive
+                          onPressed: sttRuntime.active
                               ? null
                               : _handleStartWorkspaceRealtimeSttTap,
                           icon: const Icon(Icons.subtitles_outlined, size: 16),
                           label: const Text('开始'),
                         ),
                         FilledButton.icon(
-                          onPressed: _workspaceSttActive
+                          onPressed: sttRuntime.active
                               ? _handleStopWorkspaceRealtimeSttTap
                               : null,
                           icon:
@@ -129,7 +130,7 @@ extension _MeetingRoomWorkspaceWidgets on _MeetingRoomPageState {
                               border: Border.all(color: _palette.panelBorder),
                             ),
                             child: MeetingDebugText(
-                              'Recorder debug: state=$_workspaceSttDebugState · action=$_workspaceSttDebugLastAction · start taps=$_workspaceSttDebugStartTapCount · stop taps=$_workspaceSttDebugStopTapCount · ws=$_workspaceSttDebugWsState · audio tracks=$_workspaceSttDebugAudioTrackCount · mime=${_workspaceSttDebugMimeType.isEmpty ? '-' : _workspaceSttDebugMimeType} · blob events=$_workspaceSttDebugBlobEventCount · last blob=$_workspaceSttDebugLastBlobSize bytes',
+                              'Recorder debug: state=${sttRuntime.debugState} · action=${sttRuntime.debugLastAction} · start taps=${sttRuntime.debugStartTapCount} · stop taps=${sttRuntime.debugStopTapCount} · ws=${sttRuntime.debugWsState} · audio tracks=${sttRuntime.debugAudioTrackCount} · mime=${sttRuntime.debugMimeType.isEmpty ? '-' : sttRuntime.debugMimeType} · blob events=${sttRuntime.debugBlobEventCount} · last blob=${sttRuntime.debugLastBlobSize} bytes',
                               style: TextStyle(
                                 color: _palette.textSecondary,
                                 fontSize: 12,
@@ -148,7 +149,7 @@ extension _MeetingRoomWorkspaceWidgets on _MeetingRoomPageState {
                               border: Border.all(color: _palette.dangerSoft),
                             ),
                             child: MeetingErrorText(
-                              'Last error: ${workspaceSttErrorLabel(_workspaceSttDebugLastError)}',
+                              'Last error: ${workspaceSttErrorLabel(sttRuntime.debugLastError)}',
                               style: TextStyle(
                                 color: _palette.danger,
                                 fontSize: 12,
@@ -156,7 +157,7 @@ extension _MeetingRoomWorkspaceWidgets on _MeetingRoomPageState {
                               ),
                             ),
                           ),
-                        if (_workspacePartialText.trim().isNotEmpty)
+                        if (sttRuntime.partialText.trim().isNotEmpty)
                           Container(
                             width: double.infinity,
                             margin: const EdgeInsets.only(bottom: 10),
@@ -167,12 +168,12 @@ extension _MeetingRoomWorkspaceWidgets on _MeetingRoomPageState {
                               border: Border.all(color: _palette.panelBorder),
                             ),
                             child: MeetingStatusText(
-                              '实时识别中: ${_workspacePartialText.trim()}',
+                              '实时识别中: ${sttRuntime.partialText.trim()}',
                               style: const TextStyle(fontSize: 12.5),
                             ),
                           ),
                         TextField(
-                          controller: _workspaceTranscriptController,
+                          controller: _workspace.transcriptController,
                           minLines: 2,
                           maxLines: 4,
                           decoration: const InputDecoration(
@@ -233,27 +234,27 @@ extension _MeetingRoomWorkspaceWidgets on _MeetingRoomPageState {
                   const SizedBox(height: 10),
                   _buildWorkspaceSectionCard(
                     title: 'Current Context',
-                    subtitle: _workspaceContext == null
+                    subtitle: _workspace.context == null
                         ? 'No context yet.'
-                        : (_workspaceContext!.topicLabel.isEmpty
+                        : (_workspace.context!.topicLabel.isEmpty
                             ? 'Current discussion'
-                            : _workspaceContext!.topicLabel),
+                            : _workspace.context!.topicLabel),
                     child: _buildWorkspaceContextBody(),
                   ),
                   const SizedBox(height: 10),
                   _buildWorkspaceSectionCard(
                     title: 'Live Transcript',
-                    subtitle: _workspaceTranscripts.isEmpty
+                    subtitle: _workspace.transcripts.isEmpty
                         ? 'No transcript yet.'
-                        : '共 ${_workspaceTranscripts.length} 条',
+                        : '共 ${_workspace.transcripts.length} 条',
                     child: _buildWorkspaceTranscriptBody(),
                   ),
                   const SizedBox(height: 10),
                   _buildWorkspaceSectionCard(
                     title: 'Outputs',
-                    subtitle: _workspaceArtifacts.isEmpty
+                    subtitle: _workspace.artifacts.isEmpty
                         ? 'No outputs yet.'
-                        : '最近 ${_workspaceArtifacts.length} 条输出',
+                        : '最近 ${_workspace.artifacts.length} 条输出',
                     child: _buildWorkspaceArtifactBody(),
                   ),
                 ],
@@ -399,7 +400,7 @@ extension _MeetingRoomWorkspaceWidgets on _MeetingRoomPageState {
   }
 
   Widget _buildWorkspaceContextBody() {
-    final context = _workspaceContext;
+    final context = _workspace.context;
     if (context == null) {
       return MeetingMetaText(
         'No context yet.',
@@ -474,14 +475,14 @@ extension _MeetingRoomWorkspaceWidgets on _MeetingRoomPageState {
   }
 
   Widget _buildWorkspaceTranscriptBody() {
-    if (_workspaceTranscripts.isEmpty) {
+    if (_workspace.transcripts.isEmpty) {
       return MeetingMetaText(
         'No transcript yet.',
         style: TextStyle(color: _palette.textMuted, fontSize: 12.5),
       );
     }
     return Column(
-      children: _workspaceTranscripts.map((item) {
+      children: _workspace.transcripts.map((item) {
         final speaker = item.speakerName.trim().isNotEmpty
             ? item.speakerName.trim()
             : (item.speakerIdentity.trim().isNotEmpty
@@ -557,14 +558,14 @@ extension _MeetingRoomWorkspaceWidgets on _MeetingRoomPageState {
   }
 
   Widget _buildWorkspaceArtifactBody() {
-    if (_workspaceArtifacts.isEmpty) {
+    if (_workspace.artifacts.isEmpty) {
       return MeetingMetaText(
         'No outputs yet.',
         style: TextStyle(color: _palette.textMuted, fontSize: 12.5),
       );
     }
     return Column(
-      children: _workspaceArtifacts.map((artifact) {
+      children: _workspace.artifacts.map((artifact) {
         return Container(
           width: double.infinity,
           margin: const EdgeInsets.only(bottom: 8),

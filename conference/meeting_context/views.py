@@ -15,6 +15,7 @@ from conference.meeting_context.serializers import (
     MeetingTranscriptChunkSerializer,
 )
 from conference.meeting_context.services import (
+    auto_dispatch_for_final_transcript,
     agent_session_is_busy,
     build_current_context,
     connect_agent_session,
@@ -75,6 +76,7 @@ def meeting_transcripts(request, meeting_id: int):
         sequence_no=last_sequence + 1,
     )
     build_current_context(meeting)
+    auto_dispatch_for_final_transcript(meeting=meeting, chunk=chunk)
     log_audit(
         user=request.user,
         action="meeting.transcript_add",

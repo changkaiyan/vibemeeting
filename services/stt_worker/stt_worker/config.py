@@ -23,6 +23,10 @@ class SttWorkerConfig:
     compute_type: str = "int8"
     language: str = "zh"
     local_files_only: bool = False
+    volcengine_app_id: str = ""
+    volcengine_access_token: str = ""
+    volcengine_resource_id: str = ""
+    volcengine_ws_url: str = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel"
 
 
 def load_config() -> SttWorkerConfig:
@@ -34,4 +38,11 @@ def load_config() -> SttWorkerConfig:
         compute_type=(os.getenv("STT_WORKER_COMPUTE_TYPE", "int8") or "int8").strip(),
         language=(os.getenv("STT_WORKER_LANGUAGE", "zh") or "zh").strip(),
         local_files_only=_env_bool("STT_WORKER_LOCAL_FILES_ONLY", False),
+        volcengine_app_id=(os.getenv("STT_WORKER_VOLCENGINE_APP_ID", "") or "").strip(),
+        volcengine_access_token=(os.getenv("STT_WORKER_VOLCENGINE_ACCESS_TOKEN", "") or "").strip(),
+        volcengine_resource_id=(os.getenv("STT_WORKER_VOLCENGINE_RESOURCE_ID", "") or "").strip(),
+        volcengine_ws_url=(
+            os.getenv("STT_WORKER_VOLCENGINE_WS_URL", "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel")
+            or "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel"
+        ).strip(),
     )

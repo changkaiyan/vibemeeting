@@ -24,7 +24,7 @@
 ### 1.1 一次性初始化
 
 ```bash
-uv venv --python 3.10 .venv
+uv venv .venv
 uv pip install -r requirements.txt --python .venv
 uv pip install -r services/stt_worker/requirements.txt --python .venv
 cp .env.example .env
@@ -160,7 +160,7 @@ rsync -av --delete build/web/ ../artifacts/flutter_app_web/
 ### 4.1 必备工具
 
 - `uv`
-- Python `3.10.x`
+- Python `3.10+`
 
 检查方式：
 
@@ -199,7 +199,7 @@ codex login status
 ### 5.1 Python 环境
 
 ```bash
-uv venv --python 3.10 .venv
+uv venv .venv
 uv pip install -r requirements.txt --python .venv
 uv pip install -r services/stt_worker/requirements.txt --python .venv
 cp .env.example .env
@@ -210,6 +210,9 @@ cp .env.example .env
 - 仓库当前使用 `requirements.txt`，不是 `pyproject.toml`
 - `.env.example` 已经按当前本地联调方案提供默认值
 - `.venv` 已存在时，`uv venv` 会复用该目录
+- 当前 pin 的依赖按包元数据支持 `Python >=3.10`
+- 因此不要求必须使用 `3.10`；机器上如果已有 `3.11` / `3.12`，也可以直接用
+- 当前这台开发机实际验证过的是 `3.10`
 
 ### 5.2 数据库
 

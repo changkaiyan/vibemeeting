@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import inspect
 import json
 from dataclasses import dataclass
 
@@ -24,6 +25,12 @@ async def _send_json(websocket, payload: dict) -> None:
 
 async def _send_error(websocket, detail: str) -> None:
     await _send_json(websocket, {"type": "error", "detail": detail})
+
+
+async def _maybe_await(value):
+    if inspect.isawaitable(value):
+        return await value
+    return value
 
 
 def _decode_audio_chunk(data_base64: str) -> bytes:
@@ -63,15 +70,20 @@ async def handle_realtime_connection(websocket, config: SttWorkerConfig) -> None
                 state.session = None
                 await _send_error(websocket, str(exc))
                 continue
-            await _send_json(
-                websocket,
-                {
-                    "type": "session_started",
-                    "speaker_name": state.speaker_name,
-                    "speaker_identity": state.speaker_identity,
-                    "provider": config.provider,
-                },
-            )
+            session_started_payload = {
+                "type": "session_started",
+                "speaker_name": state.speaker_name,
+                "speaker_identity": state.speaker_identity,
+                "provider": config.provider,
+            }
+            if hasattr(state.session, "start_session"):
+                try:
+                    session_started_payload = await _maybe_await(state.session.start_session())
+                except Exception as exc:
+                    state.session = None
+                    await _send_error(websocket, str(exc))
+                    continue
+            await _send_json(websocket, session_started_payload)
             print(
                 "stt-worker session started "
                 f"speaker_name={state.speaker_name or '-'} "
@@ -88,10 +100,10 @@ async def handle_realtime_connection(websocket, config: SttWorkerConfig) -> None
             raw = _decode_audio_chunk(payload.get("data_base64") or "")
             mime_type = (payload.get("mime_type") or "").strip()
             try:
-                delta = state.session.push_chunk(
+                delta = await _maybe_await(state.session.push_chunk(
                     raw,
                     mime_type=mime_type,
-                )
+                ))
             except Exception as exc:
                 await _send_error(websocket, str(exc))
                 continue
@@ -119,7 +131,7 @@ async def handle_realtime_connection(websocket, config: SttWorkerConfig) -> None
                 await _send_error(websocket, "Session not started")
                 continue
             try:
-                delta = state.session.finalize()
+                delta = await _maybe_await(state.session.finalize())
             except Exception as exc:
                 await _send_error(websocket, str(exc))
                 continue
