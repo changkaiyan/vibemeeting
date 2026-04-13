@@ -1,0 +1,42 @@
+flowchart LR
+    user["User / Host"]
+    meeting["Meeting UI"]
+    mic["Live Mic / Meeting Audio"]
+    stt["STT Worker\nnear realtime transcript"]
+    context["Meeting Workspace\ncontext timeline"]
+    extractor["Context Engine\nsummary / todo / decision / risk"]
+    planner["Task Router\nlight now vs heavy later"]
+    bridge["Agent Bridge"]
+    agents["Local Agents\nCodex / Claude / Others"]
+    output["Workspace Output\nstatus / result / artifact"]
+    backlog["Post-meeting Todo Backlog"]
+    voice["Realtime Voice Assistant"]
+    tts["Voice Reply / Short Text Reply"]
+
+    user --> meeting
+    meeting --> mic
+    mic --> stt
+    stt --> context
+    context --> extractor
+    extractor --> planner
+    planner -->|light tasks, do now| bridge
+    bridge --> agents
+    agents --> output
+    planner -->|heavy tasks, follow up later| backlog
+
+    mic --> voice
+    context --> voice
+    user -->|direct question / call name| voice
+    voice --> tts
+    tts --> meeting
+
+    output --> meeting
+    backlog --> meeting
+
+    classDef workspace fill:#e7f0d8,stroke:#406325,color:#111,stroke-width:1.5px;
+    classDef voicepath fill:#dfeefe,stroke:#2b5c90,color:#111,stroke-width:1.5px;
+    classDef ui fill:#f6ecd7,stroke:#8b5e1d,color:#111,stroke-width:1.5px;
+
+    class stt,context,extractor,planner,bridge,agents,output,backlog workspace;
+    class voice,tts voicepath;
+    class user,meeting,mic ui;

@@ -34,12 +34,16 @@
 
 ## 文档索引
 
+文档入口：
+
+- [文档总览](./docs/README.md)
+
 开发与联调：
 
-- [本地开发指南](./docs/development.md)
-- [HTTPS 启动](./docs/https-testing.md)
-- [部署说明](./docs/deployment.md)
-- [Git 工作流](./docs/git-workflow.md)
+- [本地开发指南](./docs/run/development.md)
+- [HTTPS 启动](./docs/run/https-testing.md)
+- [部署说明](./docs/run/deployment.md)
+- [Git 工作流](./docs/run/git-workflow.md)
 
 架构与方案：
 
@@ -47,20 +51,24 @@
 - [工作区近实时 STT 设计](./docs/design/near-realtime-stt-design.md)
 - [流式 STT worker 设计](./docs/design/streaming-stt-worker-design.md)
 - [火山云端 STT 设计](./docs/design/volcengine-cloud-stt-design.md)
-- [会议上下文驱动 AI 架构方案](./docs/meeting-context-agent-architecture.md)
-- [会议上下文 MVP 实施计划](./docs/meeting-context-mvp-implementation-plan.md)
-- [虚拟 Agent 参会设计方案](./docs/virtual-agent-meeting-design.md)
-- [虚拟 Agent 参会当前实现状态](./docs/virtual-agent-meeting-current-status.md)
-- [Kaiyan / Zhaoyilun 集成方案](./docs/kaiyan-zhaoyilun-integration-plan.md)
+- [会议工作区与实时语音助手边界](./docs/design/meeting-workspace-boundaries.md)
+- [会议上下文驱动 AI 架构方案](./docs/design/meeting-context-agent-architecture.md)
+- [会议上下文 MVP 实施计划](./docs/design/meeting-context-mvp-implementation-plan.md)
+- [虚拟 Agent 参会设计方案](./docs/design/virtual-agent-meeting-design.md)
+- [虚拟 Agent 参会当前实现状态](./docs/status/virtual-agent-meeting-current-status.md)
 
 运行组件：
 
-- [LiveKit SSL 启动](./docs/livekit-ssl-startup.md)
-- [LiveKit Egress 配置](./docs/livekit-egress-setup.md)
-- [STT Worker 说明](./docs/stt-worker.md)
-- [火山实时语音测试](./docs/volcengine-realtime-voice-testing.md)
-- [Flutter App 说明](./docs/flutter-app.md)
-- [构建产物说明](./docs/artifacts.md)
+- [LiveKit SSL 启动](./docs/run/livekit-ssl-startup.md)
+- [LiveKit Egress 配置](./docs/run/livekit-egress-setup.md)
+- [STT Worker 说明](./docs/run/stt-worker.md)
+- [Flutter App 说明](./docs/run/flutter-app.md)
+- [构建产物说明](./docs/run/artifacts.md)
+
+历史参考：
+
+- [Kaiyan / Zhaoyilun 集成方案](./docs/history/kaiyan-zhaoyilun-integration-plan.md)
+- [火山实时语音测试](./docs/history/volcengine-realtime-voice-testing.md)
 
 ## 功能概览
 
@@ -91,7 +99,7 @@ uv run --python .venv/bin/python -m uvicorn smart_meeting.asgi:application --hos
 
 启动后访问 `http://127.0.0.1:8000`，或检查 `http://127.0.0.1:8000/healthz`。
 
-完整的本地开发部署说明见 [docs/development.md](./docs/development.md)。
+完整的本地开发部署说明见 [docs/run/development.md](./docs/run/development.md)。
 
 如果你要从同一内网的另一台机器访问，尤其要测试：
 
