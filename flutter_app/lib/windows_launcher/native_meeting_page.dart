@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -9,10 +11,12 @@ import 'package:livekit_client/livekit_client.dart' as lk;
 import '../app/theme/meeting_theme.dart';
 import '../meeting_room/chat_menu/chat_message_menu_builder.dart';
 import '../meeting_room/models.dart';
+import '../meeting_room/remote_control_protocol.dart';
 import 'native_api_client.dart';
 import 'native_meeting_recording_logic.dart';
 import 'native_meeting_room_logic.dart';
 import 'native_share_source_picker_dialog.dart';
+import 'windows_remote_input_injector.dart';
 
 class NativeMeetingPage extends StatefulWidget {
   const NativeMeetingPage({
@@ -66,6 +70,16 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
   String? _fullscreenIdentity;
   final Map<String, TransformationController> _tileZoomControllers =
       <String, TransformationController>{};
+  final FocusNode _remoteControlFocusNode = FocusNode();
+  final WindowsRemoteInputInjector _remoteInputInjector =
+      const WindowsRemoteInputInjector();
+  String? _remoteControlSessionId;
+  String? _remoteControlTargetIdentity;
+  String? _remoteControlControlledByIdentity;
+  String? _remoteControlPendingTargetIdentity;
+  String? _remoteControlPendingRequestId;
+  DateTime? _remoteControlLastPointerMoveAt;
+  String _remoteControlLastPointerButton = 'left';
   late bool _waitingRoomEnabled;
   late bool _allowGuestLinkJoin;
   late bool _allowChat;
@@ -114,6 +128,34 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
       return true;
     }
     return self.allowScreenShare;
+  }
+
+  String? get _localIdentity {
+    final identity = _room?.localParticipant?.identity.trim() ?? '';
+    return identity.isEmpty ? null : identity;
+  }
+
+  bool get _canPublishRemoteControlData {
+    final local = _room?.localParticipant;
+    if (local == null) return false;
+    final permissions = local.permissions;
+    return permissions.canPublishData || permissions.canPublish;
+  }
+
+  bool get _isBeingRemoteControlled =>
+      _remoteControlSessionId != null &&
+      _remoteControlControlledByIdentity != null &&
+      _remoteControlControlledByIdentity!.trim().isNotEmpty;
+
+  bool _isRemoteControlActiveForIdentity(String identity) {
+    return _remoteControlSessionId != null &&
+        _remoteControlTargetIdentity != null &&
+        _remoteControlTargetIdentity == identity;
+  }
+
+  bool _isRemoteControlPendingForIdentity(String identity) {
+    return _remoteControlPendingTargetIdentity != null &&
+        _remoteControlPendingTargetIdentity == identity;
   }
 
   DesktopMeetingApiClient get _client => DesktopMeetingApiClient(
@@ -173,6 +215,7 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
   void dispose() {
     _stopPolling();
     _disposeAllZoomControllers();
+    _remoteControlFocusNode.dispose();
     _chatInputController.dispose();
     _chatScrollController.dispose();
     unawaited(_disposeRoom());
@@ -248,10 +291,20 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
           _connected = false;
           _fullscreenIdentity = null;
           _spotlightIdentity = null;
+          _remoteControlSessionId = null;
+          _remoteControlTargetIdentity = null;
+          _remoteControlControlledByIdentity = null;
+          _remoteControlPendingTargetIdentity = null;
+          _remoteControlPendingRequestId = null;
+          _remoteControlLastPointerMoveAt = null;
+          _remoteControlLastPointerButton = 'left';
         });
       })
       ..on<lk.ParticipantEvent>((_) {
         if (mounted) setState(() {});
+      })
+      ..on<lk.DataReceivedEvent>((event) {
+        unawaited(_handleRemoteControlDataReceived(event));
       });
 
     room.addListener(() {
@@ -295,6 +348,13 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
     _connected = false;
     _fullscreenIdentity = null;
     _spotlightIdentity = null;
+    _remoteControlSessionId = null;
+    _remoteControlTargetIdentity = null;
+    _remoteControlControlledByIdentity = null;
+    _remoteControlPendingTargetIdentity = null;
+    _remoteControlPendingRequestId = null;
+    _remoteControlLastPointerMoveAt = null;
+    _remoteControlLastPointerButton = 'left';
     await listener?.dispose();
     if (room != null) {
       try {
@@ -307,6 +367,11 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
   Future<void> _leaveRoom() async {
     if (_leaving) return;
     setState(() => _leaving = true);
+    await _stopRemoteControlSession(
+      notifyPeer: true,
+      reason: 'controller_leave',
+      silent: true,
+    );
     _stopPolling();
     await _disposeRoom();
     if (mounted) {
@@ -463,6 +528,395 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
     await Clipboard.setData(ClipboardData(text: text));
     if (!mounted) return;
     setState(() => _status = successText);
+  }
+
+  Future<void> _sendRemoteControlMessage({
+    required RemoteControlMessageKind kind,
+    required Map<String, dynamic> payload,
+    required List<String> destinationIdentities,
+  }) async {
+    final local = _room?.localParticipant;
+    if (!_connected || local == null) return;
+    await local.publishData(
+      utf8.encode(jsonEncode(payload)),
+      reliable: shouldSendRemoteControlReliably(kind),
+      destinationIdentities: destinationIdentities,
+      topic: remoteControlDataTopic,
+    );
+  }
+
+  Future<void> _requestRemoteControlForMember(
+      MeetingMemberProfile member) async {
+    final localIdentity = _localIdentity;
+    final targetIdentity = _identityForMember(member);
+    if (localIdentity == null || targetIdentity == null) {
+      if (mounted) {
+        setState(() => _status = '该成员当前不在线，无法发起远程控制');
+      }
+      return;
+    }
+    if (targetIdentity == localIdentity) {
+      if (mounted) {
+        setState(() => _status = '不能控制自己的设备');
+      }
+      return;
+    }
+    if (_isRemoteControlActiveForIdentity(targetIdentity)) {
+      if (mounted) {
+        setState(() => _status = '已在控制该成员');
+      }
+      return;
+    }
+    if (_isBeingRemoteControlled) {
+      if (mounted) {
+        setState(() => _status = '你正在被远程控制，请先结束当前会话');
+      }
+      return;
+    }
+    if (_isRemoteControlPendingForIdentity(targetIdentity)) {
+      if (mounted) {
+        setState(() => _status = '请求已发送，等待对方确认');
+      }
+      return;
+    }
+    if (!_canPublishRemoteControlData) {
+      if (mounted) {
+        setState(() => _status = '当前权限不允许发起远程控制');
+      }
+      return;
+    }
+    if (_remoteControlSessionId != null) {
+      await _stopRemoteControlSession(
+        notifyPeer: true,
+        reason: 'controller_switch',
+        silent: true,
+      );
+    }
+    final requestId =
+        '${DateTime.now().microsecondsSinceEpoch}-${math.Random().nextInt(1 << 20)}';
+    if (mounted) {
+      setState(() {
+        _remoteControlPendingTargetIdentity = targetIdentity;
+        _remoteControlPendingRequestId = requestId;
+      });
+    }
+    try {
+      await _sendRemoteControlMessage(
+        kind: RemoteControlMessageKind.request,
+        payload: buildRemoteControlRequestMessage(
+          requestId: requestId,
+          controllerIdentity: localIdentity,
+          targetIdentity: targetIdentity,
+        ),
+        destinationIdentities: <String>[targetIdentity],
+      );
+      if (mounted) {
+        final targetName = member.displayName.trim().isNotEmpty
+            ? member.displayName.trim()
+            : member.username.trim();
+        setState(() => _status = '已向 $targetName 发送远程控制请求');
+      }
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _remoteControlPendingTargetIdentity = null;
+        _remoteControlPendingRequestId = null;
+        _status = '远程控制请求失败：$error';
+      });
+    }
+  }
+
+  Future<void> _stopRemoteControlSession({
+    bool notifyPeer = true,
+    String reason = '',
+    bool silent = false,
+  }) async {
+    final localIdentity = _localIdentity;
+    final sessionId = _remoteControlSessionId;
+    final targetIdentity = _remoteControlTargetIdentity;
+    final controlledBy = _remoteControlControlledByIdentity;
+    if (notifyPeer && localIdentity != null && sessionId != null) {
+      String? peerIdentity;
+      if (targetIdentity != null) {
+        peerIdentity = targetIdentity;
+      } else if (controlledBy != null && controlledBy.trim().isNotEmpty) {
+        peerIdentity = controlledBy;
+      }
+      if (peerIdentity != null) {
+        try {
+          await _sendRemoteControlMessage(
+            kind: RemoteControlMessageKind.stop,
+            payload: buildRemoteControlStopMessage(
+              requestId: sessionId,
+              controllerIdentity: targetIdentity != null
+                  ? localIdentity
+                  : (controlledBy ?? localIdentity),
+              targetIdentity: targetIdentity ?? localIdentity,
+              reason: reason,
+            ),
+            destinationIdentities: <String>[peerIdentity],
+          );
+        } catch (_) {}
+      }
+    }
+    if (!mounted) return;
+    setState(() {
+      _remoteControlSessionId = null;
+      _remoteControlTargetIdentity = null;
+      _remoteControlControlledByIdentity = null;
+      _remoteControlPendingTargetIdentity = null;
+      _remoteControlPendingRequestId = null;
+      _remoteControlLastPointerMoveAt = null;
+      _remoteControlLastPointerButton = 'left';
+    });
+    if (!silent) {
+      setState(() => _status = '远程控制已结束');
+    }
+  }
+
+  Future<void> _handleRemoteControlDataReceived(
+      lk.DataReceivedEvent event) async {
+    if (event.topic != remoteControlDataTopic) return;
+    final senderIdentity = event.participant?.identity.trim() ?? '';
+    if (senderIdentity.isEmpty) return;
+    final parsed = parseRemoteControlMessage(utf8.decode(event.data));
+    if (parsed == null) return;
+    final localIdentity = _localIdentity;
+    if (localIdentity == null) return;
+
+    switch (parsed.kind) {
+      case RemoteControlMessageKind.request:
+        if (parsed.targetIdentity != localIdentity ||
+            parsed.controllerIdentity != senderIdentity) {
+          return;
+        }
+        await _handleIncomingRemoteControlRequest(parsed, senderIdentity);
+        return;
+      case RemoteControlMessageKind.response:
+        if (parsed.controllerIdentity != localIdentity ||
+            parsed.targetIdentity != senderIdentity) {
+          return;
+        }
+        if (_remoteControlPendingRequestId != parsed.requestId ||
+            _remoteControlPendingTargetIdentity != parsed.targetIdentity) {
+          return;
+        }
+        if (!mounted) return;
+        setState(() {
+          _remoteControlPendingRequestId = null;
+          _remoteControlPendingTargetIdentity = null;
+        });
+        if (parsed.approved == true) {
+          if (!mounted) return;
+          setState(() {
+            _remoteControlSessionId = parsed.requestId;
+            _remoteControlTargetIdentity = parsed.targetIdentity;
+            _remoteControlControlledByIdentity = null;
+            _remoteControlLastPointerMoveAt = null;
+            _remoteControlLastPointerButton = 'left';
+            _status =
+                '远程控制已连接：${_displayNameForIdentity(parsed.targetIdentity)}';
+          });
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted) return;
+            _remoteControlFocusNode.requestFocus();
+          });
+        } else {
+          final reason = parsed.reason?.trim() ?? '';
+          if (!mounted) return;
+          setState(() {
+            _status = reason.isEmpty ? '对方已拒绝远程控制' : '对方已拒绝远程控制：$reason';
+          });
+        }
+        return;
+      case RemoteControlMessageKind.stop:
+        final sessionId = _remoteControlSessionId;
+        if (sessionId == null || sessionId != parsed.requestId) {
+          return;
+        }
+        final isControllerSide = _remoteControlTargetIdentity != null &&
+            parsed.controllerIdentity == _localIdentity &&
+            parsed.targetIdentity == senderIdentity;
+        final isTargetSide = _remoteControlControlledByIdentity != null &&
+            parsed.controllerIdentity == senderIdentity &&
+            parsed.targetIdentity == _localIdentity;
+        if (!isControllerSide && !isTargetSide) return;
+        await _stopRemoteControlSession(notifyPeer: false, silent: true);
+        if (mounted) {
+          setState(() => _status = '远程控制会话已结束');
+        }
+        return;
+      case RemoteControlMessageKind.pointer:
+      case RemoteControlMessageKind.wheel:
+      case RemoteControlMessageKind.key:
+        final allowAsTarget = parsed.targetIdentity == localIdentity &&
+            parsed.controllerIdentity == senderIdentity &&
+            _remoteControlSessionId == parsed.requestId &&
+            _remoteControlControlledByIdentity == senderIdentity;
+        if (!allowAsTarget) return;
+        _remoteInputInjector.apply(parsed);
+        return;
+    }
+  }
+
+  Future<void> _handleIncomingRemoteControlRequest(
+    RemoteControlMessage message,
+    String senderIdentity,
+  ) async {
+    if (_remoteControlSessionId != null &&
+        _remoteControlControlledByIdentity != senderIdentity) {
+      await _sendRemoteControlMessage(
+        kind: RemoteControlMessageKind.response,
+        payload: buildRemoteControlResponseMessage(
+          requestId: message.requestId,
+          controllerIdentity: message.controllerIdentity,
+          targetIdentity: message.targetIdentity,
+          approved: false,
+          reason: 'target_busy',
+        ),
+        destinationIdentities: <String>[message.controllerIdentity],
+      );
+      return;
+    }
+    if (!mounted) return;
+    final senderName = _displayNameForIdentity(senderIdentity);
+    final approved = await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('远程控制请求'),
+            content: Text('$senderName 请求控制你的键盘和鼠标，是否允许？'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(false),
+                child: const Text('拒绝'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(context).pop(true),
+                child: const Text('允许'),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+    if (!mounted) return;
+    if (approved) {
+      setState(() {
+        _remoteControlSessionId = message.requestId;
+        _remoteControlTargetIdentity = null;
+        _remoteControlControlledByIdentity = senderIdentity;
+        _remoteControlPendingTargetIdentity = null;
+        _remoteControlPendingRequestId = null;
+        _status = '已允许 $senderName 远程控制';
+      });
+    }
+    await _sendRemoteControlMessage(
+      kind: RemoteControlMessageKind.response,
+      payload: buildRemoteControlResponseMessage(
+        requestId: message.requestId,
+        controllerIdentity: message.controllerIdentity,
+        targetIdentity: message.targetIdentity,
+        approved: approved,
+        reason: approved ? '' : 'target_rejected',
+      ),
+      destinationIdentities: <String>[message.controllerIdentity],
+    );
+  }
+
+  Future<void> _sendRemotePointerEvent({
+    required String event,
+    required Offset localPosition,
+    required Size size,
+    String button = '',
+  }) async {
+    final requestId = _remoteControlSessionId;
+    final targetIdentity = _remoteControlTargetIdentity;
+    final localIdentity = _localIdentity;
+    if (requestId == null || targetIdentity == null || localIdentity == null) {
+      return;
+    }
+    if (size.width <= 1 || size.height <= 1) return;
+    if (event == 'move') {
+      final now = DateTime.now();
+      final last = _remoteControlLastPointerMoveAt;
+      if (last != null && now.difference(last).inMilliseconds < 12) {
+        return;
+      }
+      _remoteControlLastPointerMoveAt = now;
+    }
+    final normalizedX = (localPosition.dx / size.width).clamp(0.0, 1.0);
+    final normalizedY = (localPosition.dy / size.height).clamp(0.0, 1.0);
+    final finalButton =
+        button.trim().isEmpty ? _remoteControlLastPointerButton : button.trim();
+    if (button.trim().isNotEmpty) {
+      _remoteControlLastPointerButton = button.trim();
+    }
+    await _sendRemoteControlMessage(
+      kind: RemoteControlMessageKind.pointer,
+      payload: buildRemoteControlPointerMessage(
+        requestId: requestId,
+        controllerIdentity: localIdentity,
+        targetIdentity: targetIdentity,
+        event: event,
+        x: normalizedX,
+        y: normalizedY,
+        button: finalButton,
+      ),
+      destinationIdentities: <String>[targetIdentity],
+    );
+  }
+
+  Future<void> _sendRemoteWheelEvent(Offset scrollDelta) async {
+    final requestId = _remoteControlSessionId;
+    final targetIdentity = _remoteControlTargetIdentity;
+    final localIdentity = _localIdentity;
+    if (requestId == null || targetIdentity == null || localIdentity == null) {
+      return;
+    }
+    final dx = scrollDelta.dx.round();
+    final dy = scrollDelta.dy.round();
+    if (dx == 0 && dy == 0) return;
+    await _sendRemoteControlMessage(
+      kind: RemoteControlMessageKind.wheel,
+      payload: buildRemoteControlWheelMessage(
+        requestId: requestId,
+        controllerIdentity: localIdentity,
+        targetIdentity: targetIdentity,
+        deltaX: dx,
+        deltaY: dy,
+      ),
+      destinationIdentities: <String>[targetIdentity],
+    );
+  }
+
+  Future<void> _sendRemoteKeyEvent(KeyEvent event) async {
+    final requestId = _remoteControlSessionId;
+    final targetIdentity = _remoteControlTargetIdentity;
+    final localIdentity = _localIdentity;
+    if (requestId == null || targetIdentity == null || localIdentity == null) {
+      return;
+    }
+    final phase = event is KeyUpEvent ? 'up' : 'down';
+    final hidUsage = event.physicalKey.usbHidUsage;
+    if (hidUsage == 0) return;
+    await _sendRemoteControlMessage(
+      kind: RemoteControlMessageKind.key,
+      payload: buildRemoteControlKeyMessage(
+        requestId: requestId,
+        controllerIdentity: localIdentity,
+        targetIdentity: targetIdentity,
+        phase: phase,
+        hidUsage: hidUsage,
+        keyLabel: event.logicalKey.keyLabel,
+      ),
+      destinationIdentities: <String>[targetIdentity],
+    );
+  }
+
+  String _pointerButtonFromButtons(int buttons) {
+    if ((buttons & 1) == 1) return 'left';
+    if ((buttons & 2) == 2) return 'right';
+    if ((buttons & 4) == 4) return 'middle';
+    return _remoteControlLastPointerButton;
   }
 
   Future<void> _openMeetingInfoDialog() async {
@@ -655,17 +1109,40 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
         (value: 'rename_self', label: '修改本次显示名', danger: false),
       ];
     }
+    final items = <({String value, String label, bool danger})>[];
+    final memberIdentity = _identityForMember(member);
+    final remoteControlAvailable =
+        memberIdentity != null && _connected && _canPublishRemoteControlData;
+    if (remoteControlAvailable) {
+      if (_isRemoteControlActiveForIdentity(memberIdentity)) {
+        items.add(
+          (
+            value: 'stop_remote_control',
+            label: '结束远程控制',
+            danger: false,
+          ),
+        );
+      } else {
+        items.add(
+          (
+            value: 'request_remote_control',
+            label: _isRemoteControlPendingForIdentity(memberIdentity)
+                ? '远程请求已发送'
+                : '请求远程控制',
+            danger: false,
+          ),
+        );
+      }
+    }
     if (!_canUseModeratorControls) {
-      return const <({String value, String label, bool danger})>[];
+      return items;
     }
     final roleKey = member.role.trim().toLowerCase();
     if (roleKey == 'host') {
-      return const <({String value, String label, bool danger})>[];
+      return items;
     }
-    final items = <({String value, String label, bool danger})>[
-      (value: 'rename_member', label: '成员改名', danger: false),
-      ..._memberManagementMenuItems(member),
-    ];
+    items.add((value: 'rename_member', label: '成员改名', danger: false));
+    items.addAll(_memberManagementMenuItems(member));
     return items;
   }
 
@@ -751,6 +1228,12 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
         return;
       case 'rename_member':
         await _openRenameMemberDialog(member: member, isSelf: false);
+        return;
+      case 'request_remote_control':
+        await _requestRemoteControlForMember(member);
+        return;
+      case 'stop_remote_control':
+        await _stopRemoteControlSession(reason: 'controller_stop');
         return;
       default:
         await _handleMemberManagementAction(member: member, action: action);
@@ -1838,6 +2321,70 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
     return null;
   }
 
+  int? _userIdFromIdentity(String identity) {
+    final normalized = identity.trim();
+    if (!normalized.startsWith('u')) return null;
+    final marker = normalized.indexOf('_');
+    final numeric =
+        marker > 1 ? normalized.substring(1, marker) : normalized.substring(1);
+    return int.tryParse(numeric);
+  }
+
+  String _usernameFromIdentity(String identity) {
+    final normalized = identity.trim();
+    final marker = normalized.indexOf('_');
+    if (marker <= 0 || marker + 1 >= normalized.length) {
+      return '';
+    }
+    return normalized.substring(marker + 1).trim();
+  }
+
+  String? _identityForMember(MeetingMemberProfile member) {
+    final room = _room;
+    if (room == null) return null;
+    final expectedUserId = member.userId;
+    final expectedUsername = member.username.trim().toLowerCase();
+    for (final participant in _livekitParticipants()) {
+      final identity = participant.identity.trim();
+      if (identity.isEmpty) continue;
+      if (expectedUserId > 0) {
+        final parsedUserId = _userIdFromIdentity(identity);
+        if (parsedUserId != null && parsedUserId == expectedUserId) {
+          return identity;
+        }
+      }
+      if (expectedUsername.isNotEmpty) {
+        final parsedUsername = _usernameFromIdentity(identity).toLowerCase();
+        if (parsedUsername.isNotEmpty && parsedUsername == expectedUsername) {
+          return identity;
+        }
+      }
+    }
+    return null;
+  }
+
+  String _displayNameForIdentity(String identity) {
+    final participant = _participantByIdentity(identity);
+    if (participant != null) {
+      final label = _participantLabel(participant).trim();
+      if (label.isNotEmpty) return label;
+    }
+    final parsedUserId = _userIdFromIdentity(identity);
+    if (parsedUserId != null) {
+      for (final member in _memberProfiles) {
+        if (member.userId == parsedUserId) {
+          final displayName = member.displayName.trim();
+          if (displayName.isNotEmpty) return displayName;
+          final username = member.username.trim();
+          if (username.isNotEmpty) return username;
+        }
+      }
+    }
+    final fallback = _usernameFromIdentity(identity);
+    if (fallback.isNotEmpty) return fallback;
+    return identity.trim();
+  }
+
   void _focusParticipantTile(String identity, {bool allowToggle = true}) {
     if (!mounted) return;
     final previousIdentity = _spotlightIdentity;
@@ -2714,6 +3261,7 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
         child: Stack(
           children: [
             Positioned.fill(child: mediaLayer),
+            _buildRemoteControlOverlay(identity),
             Positioned(
               top: 8,
               right: 8,
@@ -2803,6 +3351,109 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildRemoteControlOverlay(String identity) {
+    if (!_isRemoteControlActiveForIdentity(identity)) {
+      return const SizedBox.shrink();
+    }
+    return Positioned.fill(
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final size = Size(constraints.maxWidth, constraints.maxHeight);
+          return KeyboardListener(
+            focusNode: _remoteControlFocusNode,
+            onKeyEvent: (event) => unawaited(_sendRemoteKeyEvent(event)),
+            child: Listener(
+              behavior: HitTestBehavior.opaque,
+              onPointerDown: (event) {
+                _remoteControlFocusNode.requestFocus();
+                unawaited(
+                  _sendRemotePointerEvent(
+                    event: 'down',
+                    localPosition: event.localPosition,
+                    size: size,
+                    button: _pointerButtonFromButtons(event.buttons),
+                  ),
+                );
+              },
+              onPointerMove: (event) {
+                unawaited(
+                  _sendRemotePointerEvent(
+                    event: 'move',
+                    localPosition: event.localPosition,
+                    size: size,
+                  ),
+                );
+              },
+              onPointerUp: (event) {
+                unawaited(
+                  _sendRemotePointerEvent(
+                    event: 'up',
+                    localPosition: event.localPosition,
+                    size: size,
+                    button: _pointerButtonFromButtons(event.buttons),
+                  ),
+                );
+              },
+              onPointerSignal: (event) {
+                final dynamic signal = event;
+                final scrollDelta = signal.scrollDelta;
+                if (scrollDelta is Offset) {
+                  unawaited(_sendRemoteWheelEvent(scrollDelta));
+                }
+              },
+              child: Container(
+                decoration: BoxDecoration(
+                  border: Border.all(
+                    color: const Color(0xFF2E90FA),
+                    width: 2,
+                  ),
+                ),
+                child: Align(
+                  alignment: Alignment.topCenter,
+                  child: Padding(
+                    padding: const EdgeInsets.all(8),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 6,
+                            ),
+                            decoration: BoxDecoration(
+                              color: Colors.black.withValues(alpha: 0.6),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: const Text(
+                              '远程控制中：点击画面后可用键鼠进行操作',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        FilledButton.tonal(
+                          onPressed: () => unawaited(
+                            _stopRemoteControlSession(
+                                reason: 'controller_stop'),
+                          ),
+                          child: const Text('结束控制'),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          );
+        },
       ),
     );
   }
@@ -3172,6 +3823,17 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
             ),
           ),
         ),
+        if (_isBeingRemoteControlled)
+          FilledButton.tonalIcon(
+            onPressed: () => unawaited(
+              _stopRemoteControlSession(
+                notifyPeer: true,
+                reason: 'target_stop',
+              ),
+            ),
+            icon: const Icon(Icons.link_off_outlined),
+            label: const Text('结束被控'),
+          ),
         OutlinedButton.icon(
           onPressed: _openMeetingInfoDialog,
           icon: const Icon(Icons.info_outline),
