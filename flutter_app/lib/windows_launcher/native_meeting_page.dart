@@ -717,6 +717,7 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
             _status =
                 '远程控制已连接：${_displayNameForIdentity(parsed.targetIdentity)}';
           });
+          _focusParticipantTile(parsed.targetIdentity, allowToggle: false);
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (!mounted) return;
             _remoteControlFocusNode.requestFocus();
@@ -780,7 +781,7 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
     }
     if (!mounted) return;
     final senderName = _displayNameForIdentity(senderIdentity);
-    final approved = await showDialog<bool>(
+    final approvedByUser = await showDialog<bool>(
           context: context,
           builder: (context) => AlertDialog(
             title: const Text('远程控制请求'),
@@ -799,15 +800,21 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
         ) ??
         false;
     if (!mounted) return;
-    if (approved) {
-      setState(() {
-        _remoteControlSessionId = message.requestId;
-        _remoteControlTargetIdentity = null;
-        _remoteControlControlledByIdentity = senderIdentity;
-        _remoteControlPendingTargetIdentity = null;
-        _remoteControlPendingRequestId = null;
-        _status = '已允许 $senderName 远程控制';
-      });
+    var approved = approvedByUser;
+    if (approvedByUser) {
+      final screenReady = await _ensureRemoteControlTargetScreenShareReady();
+      if (!screenReady) {
+        approved = false;
+      } else {
+        setState(() {
+          _remoteControlSessionId = message.requestId;
+          _remoteControlTargetIdentity = null;
+          _remoteControlControlledByIdentity = senderIdentity;
+          _remoteControlPendingTargetIdentity = null;
+          _remoteControlPendingRequestId = null;
+          _status = '已允许 $senderName 远程控制';
+        });
+      }
     }
     await _sendRemoteControlMessage(
       kind: RemoteControlMessageKind.response,
@@ -816,10 +823,69 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
         controllerIdentity: message.controllerIdentity,
         targetIdentity: message.targetIdentity,
         approved: approved,
-        reason: approved ? '' : 'target_rejected',
+        reason: approved
+            ? ''
+            : (approvedByUser
+                ? 'target_screen_share_unavailable'
+                : 'target_rejected'),
       ),
       destinationIdentities: <String>[message.controllerIdentity],
     );
+  }
+
+  Future<bool> _ensureRemoteControlTargetScreenShareReady() async {
+    if (!shouldStartRemoteControlScreenShare(
+      screenShareEnabled: _screenShareEnabled,
+      canScreenShare: _canScreenShare,
+    )) {
+      if (_screenShareEnabled) return true;
+      if (mounted) {
+        setState(() => _status = remoteControlScreenShareRequiredStatusZh());
+      }
+      return false;
+    }
+    final room = _room;
+    final local = room?.localParticipant;
+    if (local == null) {
+      if (mounted) {
+        setState(() => _status = '当前未连接会议，无法开启屏幕共享');
+      }
+      return false;
+    }
+    try {
+      final picked = await _pickDesktopShareSource();
+      if (picked == null) {
+        if (mounted) {
+          setState(() => _status = '已取消屏幕共享选择，远程控制未开启');
+        }
+        return false;
+      }
+      try {
+        await _enableScreenShare(local: local, sourceId: picked.id);
+      } catch (error) {
+        if (!isScreenShareSourceNotFoundError(error)) rethrow;
+        final retryPicked = await _pickDesktopShareSource();
+        if (retryPicked == null) {
+          if (mounted) {
+            setState(() => _status = '已取消屏幕共享选择，远程控制未开启');
+          }
+          return false;
+        }
+        await _enableScreenShare(local: local, sourceId: retryPicked.id);
+      }
+      if (mounted) {
+        setState(() {
+          _screenShareEnabled = true;
+          _status = '已开启屏幕共享，可进行远程控制';
+        });
+      }
+      return true;
+    } catch (error) {
+      if (mounted) {
+        setState(() => _status = mapScreenShareErrorToStatus(error));
+      }
+      return false;
+    }
   }
 
   Future<void> _sendRemotePointerEvent({
@@ -2277,6 +2343,18 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
   }
 
   lk.VideoTrack? _preferredVideoTrack(lk.Participant participant) {
+    final identity = _participantIdentity(participant);
+    final remoteControlSessionActive = _remoteControlSessionId != null &&
+        _remoteControlTargetIdentity == identity;
+    if (remoteControlSessionActive) {
+      for (final publication in participant.videoTrackPublications) {
+        if (!publication.isScreenShare) continue;
+        final track = publication.track;
+        if (track != null && track is lk.VideoTrack && !track.muted) {
+          return track;
+        }
+      }
+    }
     for (final publication in participant.videoTrackPublications) {
       if (publication.isScreenShare) continue;
       final track = publication.track;

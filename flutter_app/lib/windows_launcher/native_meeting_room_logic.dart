@@ -181,3 +181,14 @@ bool canToggleCameraButton({
 }) {
   return connected && (cameraEnabled || canOpenVideo);
 }
+
+bool shouldStartRemoteControlScreenShare({
+  required bool screenShareEnabled,
+  required bool canScreenShare,
+}) {
+  return !screenShareEnabled && canScreenShare;
+}
+
+String remoteControlScreenShareRequiredStatusZh() {
+  return '\u8fdc\u7a0b\u63a7\u5236\u9700\u5148\u5f00\u542f\u5c4f\u5e55\u5171\u4eab';
+}

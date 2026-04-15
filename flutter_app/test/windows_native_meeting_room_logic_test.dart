@@ -245,4 +245,37 @@ void main() {
       );
     });
   });
+
+  group('remote control helpers', () {
+    test('requires target screen share before approving remote control', () {
+      expect(
+        shouldStartRemoteControlScreenShare(
+          screenShareEnabled: false,
+          canScreenShare: true,
+        ),
+        isTrue,
+      );
+      expect(
+        shouldStartRemoteControlScreenShare(
+          screenShareEnabled: true,
+          canScreenShare: true,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldStartRemoteControlScreenShare(
+          screenShareEnabled: false,
+          canScreenShare: false,
+        ),
+        isFalse,
+      );
+    });
+
+    test('returns chinese status when target cannot share screen', () {
+      expect(
+          remoteControlScreenShareRequiredStatusZh(), contains('\u5c4f\u5e55'));
+      expect(
+          remoteControlScreenShareRequiredStatusZh(), contains('\u5171\u4eab'));
+    });
+  });
 }
