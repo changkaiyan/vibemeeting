@@ -269,6 +269,11 @@ extension _MeetingRoomSessionLogic on _MeetingRoomPageState {
             _guestDisplayNameVersionsByIdentity.clear();
             _lastHandledHostForceMicNonce = null;
             _lastHandledHostForceVideoNonce = null;
+            _remoteControlSessionId = null;
+            _remoteControlTargetIdentity = null;
+            _remoteControlPendingTargetIdentity = null;
+            _remoteControlPendingRequestId = null;
+            _remoteControlLastPointerMoveAt = null;
           });
           _stopChatPolling();
           _stopMemberPolling();
@@ -286,6 +291,9 @@ extension _MeetingRoomSessionLogic on _MeetingRoomPageState {
         })
         ..on<lk.ParticipantNameUpdatedEvent>((event) {
           _onRoomUpdated();
+        })
+        ..on<lk.DataReceivedEvent>((event) {
+          unawaited(_handleRemoteControlDataReceived(event));
         })
         ..on<lk.TrackSubscribedEvent>((event) {
           _onRoomUpdated();
@@ -464,6 +472,11 @@ extension _MeetingRoomSessionLogic on _MeetingRoomPageState {
     room.removeListener(_onRoomUpdated);
     _room = null;
     _roomListener = null;
+    _remoteControlSessionId = null;
+    _remoteControlTargetIdentity = null;
+    _remoteControlPendingTargetIdentity = null;
+    _remoteControlPendingRequestId = null;
+    _remoteControlLastPointerMoveAt = null;
     try {
       await room.disconnect();
     } catch (_) {}
@@ -477,6 +490,11 @@ extension _MeetingRoomSessionLogic on _MeetingRoomPageState {
 
   Future<void> _leaveRoom() async {
     _setStatus('正在离开会议...');
+    await _stopRemoteControl(
+      notifyPeer: true,
+      reason: 'controller_leave',
+      silent: true,
+    );
     if (_recordingActive) {
       await _stopMeetingRecording();
     }
@@ -499,6 +517,11 @@ extension _MeetingRoomSessionLogic on _MeetingRoomPageState {
       _guestDisplayNameVersionsByIdentity.clear();
       _lastHandledHostForceMicNonce = null;
       _lastHandledHostForceVideoNonce = null;
+      _remoteControlSessionId = null;
+      _remoteControlTargetIdentity = null;
+      _remoteControlPendingTargetIdentity = null;
+      _remoteControlPendingRequestId = null;
+      _remoteControlLastPointerMoveAt = null;
       _status = '正在返回会议控制台...';
     });
     _syncRealtimeBotAudioIngress();

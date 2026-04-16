@@ -376,6 +376,44 @@ class JoinTokenPayload {
   final bool allowMemberVideo;
   final bool canPublish;
 
+  JoinTokenPayload copyWith({
+    int? meetingId,
+    String? meetingRef,
+    String? roomName,
+    String? livekitUrl,
+    String? token,
+    bool? waitingRoomEnabled,
+    int? maxParticipants,
+    DateTime? actualStartedAt,
+    bool? muteOnEntry,
+    bool? allowGuestLinkJoin,
+    bool? allowRecording,
+    bool? allowScreenShare,
+    bool? allowChat,
+    bool? allowSelfUnmute,
+    bool? allowMemberVideo,
+    bool? canPublish,
+  }) {
+    return JoinTokenPayload(
+      meetingId: meetingId ?? this.meetingId,
+      meetingRef: meetingRef ?? this.meetingRef,
+      roomName: roomName ?? this.roomName,
+      livekitUrl: livekitUrl ?? this.livekitUrl,
+      token: token ?? this.token,
+      waitingRoomEnabled: waitingRoomEnabled ?? this.waitingRoomEnabled,
+      maxParticipants: maxParticipants ?? this.maxParticipants,
+      actualStartedAt: actualStartedAt ?? this.actualStartedAt,
+      muteOnEntry: muteOnEntry ?? this.muteOnEntry,
+      allowGuestLinkJoin: allowGuestLinkJoin ?? this.allowGuestLinkJoin,
+      allowRecording: allowRecording ?? this.allowRecording,
+      allowScreenShare: allowScreenShare ?? this.allowScreenShare,
+      allowChat: allowChat ?? this.allowChat,
+      allowSelfUnmute: allowSelfUnmute ?? this.allowSelfUnmute,
+      allowMemberVideo: allowMemberVideo ?? this.allowMemberVideo,
+      canPublish: canPublish ?? this.canPublish,
+    );
+  }
+
   factory JoinTokenPayload.fromJson(Map<String, dynamic> json) {
     return JoinTokenPayload(
       meetingId: _MeetingModelParsing.asInt(json['meeting_id'], 0),

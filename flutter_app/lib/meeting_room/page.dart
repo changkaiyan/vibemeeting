@@ -7,6 +7,7 @@ import 'dart:math' as math;
 import 'dart:ui_web' as ui_web;
 import 'dart:typed_data';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
@@ -27,6 +28,7 @@ import 'workspace_stt/workspace_stt_pcm_capture_web.dart';
 import 'workspace_stt/workspace_stt_protocol.dart';
 import 'workspace_stt/workspace_stt_runtime.dart';
 import 'participant_menu/participant_menu_builder.dart';
+import 'remote_control_protocol.dart';
 import 'utils/audio_level.dart';
 import 'widgets/media_test_widgets.dart';
 import 'widgets/panel_widgets.dart';
@@ -37,6 +39,7 @@ part 'widgets/layout_panels.dart';
 part 'logic/meeting_service_logic.dart';
 part 'logic/moderation_logic.dart';
 part 'logic/recording.dart';
+part 'logic/remote_control_logic.dart';
 part 'logic/room_session_logic.dart';
 part 'logic/workspace_logic.dart';
 part 'widgets/workspace_widgets.dart';
@@ -189,8 +192,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
   List<lk.MediaDevice> _audioInputs = const [];
   List<lk.MediaDevice> _audioOutputs = const [];
   List<lk.MediaDevice> _videoInputs = const [];
-  CameraResolutionPreset _cameraResolutionPreset =
-      CameraResolutionPreset.p2160;
+  CameraResolutionPreset _cameraResolutionPreset = CameraResolutionPreset.p2160;
   ScreenShareResolutionPreset _screenShareResolutionPreset =
       ScreenShareResolutionPreset.p2160;
   bool _adaptiveStreamEnabled = false;
@@ -199,6 +201,13 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
   RemoteShareViewMode _remoteShareViewMode = RemoteShareViewMode.original;
   final Map<String, TransformationController> _tileZoomControllers =
       <String, TransformationController>{};
+  final FocusNode _remoteControlFocusNode = FocusNode();
+  String? _remoteControlSessionId;
+  String? _remoteControlTargetIdentity;
+  String? _remoteControlPendingTargetIdentity;
+  String? _remoteControlPendingRequestId;
+  DateTime? _remoteControlLastPointerMoveAt;
+  String _remoteControlLastPointerButton = 'left';
   bool _desktopParticipantsCollapsed = false;
   bool _desktopChatCollapsed = false;
   bool _desktopChatPanelExpanded = false;
@@ -309,8 +318,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
   StreamSubscription<html.Event>? _fullscreenSubscription;
   int _latestMessageId = 0;
   final List<ChatMessage> _messages = [];
-  final Map<int, ChatMessage> _pendingLocalDraftMessages =
-      <int, ChatMessage>{};
+  final Map<int, ChatMessage> _pendingLocalDraftMessages = <int, ChatMessage>{};
   final Set<int> _playedRealtimeBotAudioMessageIds = <int>{};
   final Set<int> _playingRealtimeBotAudioMessageIds = <int>{};
   final Set<int> _recallingMessageIds = <int>{};
@@ -512,9 +520,8 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     final location = html.window.location;
     final scheme = location.protocol == 'https:' ? 'wss' : 'ws';
     final token = _accessToken.trim();
-    final tokenQuery = token.isEmpty
-        ? ''
-        : '?token=${Uri.encodeQueryComponent(token)}';
+    final tokenQuery =
+        token.isEmpty ? '' : '?token=${Uri.encodeQueryComponent(token)}';
     return '$scheme://${location.host}${_meetingAiRealtimeAudioWsPath()}$tokenQuery';
   }
 
@@ -636,6 +643,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     _stopWaitingRoomPolling();
     _fullscreenSubscription?.cancel();
     _disposeAllZoomControllers();
+    _remoteControlFocusNode.dispose();
     unawaited(_stopWorkspaceRealtimeStt(immediate: true));
     unawaited(_stopRealtimeBotAudioIngress());
     unawaited(_disposeRoom());
@@ -3724,8 +3732,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
   Future<void> _ensureRealtimeBotIngressSocketReady() async {
     if (_isRealtimeBotIngressSocketOpen()) return;
     if (_realtimeBotIngressSocketConnecting) {
-      final waitUntil =
-          DateTime.now().add(const Duration(milliseconds: 8000));
+      final waitUntil = DateTime.now().add(const Duration(milliseconds: 8000));
       while (_realtimeBotIngressSocketConnecting &&
           DateTime.now().isBefore(waitUntil)) {
         await Future<void>.delayed(const Duration(milliseconds: 50));
@@ -3758,8 +3765,8 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
           _clearRealtimeBotIngressResponseTimeout();
           _updateRealtimeBotDebug(
             event: 'upload_failed',
-            error: 'ai ingress websocket closed ($closeCode) $closeReason'
-                .trim(),
+            error:
+                'ai ingress websocket closed ($closeCode) $closeReason'.trim(),
             lastUploadAt: DateTime.now(),
             lastUploadLatencyMs: latency,
             forceRebuild: true,
@@ -3768,8 +3775,8 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
         } else {
           _updateRealtimeBotDebug(
             event: 'ws_closed',
-            error: 'ai ingress websocket closed ($closeCode) $closeReason'
-                .trim(),
+            error:
+                'ai ingress websocket closed ($closeCode) $closeReason'.trim(),
             forceRebuild: true,
           );
         }
@@ -3814,13 +3821,13 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
       force: force,
       sendChunk: (chunk) {
         final ok = _sendRealtimeBotIngressPayload(
-        <String, dynamic>{
-          'type': 'audio_chunk',
-          'audio_base64': base64Encode(chunk),
-          'sample_rate': _realtimeBotCaptureSampleRate,
-          'channels': 1,
-        },
-      );
+          <String, dynamic>{
+            'type': 'audio_chunk',
+            'audio_base64': base64Encode(chunk),
+            'sample_rate': _realtimeBotCaptureSampleRate,
+            'channels': 1,
+          },
+        );
         return ok;
       },
     );
@@ -3850,7 +3857,8 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     if (!wasActive) return;
     _flushRealtimeBotStreamAudioChunks(force: true);
     if (_realtimeBotSpeechStreamOpen) {
-      _sendRealtimeBotIngressPayload(const <String, dynamic>{'type': 'speech_end'});
+      _sendRealtimeBotIngressPayload(
+          const <String, dynamic>{'type': 'speech_end'});
     }
     _realtimeBotCaptureBytes.clear();
     _realtimeBotPrerollBytes.clear();
@@ -4213,10 +4221,12 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     if (!frameAlreadyInBuffer) {
       _realtimeBotCaptureBytes.addAll(pcmBytes);
     }
-    if (_realtimeBotCaptureBytes.length > _realtimeBotIngressStreamMaxBufferBytes) {
+    if (_realtimeBotCaptureBytes.length >
+        _realtimeBotIngressStreamMaxBufferBytes) {
       _realtimeBotCaptureBytes.removeRange(
         0,
-        _realtimeBotCaptureBytes.length - _realtimeBotIngressStreamMaxBufferBytes,
+        _realtimeBotCaptureBytes.length -
+            _realtimeBotIngressStreamMaxBufferBytes,
       );
     }
     _flushRealtimeBotStreamAudioChunks();
@@ -5408,8 +5418,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     }
   }
 
-  PreferredVideoSelection _findPreferredVideoTrack(
-      lk.Participant participant) {
+  PreferredVideoSelection _findPreferredVideoTrack(lk.Participant participant) {
     final screenPub = participant
         .getTrackPublicationBySource(lk.TrackSource.screenShareVideo);
     if (screenPub != null &&
@@ -7066,6 +7075,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
         child: Stack(
           children: [
             Positioned.fill(child: mediaLayer),
+            _buildRemoteControlOverlay(tile),
             Positioned(
               top: 8,
               right: 8,
@@ -7455,6 +7465,14 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
       } catch (e) {
         _setStatus('提交屏幕共享申请失败：${_friendlyError(e)}');
       }
+      return;
+    }
+    if (action == 'request_remote_control') {
+      await _requestRemoteControl(row);
+      return;
+    }
+    if (action == 'stop_remote_control') {
+      await _stopRemoteControl(reason: 'controller_stop');
       return;
     }
     if (row.isRealtimeBot) {
@@ -7943,6 +7961,10 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
         return Icons.person_remove_alt_1_outlined;
       case ParticipantMenuIcon.personOff:
         return Icons.person_off_outlined;
+      case ParticipantMenuIcon.remoteControl:
+        return Icons.keyboard_command_key_rounded;
+      case ParticipantMenuIcon.remoteControlOff:
+        return Icons.stop_circle_outlined;
     }
   }
 
@@ -8042,6 +8064,13 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
         videoRequestPending: row.videoRequestPending,
         screenShareRequestPending: row.screenShareRequestPending,
         isScreenSharing: row.isScreenSharing,
+        remoteControlAvailable: !isSelf &&
+            !row.isRealtimeBot &&
+            _connected &&
+            _canPublishRemoteControlData,
+        remoteControlActive: _isRemoteControlActiveForIdentity(row.identity),
+        remoteControlRequestPending:
+            _isRemoteControlPendingForIdentity(row.identity),
       ),
     );
     return specs.map((spec) {
