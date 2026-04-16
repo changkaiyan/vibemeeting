@@ -56,7 +56,8 @@ void main() {
         isTrue,
       );
       expect(
-        canOpenInEmbeddedWebView(Uri.parse('https://meeting.example.com/m/demo')),
+        canOpenInEmbeddedWebView(
+            Uri.parse('https://meeting.example.com/m/demo')),
         isTrue,
       );
     });
@@ -93,6 +94,48 @@ void main() {
       expect(
         normalizeDesktopTargetInput('https://meeting.example.com/dashboard'),
         'https://meeting.example.com/dashboard',
+      );
+    });
+  });
+
+  group('resolveDesktopLivekitUrl', () {
+    test('keeps token payload url when override is empty', () {
+      expect(
+        resolveDesktopLivekitUrl(
+          tokenPayloadUrl: 'wss://token.example.com:7443',
+          publicUrlOverrideInput: '  ',
+        ),
+        'wss://token.example.com:7443',
+      );
+    });
+
+    test('prefers override when explicit ws or wss is provided', () {
+      expect(
+        resolveDesktopLivekitUrl(
+          tokenPayloadUrl: 'wss://token.example.com:7443',
+          publicUrlOverrideInput: 'ws://192.168.1.12:7880',
+        ),
+        'ws://192.168.1.12:7880',
+      );
+    });
+
+    test('upgrades http override to wss', () {
+      expect(
+        resolveDesktopLivekitUrl(
+          tokenPayloadUrl: 'ws://127.0.0.1:7880',
+          publicUrlOverrideInput: 'https://rtc.example.com:7443',
+        ),
+        'wss://rtc.example.com:7443',
+      );
+    });
+
+    test('adds ws scheme when override omits scheme', () {
+      expect(
+        resolveDesktopLivekitUrl(
+          tokenPayloadUrl: 'ws://127.0.0.1:7880',
+          publicUrlOverrideInput: 'rtc.example.com:7880',
+        ),
+        'ws://rtc.example.com:7880',
       );
     });
   });

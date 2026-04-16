@@ -128,9 +128,37 @@ void main() {
         isFalse,
       );
     });
+
+    test('detects no local media track error for join fallback', () {
+      expect(
+        isJoinWithoutMediaTrackError(
+          'livekit exception: failed to create stream, at least 1 video or audio track should exist.',
+        ),
+        isTrue,
+      );
+      expect(
+        isJoinWithoutMediaTrackError('permission denied'),
+        isFalse,
+      );
+    });
   });
 
   group('web parity helpers', () {
+    test('uses system window fullscreen only on native windows', () {
+      expect(
+        shouldUseSystemWindowFullscreen(isWeb: false, platform: 'windows'),
+        isTrue,
+      );
+      expect(
+        shouldUseSystemWindowFullscreen(isWeb: true, platform: 'windows'),
+        isFalse,
+      );
+      expect(
+        shouldUseSystemWindowFullscreen(isWeb: false, platform: 'linux'),
+        isFalse,
+      );
+    });
+
     test('stage grid columns follow web breakpoints', () {
       expect(stageGridColumnsForWidth(650), 1);
       expect(stageGridColumnsForWidth(700), 2);
@@ -247,6 +275,29 @@ void main() {
   });
 
   group('remote control helpers', () {
+    test('enables hover pointer move on native desktop', () {
+      expect(
+        shouldSendRemoteHoverPointerMoves(isWeb: false, platform: 'windows'),
+        isTrue,
+      );
+      expect(
+        shouldSendRemoteHoverPointerMoves(isWeb: false, platform: 'linux'),
+        isTrue,
+      );
+      expect(
+        shouldSendRemoteHoverPointerMoves(isWeb: false, platform: 'macos'),
+        isTrue,
+      );
+      expect(
+        shouldSendRemoteHoverPointerMoves(isWeb: true, platform: 'windows'),
+        isFalse,
+      );
+      expect(
+        shouldSendRemoteHoverPointerMoves(isWeb: false, platform: 'android'),
+        isFalse,
+      );
+    });
+
     test('requires target screen share before approving remote control', () {
       expect(
         shouldStartRemoteControlScreenShare(
@@ -276,6 +327,94 @@ void main() {
           remoteControlScreenShareRequiredStatusZh(), contains('\u5c4f\u5e55'));
       expect(
           remoteControlScreenShareRequiredStatusZh(), contains('\u5171\u4eab'));
+      expect(
+        remoteControlTargetScreenNotReadyStatusZh(),
+        contains('\u753b\u9762'),
+      );
+    });
+
+    test('periodically forces reliable pointer move packets', () {
+      expect(shouldForceReliableRemotePointerMove(0), isTrue);
+      expect(shouldForceReliableRemotePointerMove(1), isFalse);
+      expect(shouldForceReliableRemotePointerMove(4), isFalse);
+      expect(shouldForceReliableRemotePointerMove(5), isTrue);
+    });
+
+    test('uses screen-only picker for remote control auto start', () {
+      expect(
+        shouldIncludeWindowSourcesInDesktopPicker(
+          forRemoteControlAutoStart: true,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldIncludeWindowSourcesInDesktopPicker(
+          forRemoteControlAutoStart: false,
+        ),
+        isTrue,
+      );
+    });
+
+    test('forces reliability for pointer down/up and periodic move', () {
+      expect(
+        shouldSendRemotePointerReliably(event: 'down', moveSequence: 1),
+        isTrue,
+      );
+      expect(
+        shouldSendRemotePointerReliably(event: 'up', moveSequence: 2),
+        isTrue,
+      );
+      expect(
+        shouldSendRemotePointerReliably(event: 'move', moveSequence: 1),
+        isFalse,
+      );
+      expect(
+        shouldSendRemotePointerReliably(event: 'move', moveSequence: 5),
+        isTrue,
+      );
+    });
+
+    test('disables system fullscreen for active remote-control tile', () {
+      expect(
+        shouldUseSystemWindowFullscreenForTile(
+          isWeb: false,
+          platform: 'windows',
+          isRemoteControlTileActive: false,
+        ),
+        isTrue,
+      );
+      expect(
+        shouldUseSystemWindowFullscreenForTile(
+          isWeb: false,
+          platform: 'windows',
+          isRemoteControlTileActive: true,
+        ),
+        isFalse,
+      );
+    });
+
+    test('stops auto-started screen share when controlled session ends', () {
+      expect(
+        shouldStopAutoStartedRemoteControlScreenShare(
+          autoStartedByRemoteControl: true,
+          sessionWasBeingControlled: true,
+        ),
+        isTrue,
+      );
+      expect(
+        shouldStopAutoStartedRemoteControlScreenShare(
+          autoStartedByRemoteControl: false,
+          sessionWasBeingControlled: true,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldStopAutoStartedRemoteControlScreenShare(
+          autoStartedByRemoteControl: true,
+          sessionWasBeingControlled: false,
+        ),
+        isFalse,
+      );
     });
   });
 }

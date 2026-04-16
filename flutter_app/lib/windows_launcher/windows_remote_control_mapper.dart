@@ -21,6 +21,18 @@ double clampRemoteControlUnit(num value) {
   );
 }
 
+({int x, int y}) mapNormalizedToAbsoluteMousePoint({
+  required double x,
+  required double y,
+}) {
+  final clampedX = clampRemoteControlUnit(x);
+  final clampedY = clampRemoteControlUnit(y);
+  return (
+    x: (clampedX * 65535).round(),
+    y: (clampedY * 65535).round(),
+  );
+}
+
 int? windowsVirtualKeyFromHidUsage(int usage) {
   if (usage >= 0x70004 && usage <= 0x7001D) {
     return 0x41 + (usage - 0x70004);

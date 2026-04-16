@@ -30,15 +30,16 @@ class WindowsRemoteInputInjector {
     final x = message.x;
     final y = message.y;
     if (x == null || y == null) return;
-    final screenWidth = GetSystemMetrics(SM_CXSCREEN);
-    final screenHeight = GetSystemMetrics(SM_CYSCREEN);
-    final point = mapNormalizedToScreenPoint(
+    final point = mapNormalizedToAbsoluteMousePoint(
       x: x,
       y: y,
-      screenWidth: screenWidth,
-      screenHeight: screenHeight,
     );
-    SetCursorPos(point.x, point.y);
+    _sendMouseInput(
+      MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
+      mouseData: 0,
+      dx: point.x,
+      dy: point.y,
+    );
 
     final event = (message.pointerEvent ?? '').trim().toLowerCase();
     if (event == 'down') {
@@ -69,11 +70,18 @@ class WindowsRemoteInputInjector {
     _sendKeyboardInput(virtualKey, flags: flags);
   }
 
-  void _sendMouseInput(int flags, {required int mouseData}) {
+  void _sendMouseInput(
+    int flags, {
+    required int mouseData,
+    int dx = 0,
+    int dy = 0,
+  }) {
     final input = calloc<INPUT>();
     try {
       input.ref
         ..type = INPUT_MOUSE
+        ..mi.dx = dx
+        ..mi.dy = dy
         ..mi.dwFlags = flags
         ..mi.mouseData = mouseData;
       SendInput(1, input, sizeOf<INPUT>());

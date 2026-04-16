@@ -54,3 +54,32 @@ rsync -av --delete build/web/ ../artifacts/flutter_app_web/
 - `artifacts/flutter_app_web/` 是生成产物目录
 - 不要手改 `artifacts/flutter_app_web/` 下的文件
 - Flutter package 名为 `smart_meeting_app`
+
+## Native Android APK Build
+
+From repository root:
+
+```powershell
+.\scripts\build_flutter_android.ps1 -Mode Release -AndroidSdkPath "D:\Android\Sdk"
+```
+
+Debug build:
+
+```powershell
+.\scripts\build_flutter_android.ps1 -Mode Debug -AndroidSdkPath "D:\Android\Sdk"
+```
+
+Dry run (print commands only):
+
+```powershell
+.\scripts\build_flutter_android.ps1 -Mode Release -AndroidSdkPath "D:\Android\Sdk" -DryRun
+```
+
+Output APK:
+
+- Release: `flutter_app\build\app\outputs\flutter-apk\app-release.apk`
+- Debug: `flutter_app\build\app\outputs\flutter-apk\app-debug.apk`
+
+Note: if `flutter_app\android` is missing, the script auto-runs `puro flutter create --platforms=android .` before building.
+Note: Android native build targets `lib/main_windows.dart`.
+Note: when project path contains non-ASCII chars on Windows, the script auto-uses `subst X:` during build.

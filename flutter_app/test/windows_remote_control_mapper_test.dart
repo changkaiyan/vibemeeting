@@ -42,5 +42,15 @@ void main() {
       expect(p1, (x: 0, y: 0));
       expect(p2, (x: 1919, y: 1079));
     });
+
+    test('maps normalized coordinate to absolute mouse range', () {
+      final p1 = mapNormalizedToAbsoluteMousePoint(x: 0, y: 0);
+      final p2 = mapNormalizedToAbsoluteMousePoint(x: 1, y: 1);
+      final p3 = mapNormalizedToAbsoluteMousePoint(x: 0.5, y: 0.5);
+      expect(p1, (x: 0, y: 0));
+      expect(p2, (x: 65535, y: 65535));
+      expect(p3.x, inInclusiveRange(32767, 32768));
+      expect(p3.y, inInclusiveRange(32767, 32768));
+    });
   });
 }

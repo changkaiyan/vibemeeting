@@ -9,12 +9,14 @@ import 'package:flutter_webrtc/flutter_webrtc.dart' as rtc;
 import 'package:livekit_client/livekit_client.dart' as lk;
 
 import '../app/theme/meeting_theme.dart';
+import '../device_profile.dart';
 import '../meeting_room/chat_menu/chat_message_menu_builder.dart';
 import '../meeting_room/models.dart';
 import '../meeting_room/remote_control_protocol.dart';
 import 'native_api_client.dart';
 import 'native_meeting_recording_logic.dart';
 import 'native_meeting_room_logic.dart';
+import 'native_window_fullscreen_controller.dart';
 import 'native_share_source_picker_dialog.dart';
 import 'windows_remote_input_injector.dart';
 
@@ -60,6 +62,7 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
   bool _cameraEnabled = true;
   bool _screenShareEnabled = false;
   bool _leaving = false;
+  bool _openingJoinSetupDialog = false;
   bool _recordingBusy = false;
   bool _moderationBusy = false;
   bool _loadingMembers = false;
@@ -73,12 +76,16 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
   final FocusNode _remoteControlFocusNode = FocusNode();
   final WindowsRemoteInputInjector _remoteInputInjector =
       const WindowsRemoteInputInjector();
+  final NativeWindowFullscreenController _windowFullscreenController =
+      NativeWindowFullscreenController();
   String? _remoteControlSessionId;
   String? _remoteControlTargetIdentity;
   String? _remoteControlControlledByIdentity;
   String? _remoteControlPendingTargetIdentity;
   String? _remoteControlPendingRequestId;
   DateTime? _remoteControlLastPointerMoveAt;
+  int _remotePointerMoveSequence = 0;
+  bool _remoteControlAutoStartedScreenShare = false;
   String _remoteControlLastPointerButton = 'left';
   late bool _waitingRoomEnabled;
   late bool _allowGuestLinkJoin;
@@ -192,6 +199,8 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
     _allowScreenShare = widget.joinPayload.allowScreenShare;
     _allowSelfUnmute = widget.joinPayload.allowSelfUnmute;
     _allowMemberVideo = widget.joinPayload.allowMemberVideo;
+    _micEnabled = !widget.joinPayload.muteOnEntry;
+    _cameraEnabled = widget.joinPayload.allowMemberVideo;
     if (widget.initialMemberProfiles.isNotEmpty) {
       _memberProfiles = List<MeetingMemberProfile>.from(
         widget.initialMemberProfiles,
@@ -200,14 +209,13 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
     if (widget.initialMessages.isNotEmpty) {
       _messages = List<ChatMessage>.from(widget.initialMessages);
     }
+    _connecting = false;
+    _status = '会议界面已就绪';
     if (widget.autoConnect) {
-      _connect();
-    } else {
-      _connecting = false;
-      _status = '会议界面已就绪';
-    }
-    if (widget.autoConnect && _hasMeetingRef) {
-      unawaited(_bootstrapPanels());
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        unawaited(_joinMeeting());
+      });
     }
   }
 
@@ -259,8 +267,186 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
     });
   }
 
+  Future<bool> _openJoinSetupDialog() async {
+    if (!mounted ||
+        _connected ||
+        _connecting ||
+        _leaving ||
+        _openingJoinSetupDialog) {
+      return false;
+    }
+    var micEnabled = _micEnabled;
+    var cameraEnabled = _cameraEnabled;
+    _openingJoinSetupDialog = true;
+    try {
+      final confirmed = await showDialog<bool>(
+            context: context,
+            barrierDismissible: false,
+            builder: (context) => StatefulBuilder(
+              builder: (context, setDialogState) {
+                final theme = Theme.of(context);
+                final colors = theme.colorScheme;
+                return AlertDialog(
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  insetPadding:
+                      const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+                  titlePadding: const EdgeInsets.fromLTRB(24, 20, 24, 8),
+                  contentPadding: const EdgeInsets.fromLTRB(18, 8, 18, 8),
+                  actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
+                  title: Row(
+                    children: [
+                      CircleAvatar(
+                        radius: 16,
+                        backgroundColor: colors.primary.withValues(alpha: 0.12),
+                        child: Icon(
+                          Icons.video_call_rounded,
+                          size: 18,
+                          color: colors.primary,
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text('入会前确认'),
+                            Text(
+                              '确认设备状态后进入会议',
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                color: colors.onSurfaceVariant,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  content: SizedBox(
+                    width: 520,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(12),
+                            color: colors.primary.withValues(alpha: 0.08),
+                            border: Border.all(
+                              color: colors.primary.withValues(alpha: 0.2),
+                            ),
+                          ),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Icon(
+                                Icons.meeting_room_outlined,
+                                size: 18,
+                                color: colors.primary,
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  widget.meetingTitle.trim().isEmpty
+                                      ? widget.joinPayload.roomName
+                                      : widget.meetingTitle.trim(),
+                                  style: theme.textTheme.bodyMedium?.copyWith(
+                                    color: colors.onSurfaceVariant,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        Container(
+                          padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(color: colors.outlineVariant),
+                            color: colors.surfaceContainerHighest
+                                .withValues(alpha: 0.32),
+                          ),
+                          child: Column(
+                            children: [
+                              SwitchListTile.adaptive(
+                                value: micEnabled,
+                                onChanged: (v) =>
+                                    setDialogState(() => micEnabled = v),
+                                contentPadding: EdgeInsets.zero,
+                                title: const Text('进入会议时开启麦克风'),
+                              ),
+                              const Divider(height: 1),
+                              SwitchListTile.adaptive(
+                                value: cameraEnabled,
+                                onChanged: _allowMemberVideo
+                                    ? (v) =>
+                                        setDialogState(() => cameraEnabled = v)
+                                    : null,
+                                contentPadding: EdgeInsets.zero,
+                                title: const Text('进入会议时开启摄像头'),
+                                subtitle: !_allowMemberVideo
+                                    ? const Text('主持人已禁止成员默认开启摄像头')
+                                    : null,
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(12),
+                            color: _palette.warningSurface,
+                            border: Border.all(color: _palette.warningBorder),
+                          ),
+                          child: const Text(
+                            '若当前机器没有可用麦克风或摄像头，可先关闭两项后入会，入会后仍可在设备可用时再开启。',
+                            style: TextStyle(
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(context, false),
+                      child: const Text('稍后加入'),
+                    ),
+                    FilledButton.icon(
+                      onPressed: () => Navigator.pop(context, true),
+                      icon: const Icon(Icons.login),
+                      label: const Text('确认入会'),
+                    ),
+                  ],
+                );
+              },
+            ),
+          ) ??
+          false;
+      if (!confirmed || !mounted) return false;
+      setState(() {
+        _micEnabled = micEnabled;
+        _cameraEnabled = cameraEnabled;
+      });
+      return true;
+    } finally {
+      _openingJoinSetupDialog = false;
+    }
+  }
+
   Future<void> _joinMeeting() async {
     if (_connected || _connecting || _leaving) return;
+    final confirmed = await _openJoinSetupDialog();
+    if (!confirmed) return;
     await _connect();
     if (!mounted || !_connected) return;
     if (_hasMeetingRef) {
@@ -284,6 +470,12 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
         });
       })
       ..on<lk.RoomDisconnectedEvent>((event) {
+        if (shouldUseSystemWindowFullscreen(
+          isWeb: kIsWeb,
+          platform: defaultTargetPlatform.name,
+        )) {
+          _windowFullscreenController.exitSystemFullscreen();
+        }
         if (!mounted) return;
         setState(() {
           _status = event.reason == null ? '连接已断开' : '连接断开：${event.reason}';
@@ -297,6 +489,8 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
           _remoteControlPendingTargetIdentity = null;
           _remoteControlPendingRequestId = null;
           _remoteControlLastPointerMoveAt = null;
+          _remotePointerMoveSequence = 0;
+          _remoteControlAutoStartedScreenShare = false;
           _remoteControlLastPointerButton = 'left';
         });
       })
@@ -322,13 +516,48 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
     try {
       await room.connect(
           widget.joinPayload.livekitUrl, widget.joinPayload.token);
-      await room.localParticipant?.setMicrophoneEnabled(_micEnabled);
-      await room.localParticipant?.setCameraEnabled(_cameraEnabled);
+      var nextMicEnabled = _micEnabled;
+      var nextCameraEnabled = _cameraEnabled;
+      var joinedWithoutMediaTracks = false;
+      final localParticipant = room.localParticipant;
+      if (!widget.joinPayload.canPublish) {
+        nextMicEnabled = false;
+        nextCameraEnabled = false;
+      }
+      if (localParticipant != null) {
+        try {
+          await localParticipant.setMicrophoneEnabled(nextMicEnabled);
+        } catch (error) {
+          joinedWithoutMediaTracks =
+              joinedWithoutMediaTracks || isJoinWithoutMediaTrackError(error);
+          nextMicEnabled = false;
+          try {
+            await localParticipant.setMicrophoneEnabled(false);
+          } catch (_) {}
+        }
+        try {
+          await localParticipant.setCameraEnabled(nextCameraEnabled);
+        } catch (error) {
+          joinedWithoutMediaTracks =
+              joinedWithoutMediaTracks || isJoinWithoutMediaTrackError(error);
+          nextCameraEnabled = false;
+          try {
+            await localParticipant.setCameraEnabled(false);
+          } catch (_) {}
+        }
+      }
       if (!mounted) return;
+      final connectStatus = joinedWithoutMediaTracks
+          ? (!nextMicEnabled && !nextCameraEnabled
+              ? '已连接（未检测到可用音视频设备，已静默入会）'
+              : '已连接（部分设备不可用，已自动关闭不可用设备）')
+          : '已连接';
       setState(() {
-        _status = '已连接';
+        _status = connectStatus;
         _connecting = false;
         _connected = true;
+        _micEnabled = nextMicEnabled;
+        _cameraEnabled = nextCameraEnabled;
       });
     } catch (error) {
       if (!mounted) return;
@@ -341,6 +570,12 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
   }
 
   Future<void> _disposeRoom() async {
+    if (shouldUseSystemWindowFullscreen(
+      isWeb: kIsWeb,
+      platform: defaultTargetPlatform.name,
+    )) {
+      _windowFullscreenController.exitSystemFullscreen();
+    }
     final listener = _roomListener;
     final room = _room;
     _roomListener = null;
@@ -354,6 +589,8 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
     _remoteControlPendingTargetIdentity = null;
     _remoteControlPendingRequestId = null;
     _remoteControlLastPointerMoveAt = null;
+    _remotePointerMoveSequence = 0;
+    _remoteControlAutoStartedScreenShare = false;
     _remoteControlLastPointerButton = 'left';
     await listener?.dispose();
     if (room != null) {
@@ -379,22 +616,53 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
     }
   }
 
+  Future<void> _backToConsole() async {
+    if (_leaving) return;
+    if (_connected || _room != null) {
+      await _leaveRoom();
+      return;
+    }
+    if (mounted) {
+      Navigator.of(context).pop();
+    }
+  }
+
   Future<void> _toggleMic() async {
     final room = _room;
     if (room == null) return;
     final next = !_micEnabled;
-    await room.localParticipant?.setMicrophoneEnabled(next);
-    if (!mounted) return;
-    setState(() => _micEnabled = next);
+    try {
+      await room.localParticipant?.setMicrophoneEnabled(next);
+      if (!mounted) return;
+      setState(() => _micEnabled = next);
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _micEnabled = false;
+        _status = isJoinWithoutMediaTrackError(error)
+            ? '未检测到可用麦克风，已保持静音'
+            : '麦克风切换失败：$error';
+      });
+    }
   }
 
   Future<void> _toggleCamera() async {
     final room = _room;
     if (room == null) return;
     final next = !_cameraEnabled;
-    await room.localParticipant?.setCameraEnabled(next);
-    if (!mounted) return;
-    setState(() => _cameraEnabled = next);
+    try {
+      await room.localParticipant?.setCameraEnabled(next);
+      if (!mounted) return;
+      setState(() => _cameraEnabled = next);
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _cameraEnabled = false;
+        _status = isJoinWithoutMediaTrackError(error)
+            ? '未检测到可用摄像头，已保持关闭'
+            : '摄像头切换失败：$error';
+      });
+    }
   }
 
   Future<void> _toggleScreenShare() async {
@@ -454,6 +722,7 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
       if (!mounted) return;
       setState(() {
         _screenShareEnabled = next;
+        _remoteControlAutoStartedScreenShare = false;
         _status = next ? '已开始屏幕共享' : '已停止屏幕共享';
       });
     } catch (error) {
@@ -477,9 +746,13 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
     );
   }
 
-  Future<rtc.DesktopCapturerSource?> _pickDesktopShareSource() async {
+  Future<rtc.DesktopCapturerSource?> _pickDesktopShareSource({
+    bool includeWindowSources = true,
+  }) async {
     final sources = await rtc.desktopCapturer.getSources(
-      types: const [rtc.SourceType.Screen, rtc.SourceType.Window],
+      types: includeWindowSources
+          ? const [rtc.SourceType.Screen, rtc.SourceType.Window]
+          : const [rtc.SourceType.Screen],
       thumbnailSize: rtc.ThumbnailSize(640, 360),
     );
     if (sources.isEmpty) {
@@ -534,12 +807,13 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
     required RemoteControlMessageKind kind,
     required Map<String, dynamic> payload,
     required List<String> destinationIdentities,
+    bool? reliableOverride,
   }) async {
     final local = _room?.localParticipant;
     if (!_connected || local == null) return;
     await local.publishData(
       utf8.encode(jsonEncode(payload)),
-      reliable: shouldSendRemoteControlReliably(kind),
+      reliable: reliableOverride ?? shouldSendRemoteControlReliably(kind),
       destinationIdentities: destinationIdentities,
       topic: remoteControlDataTopic,
     );
@@ -635,6 +909,12 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
     final sessionId = _remoteControlSessionId;
     final targetIdentity = _remoteControlTargetIdentity;
     final controlledBy = _remoteControlControlledByIdentity;
+    final sessionWasBeingControlled =
+        controlledBy != null && controlledBy.trim().isNotEmpty;
+    final shouldStopAutoShare = shouldStopAutoStartedRemoteControlScreenShare(
+      autoStartedByRemoteControl: _remoteControlAutoStartedScreenShare,
+      sessionWasBeingControlled: sessionWasBeingControlled,
+    );
     if (notifyPeer && localIdentity != null && sessionId != null) {
       String? peerIdentity;
       if (targetIdentity != null) {
@@ -667,8 +947,21 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
       _remoteControlPendingTargetIdentity = null;
       _remoteControlPendingRequestId = null;
       _remoteControlLastPointerMoveAt = null;
+      _remotePointerMoveSequence = 0;
+      _remoteControlAutoStartedScreenShare = false;
       _remoteControlLastPointerButton = 'left';
     });
+    if (shouldStopAutoShare) {
+      final localParticipant = _room?.localParticipant;
+      if (localParticipant != null && _screenShareEnabled) {
+        try {
+          await localParticipant.setScreenShareEnabled(false);
+          if (mounted) {
+            setState(() => _screenShareEnabled = false);
+          }
+        } catch (_) {}
+      }
+    }
     if (!silent) {
       setState(() => _status = '远程控制已结束');
     }
@@ -708,16 +1001,33 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
         });
         if (parsed.approved == true) {
           if (!mounted) return;
+          final targetIdentity = parsed.targetIdentity;
+          final targetName = _displayNameForIdentity(targetIdentity);
           setState(() {
             _remoteControlSessionId = parsed.requestId;
-            _remoteControlTargetIdentity = parsed.targetIdentity;
+            _remoteControlTargetIdentity = targetIdentity;
             _remoteControlControlledByIdentity = null;
             _remoteControlLastPointerMoveAt = null;
+            _remotePointerMoveSequence = 0;
+            _remoteControlAutoStartedScreenShare = false;
             _remoteControlLastPointerButton = 'left';
             _status =
                 '远程控制已连接：${_displayNameForIdentity(parsed.targetIdentity)}';
           });
-          _focusParticipantTile(parsed.targetIdentity, allowToggle: false);
+          final screenReady =
+              await _waitForRemoteControlTargetScreenTrack(targetIdentity);
+          if (!mounted) return;
+          if (_remoteControlSessionId != parsed.requestId ||
+              _remoteControlTargetIdentity != targetIdentity) {
+            return;
+          }
+          if (!screenReady) {
+            setState(
+                () => _status = remoteControlTargetScreenNotReadyStatusZh());
+            return;
+          }
+          setState(() => _status = '远程控制已连接：$targetName');
+          _focusParticipantTile(targetIdentity, allowToggle: false);
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (!mounted) return;
             _remoteControlFocusNode.requestFocus();
@@ -812,6 +1122,7 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
           _remoteControlControlledByIdentity = senderIdentity;
           _remoteControlPendingTargetIdentity = null;
           _remoteControlPendingRequestId = null;
+          _remotePointerMoveSequence = 0;
           _status = '已允许 $senderName 远程控制';
         });
       }
@@ -838,7 +1149,14 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
       screenShareEnabled: _screenShareEnabled,
       canScreenShare: _canScreenShare,
     )) {
-      if (_screenShareEnabled) return true;
+      if (_screenShareEnabled) {
+        if (mounted) {
+          setState(() => _remoteControlAutoStartedScreenShare = false);
+        } else {
+          _remoteControlAutoStartedScreenShare = false;
+        }
+        return true;
+      }
       if (mounted) {
         setState(() => _status = remoteControlScreenShareRequiredStatusZh());
       }
@@ -853,7 +1171,12 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
       return false;
     }
     try {
-      final picked = await _pickDesktopShareSource();
+      final includeWindowSources = shouldIncludeWindowSourcesInDesktopPicker(
+        forRemoteControlAutoStart: true,
+      );
+      final picked = await _pickDesktopShareSource(
+        includeWindowSources: includeWindowSources,
+      );
       if (picked == null) {
         if (mounted) {
           setState(() => _status = '已取消屏幕共享选择，远程控制未开启');
@@ -864,7 +1187,9 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
         await _enableScreenShare(local: local, sourceId: picked.id);
       } catch (error) {
         if (!isScreenShareSourceNotFoundError(error)) rethrow;
-        final retryPicked = await _pickDesktopShareSource();
+        final retryPicked = await _pickDesktopShareSource(
+          includeWindowSources: includeWindowSources,
+        );
         if (retryPicked == null) {
           if (mounted) {
             setState(() => _status = '已取消屏幕共享选择，远程控制未开启');
@@ -876,11 +1201,13 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
       if (mounted) {
         setState(() {
           _screenShareEnabled = true;
+          _remoteControlAutoStartedScreenShare = true;
           _status = '已开启屏幕共享，可进行远程控制';
         });
       }
       return true;
     } catch (error) {
+      _remoteControlAutoStartedScreenShare = false;
       if (mounted) {
         setState(() => _status = mapScreenShareErrorToStatus(error));
       }
@@ -908,6 +1235,7 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
         return;
       }
       _remoteControlLastPointerMoveAt = now;
+      _remotePointerMoveSequence += 1;
     }
     final normalizedX = (localPosition.dx / size.width).clamp(0.0, 1.0);
     final normalizedY = (localPosition.dy / size.height).clamp(0.0, 1.0);
@@ -916,6 +1244,10 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
     if (button.trim().isNotEmpty) {
       _remoteControlLastPointerButton = button.trim();
     }
+    final reliableOverride = shouldSendRemotePointerReliably(
+      event: event,
+      moveSequence: _remotePointerMoveSequence,
+    );
     await _sendRemoteControlMessage(
       kind: RemoteControlMessageKind.pointer,
       payload: buildRemoteControlPointerMessage(
@@ -928,6 +1260,7 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
         button: finalButton,
       ),
       destinationIdentities: <String>[targetIdentity],
+      reliableOverride: reliableOverride,
     );
   }
 
@@ -2346,26 +2679,24 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
     final identity = _participantIdentity(participant);
     final remoteControlSessionActive = _remoteControlSessionId != null &&
         _remoteControlTargetIdentity == identity;
-    if (remoteControlSessionActive) {
-      for (final publication in participant.videoTrackPublications) {
-        if (!publication.isScreenShare) continue;
-        final track = publication.track;
-        if (track != null && track is lk.VideoTrack && !track.muted) {
-          return track;
-        }
+    final screenPub = participant.getTrackPublicationBySource(
+      lk.TrackSource.screenShareVideo,
+    );
+    if (screenPub != null && screenPub.track is lk.VideoTrack) {
+      final screenTrack = screenPub.track as lk.VideoTrack;
+      if (remoteControlSessionActive || !screenPub.muted) {
+        return screenTrack;
       }
     }
-    for (final publication in participant.videoTrackPublications) {
-      if (publication.isScreenShare) continue;
-      final track = publication.track;
-      if (track != null && track is lk.VideoTrack && !track.muted) {
-        return track;
-      }
+    final camPub = participant.getTrackPublicationBySource(
+      lk.TrackSource.camera,
+    );
+    if (camPub != null && camPub.track is lk.VideoTrack && !camPub.muted) {
+      return camPub.track as lk.VideoTrack;
     }
     for (final publication in participant.videoTrackPublications) {
-      final track = publication.track;
-      if (track != null && track is lk.VideoTrack && !track.muted) {
-        return track;
+      if (publication.track is lk.VideoTrack && !publication.muted) {
+        return publication.track as lk.VideoTrack;
       }
     }
     return null;
@@ -2397,6 +2728,38 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
       }
     }
     return null;
+  }
+
+  bool _hasScreenShareTrackForIdentity(String identity) {
+    final participant = _participantByIdentity(identity);
+    if (participant == null) return false;
+    final publication = participant.getTrackPublicationBySource(
+      lk.TrackSource.screenShareVideo,
+    );
+    return publication?.track is lk.VideoTrack;
+  }
+
+  Future<bool> _waitForRemoteControlTargetScreenTrack(
+    String identity, {
+    Duration timeout = const Duration(seconds: 6),
+    Duration pollInterval = const Duration(milliseconds: 120),
+  }) async {
+    if (_hasScreenShareTrackForIdentity(identity)) {
+      return true;
+    }
+    final deadline = DateTime.now().add(timeout);
+    while (DateTime.now().isBefore(deadline)) {
+      await Future<void>.delayed(pollInterval);
+      if (!mounted) return false;
+      if (_hasScreenShareTrackForIdentity(identity)) {
+        return true;
+      }
+      if (_remoteControlSessionId == null ||
+          _remoteControlTargetIdentity != identity) {
+        return false;
+      }
+    }
+    return _hasScreenShareTrackForIdentity(identity);
   }
 
   int? _userIdFromIdentity(String identity) {
@@ -2544,9 +2907,21 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
   }
 
   void _toggleTileFullscreen(String identity) {
+    final supportsSystemFullscreen = shouldUseSystemWindowFullscreen(
+      isWeb: kIsWeb,
+      platform: defaultTargetPlatform.name,
+    );
+    final useSystemFullscreen = shouldUseSystemWindowFullscreenForTile(
+      isWeb: kIsWeb,
+      platform: defaultTargetPlatform.name,
+      isRemoteControlTileActive: _isRemoteControlActiveForIdentity(identity),
+    );
     final isSameTile = _fullscreenIdentity == identity;
     if (isSameTile) {
       _resetTileZoom(identity, rebuild: false);
+      if (supportsSystemFullscreen) {
+        _windowFullscreenController.exitSystemFullscreen();
+      }
       if (mounted) {
         setState(() {
           _fullscreenIdentity = null;
@@ -2563,6 +2938,9 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
       setState(() {
         _fullscreenIdentity = identity;
       });
+    }
+    if (useSystemFullscreen) {
+      _windowFullscreenController.enterSystemFullscreen();
     }
   }
 
@@ -3437,6 +3815,10 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
     if (!_isRemoteControlActiveForIdentity(identity)) {
       return const SizedBox.shrink();
     }
+    final enableHoverMove = shouldSendRemoteHoverPointerMoves(
+      isWeb: kIsWeb,
+      platform: defaultTargetPlatform.name,
+    );
     return Positioned.fill(
       child: LayoutBuilder(
         builder: (context, constraints) {
@@ -3466,6 +3848,17 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
                   ),
                 );
               },
+              onPointerHover: enableHoverMove
+                  ? (event) {
+                      unawaited(
+                        _sendRemotePointerEvent(
+                          event: 'move',
+                          localPosition: event.localPosition,
+                          size: size,
+                        ),
+                      );
+                    }
+                  : null,
               onPointerUp: (event) {
                 unawaited(
                   _sendRemotePointerEvent(
@@ -3507,7 +3900,7 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
                               borderRadius: BorderRadius.circular(8),
                             ),
                             child: const Text(
-                              '远程控制中：点击画面后可用键鼠进行操作',
+                              '远程控制中：移动鼠标可实时控制，点击画面后可使用键盘',
                               style: TextStyle(
                                 color: Colors.white,
                                 fontSize: 12,
@@ -3687,7 +4080,22 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
                 ),
                 const SizedBox(height: 12),
                 FilledButton.icon(
-                  onPressed: () => setState(() => _fullscreenIdentity = null),
+                  onPressed: () {
+                    final identity = _fullscreenIdentity;
+                    if (identity == null) {
+                      if (shouldUseSystemWindowFullscreen(
+                        isWeb: kIsWeb,
+                        platform: defaultTargetPlatform.name,
+                      )) {
+                        _windowFullscreenController.exitSystemFullscreen();
+                      }
+                      if (mounted) {
+                        setState(() => _fullscreenIdentity = null);
+                      }
+                      return;
+                    }
+                    _toggleTileFullscreen(identity);
+                  },
                   icon: const Icon(Icons.fullscreen_exit),
                   label: const Text('退出全屏'),
                 ),
@@ -3869,6 +4277,11 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
             icon: Icon(_connecting ? Icons.sync : Icons.login),
             label: Text(_connecting ? '连接中...' : '加入会议'),
           ),
+        OutlinedButton.icon(
+          onPressed: _leaving ? null : () => unawaited(_backToConsole()),
+          icon: const Icon(Icons.dashboard_outlined),
+          label: const Text('退回控制台'),
+        ),
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
           decoration: BoxDecoration(
@@ -4073,6 +4486,445 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
     );
   }
 
+  Widget _buildMobileMetricChip({
+    required IconData icon,
+    required String label,
+    Color iconColor = Colors.white,
+  }) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(
+          color: Colors.white.withValues(alpha: 0.26),
+        ),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 14, color: iconColor),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMobileTopBar(String meetingName) {
+    final maxParticipants = widget.joinPayload.maxParticipants <= 0
+        ? 100
+        : widget.joinPayload.maxParticipants;
+    final onlineCount = _memberProfiles.length;
+    final statusLabel = _connected ? '已连接' : '未连接';
+    final roomName = widget.joinPayload.roomName.trim();
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: _palette.heroBorder),
+        gradient: LinearGradient(
+          colors: [_palette.heroGradientStart, _palette.heroGradientEnd],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      meetingName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 17,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      '会议号：$roomName',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: _palette.heroMutedText,
+                        fontSize: 12.5,
+                      ),
+                    ),
+                    Text(
+                      '手机会议模式',
+                      style: TextStyle(
+                        color: _palette.heroMutedText,
+                        fontSize: 11.5,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              IconButton(
+                tooltip: '会议信息',
+                onPressed: _openMeetingInfoDialog,
+                icon: const Icon(Icons.info_outline, color: Colors.white),
+              ),
+              IconButton(
+                tooltip: '退回控制台',
+                onPressed: _leaving ? null : () => unawaited(_backToConsole()),
+                icon: const Icon(Icons.dashboard_outlined, color: Colors.white),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _buildMobileMetricChip(
+                icon: Icons.wifi_tethering_outlined,
+                label: '状态：$statusLabel',
+              ),
+              _buildMobileMetricChip(
+                icon: Icons.groups_2_outlined,
+                label: '参会/上限：$onlineCount/$maxParticipants',
+              ),
+              if (_recordingActive)
+                _buildMobileMetricChip(
+                  icon: Icons.fiber_manual_record,
+                  label: '录制中',
+                  iconColor: const Color(0xFFFDA29B),
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMobileStatusBanner() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: _status.contains('失败') || _status.contains('错误')
+            ? _palette.dangerSurface
+            : _palette.primarySoft,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: _status.contains('失败') || _status.contains('错误')
+              ? _palette.dangerBorder
+              : _palette.primaryBorder,
+        ),
+      ),
+      child: Text(
+        _status,
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(
+          color: _status.contains('失败') || _status.contains('错误')
+              ? _palette.danger
+              : _palette.primaryStrong,
+          fontSize: 12.5,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMobileStageTab() {
+    return Container(
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: _palette.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: _palette.panelBorder),
+      ),
+      child: _buildStageArea(),
+    );
+  }
+
+  Widget _buildMobileActionButton({
+    required IconData icon,
+    required String label,
+    required VoidCallback? onPressed,
+    Color? backgroundColor,
+  }) {
+    return Expanded(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 3),
+        child: FilledButton(
+          style: FilledButton.styleFrom(
+            padding: const EdgeInsets.symmetric(vertical: 9),
+            backgroundColor: backgroundColor,
+          ),
+          onPressed: onPressed,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 18),
+              const SizedBox(height: 2),
+              Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 11.5),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMobileDock() {
+    final canMicToggle = canToggleMicButton(
+      connected: _connected,
+      micEnabled: _micEnabled,
+      canSelfUnmute: _canSelfUnmute,
+    );
+    final canCameraToggle = canToggleCameraButton(
+      connected: _connected,
+      cameraEnabled: _cameraEnabled,
+      canOpenVideo: _canOpenVideo,
+    );
+    final canShareScreen = _canScreenShare;
+    return Container(
+      key: const ValueKey<String>('nativeMeetingMobileDock'),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+      decoration: BoxDecoration(
+        color: _palette.surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: _palette.panelBorder),
+      ),
+      child: Row(
+        children: [
+          _buildMobileActionButton(
+            icon: _micEnabled ? Icons.mic : Icons.mic_off,
+            label: _micEnabled ? '静音' : '取消静音',
+            onPressed: canMicToggle ? _toggleMic : null,
+          ),
+          _buildMobileActionButton(
+            icon: _cameraEnabled ? Icons.videocam : Icons.videocam_off,
+            label: _cameraEnabled ? '关闭摄像头' : '开启摄像头',
+            onPressed: canCameraToggle ? _toggleCamera : null,
+          ),
+          _buildMobileActionButton(
+            icon: _screenShareEnabled
+                ? Icons.stop_screen_share
+                : Icons.screen_share_outlined,
+            label: screenShareButtonLabelZh(
+              canShareScreen: canShareScreen,
+              screenShareEnabled: _screenShareEnabled,
+            ),
+            onPressed:
+                (_connected && canShareScreen) ? _toggleScreenShare : null,
+          ),
+          _buildMobileActionButton(
+            icon: Icons.call_end,
+            label: _isHost ? '结束会议' : '离开会议',
+            onPressed: (_connected && !_leaving) ? _leaveRoom : null,
+            backgroundColor: const Color(0xFFB42318),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMobileActionsTab() {
+    final canRecord = _canRecordMeeting && !_recordingBusy;
+    return SingleChildScrollView(
+      child: Card(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text(
+                '快捷操作',
+                style: TextStyle(
+                  color: Color(0xFF0F172A),
+                  fontWeight: FontWeight.w700,
+                  fontSize: 16,
+                ),
+              ),
+              const SizedBox(height: 4),
+              const Text(
+                '按手机端会控流程执行入会、录制与主持管理。',
+                style: TextStyle(color: Color(0xFF475467), fontSize: 13),
+              ),
+              const SizedBox(height: 12),
+              if (!_connected) ...[
+                FilledButton.icon(
+                  onPressed: (_connecting || _leaving) ? null : _joinMeeting,
+                  icon: Icon(_connecting ? Icons.sync : Icons.login),
+                  label: Text(_connecting ? '连接中...' : '加入会议'),
+                ),
+                const SizedBox(height: 8),
+              ],
+              OutlinedButton.icon(
+                onPressed: _leaving ? null : () => unawaited(_backToConsole()),
+                icon: const Icon(Icons.dashboard_outlined),
+                label: const Text('退回控制台'),
+              ),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                onPressed: _openMeetingInfoDialog,
+                icon: const Icon(Icons.info_outline),
+                label: const Text('会议信息'),
+              ),
+              const SizedBox(height: 8),
+              FilledButton.icon(
+                style: FilledButton.styleFrom(
+                  backgroundColor: _recordingActive
+                      ? const Color(0xFFB42318)
+                      : _palette.primaryStrong,
+                ),
+                onPressed: canRecord
+                    ? (_recordingActive ? _stopRecording : _startRecording)
+                    : null,
+                icon: Icon(
+                  _recordingBusy
+                      ? Icons.sync
+                      : (_recordingActive
+                          ? Icons.stop_circle_outlined
+                          : Icons.fiber_manual_record),
+                ),
+                label: Text(
+                  _recordingBusy
+                      ? '处理中...'
+                      : (_recordingActive
+                          ? '停止录制'
+                          : (_canRecordMeeting ? '开始录制' : '录制已禁用')),
+                ),
+              ),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                onPressed: _hasMeetingRef
+                    ? () => unawaited(_syncRecordingStatus(silent: false))
+                    : null,
+                icon: const Icon(Icons.sync),
+                label: const Text('同步状态'),
+              ),
+              if (_canUseModeratorControls) ...[
+                const SizedBox(height: 8),
+                FilledButton.icon(
+                  onPressed: _moderationBusy
+                      ? null
+                      : () => unawaited(_openModeratorControlDialog()),
+                  icon: const Icon(Icons.admin_panel_settings_outlined),
+                  label: Text(_moderationBusy ? '处理中...' : '主持管控'),
+                ),
+              ],
+              if (_isBeingRemoteControlled) ...[
+                const SizedBox(height: 8),
+                FilledButton.tonalIcon(
+                  onPressed: () => unawaited(
+                    _stopRemoteControlSession(
+                      notifyPeer: true,
+                      reason: 'target_stop',
+                    ),
+                  ),
+                  icon: const Icon(Icons.link_off_outlined),
+                  label: const Text('结束被控'),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMobileMeetingScaffold(String meetingName) {
+    return Scaffold(
+      backgroundColor: _palette.pageBackground,
+      body: Container(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: [_palette.pageBackground, _palette.primarySoft],
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+          ),
+        ),
+        child: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(10, 10, 10, 8),
+            child: Column(
+              children: [
+                _buildMobileTopBar(meetingName),
+                const SizedBox(height: 8),
+                _buildMobileStatusBanner(),
+                const SizedBox(height: 8),
+                Expanded(
+                  child: DefaultTabController(
+                    length: 4,
+                    child: Column(
+                      children: [
+                        Container(
+                          decoration: BoxDecoration(
+                            color: _palette.surface,
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: _palette.panelBorder),
+                          ),
+                          child: const TabBar(
+                            tabs: [
+                              Tab(
+                                icon: Icon(Icons.grid_view_rounded),
+                                text: '舞台',
+                              ),
+                              Tab(
+                                icon: Icon(Icons.groups_outlined),
+                                text: '成员',
+                              ),
+                              Tab(
+                                icon: Icon(Icons.chat_bubble_outline),
+                                text: '聊天',
+                              ),
+                              Tab(
+                                icon: Icon(Icons.tune),
+                                text: '操作',
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Expanded(
+                          child: TabBarView(
+                            children: [
+                              _buildMobileStageTab(),
+                              _buildMembersTab(),
+                              _buildChatTab(),
+                              _buildMobileActionsTab(),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                _buildMobileDock(),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_isTileFullscreenActive) {
@@ -4081,6 +4933,11 @@ class _NativeMeetingPageState extends State<NativeMeetingPage> {
     final meetingName = widget.meetingTitle.trim().isEmpty
         ? widget.joinPayload.roomName
         : widget.meetingTitle.trim();
+    final useMobileLayout =
+        DeviceProfile.isPhoneWidth(context, breakpoint: 680);
+    if (useMobileLayout) {
+      return _buildMobileMeetingScaffold(meetingName);
+    }
     return DefaultTabController(
       length: 2,
       child: Scaffold(

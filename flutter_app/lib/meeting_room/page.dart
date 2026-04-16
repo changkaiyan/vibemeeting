@@ -7,6 +7,7 @@ import 'dart:math' as math;
 import 'dart:ui_web' as ui_web;
 import 'dart:typed_data';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;

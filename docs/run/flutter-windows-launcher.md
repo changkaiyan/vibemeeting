@@ -14,6 +14,48 @@ The Windows app uses native Flutter pages for:
 The existing Web pages remain in the project for browser access and are not
 required by the Windows client runtime.
 
+## Remote Desktop Control
+
+The native meeting room supports remote desktop control over LiveKit data
+channel. Controllers can be either:
+
+- Web meeting page participant
+- Native Windows participant
+
+The target participant must use the native Windows client.
+
+### Approval And Visibility Rule
+
+To avoid "blind control", the target side now enforces a visibility-first
+flow:
+
+1. Controller sends `request_remote_control` from member menu.
+2. Target receives a confirmation dialog.
+3. If target clicks allow, target must complete screen-share source selection
+   first.
+4. Only after screen share is active does target send approved response.
+5. Controller auto-focuses target tile and uses target screen stream as the
+   primary remote-control view.
+
+If source selection is canceled, permission denied, or source is unavailable,
+the request is rejected with `target_screen_share_unavailable`.
+
+### Session Controls
+
+- Controller can stop session from tile overlay (`结束控制`).
+- Target can stop session from top action (`结束被控`).
+- Either side can terminate, and both clients clear remote-control state.
+
+### Current Constraints
+
+- Web target is not supported (`web_target_unsupported`).
+- If target is in another active control session, new request is rejected
+  (`target_busy`).
+- Remote control requires data publish permission and both participants online.
+- Keyboard/mouse injection is implemented in native Windows client.
+- Detailed cross-client behavior doc:
+  - `docs/run/remote-desktop-control.md`
+
 ## Build
 
 From repository root:

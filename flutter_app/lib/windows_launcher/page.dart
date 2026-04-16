@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 
 import '../app/theme/meeting_theme.dart';
 import '../core/api_exception.dart';
+import '../device_profile.dart';
 import '../features/dashboard/models.dart';
 import 'launch_uri.dart';
 import 'native_api_client.dart';
@@ -37,6 +38,8 @@ class _WindowsLauncherPageState extends State<WindowsLauncherPage> {
 
   final TextEditingController _serverController =
       TextEditingController(text: 'http://127.0.0.1:8000');
+  final TextEditingController _livekitPublicUrlController =
+      TextEditingController();
   final TextEditingController _usernameController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
   final TextEditingController _quickJoinController = TextEditingController();
@@ -86,6 +89,7 @@ class _WindowsLauncherPageState extends State<WindowsLauncherPage> {
   @override
   void dispose() {
     _serverController.dispose();
+    _livekitPublicUrlController.dispose();
     _usernameController.dispose();
     _passwordController.dispose();
     _quickJoinController.dispose();
@@ -392,13 +396,19 @@ class _WindowsLauncherPageState extends State<WindowsLauncherPage> {
             ? _joinPasswordController.text.trim()
             : meetingPassword.trim(),
       );
+      final resolvedLivekitUrl = resolveDesktopLivekitUrl(
+        tokenPayloadUrl: payload.livekitUrl,
+        publicUrlOverrideInput: _livekitPublicUrlController.text,
+      );
+      final effectivePayload = payload.copyWith(livekitUrl: resolvedLivekitUrl);
       if (!mounted) return;
-      _setStatus('正在加入会议：${payload.roomName}');
+      _setStatus('正在加入会议：${effectivePayload.roomName}');
       await Navigator.of(context).push(
         MaterialPageRoute<void>(
           builder: (_) => NativeMeetingPage(
-            joinPayload: payload,
-            meetingTitle: title.trim().isEmpty ? payload.roomName : title,
+            joinPayload: effectivePayload,
+            meetingTitle:
+                title.trim().isEmpty ? effectivePayload.roomName : title,
             baseUri: _baseUri,
             accessToken: _accessToken,
             currentUsername: joinUsername,
@@ -1348,6 +1358,13 @@ class _WindowsLauncherPageState extends State<WindowsLauncherPage> {
                               const InputDecoration(labelText: '服务器地址')),
                       const SizedBox(height: 12),
                       TextField(
+                        controller: _livekitPublicUrlController,
+                        decoration: const InputDecoration(
+                          labelText: 'LiveKit 公网地址（可选）',
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
                           controller: _usernameController,
                           decoration: const InputDecoration(labelText: '用户名')),
                       const SizedBox(height: 12),
@@ -1363,6 +1380,118 @@ class _WindowsLauncherPageState extends State<WindowsLauncherPage> {
                         child: Text(_busy ? '登录中...' : '登录'),
                       ),
                       const SizedBox(height: 12),
+                      Text(
+                        _status,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: _statusIsError
+                              ? _palette.danger
+                              : _palette.textMuted,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMobileLoginView(ThemeData theme) {
+    return Container(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [_palette.pageBackground, _palette.primarySoft],
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+        ),
+      ),
+      child: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(12, 12, 12, 18),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Container(
+                padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: _palette.heroBorder),
+                  gradient: LinearGradient(
+                    colors: [
+                      _palette.heroGradientStart,
+                      _palette.heroGradientEnd
+                    ],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '智能会议',
+                      style: theme.textTheme.titleLarge?.copyWith(
+                        color: _palette.heroText,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Android 原生客户端',
+                      style: theme.textTheme.bodyMedium
+                          ?.copyWith(color: _palette.heroMutedText),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      '手机端登录',
+                      style: theme.textTheme.bodySmall
+                          ?.copyWith(color: _palette.heroMutedText),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 10),
+              Card(
+                color: _palette.surface,
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Text('登录', style: theme.textTheme.titleLarge),
+                      const SizedBox(height: 14),
+                      TextField(
+                        controller: _serverController,
+                        decoration: const InputDecoration(labelText: '服务器地址'),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: _livekitPublicUrlController,
+                        decoration: const InputDecoration(
+                          labelText: 'LiveKit 公网地址（可选）',
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: _usernameController,
+                        decoration: const InputDecoration(labelText: '用户名'),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: _passwordController,
+                        obscureText: true,
+                        decoration: const InputDecoration(labelText: '密码'),
+                        onSubmitted: (_) => _login(),
+                      ),
+                      const SizedBox(height: 16),
+                      FilledButton(
+                        onPressed: _busy ? null : _login,
+                        child: Text(_busy ? '登录中...' : '登录'),
+                      ),
+                      const SizedBox(height: 10),
                       Text(
                         _status,
                         style: theme.textTheme.bodySmall?.copyWith(
@@ -1592,6 +1721,225 @@ class _WindowsLauncherPageState extends State<WindowsLauncherPage> {
     );
   }
 
+  Widget _buildMobileHeader(ThemeData theme) {
+    final profile = _profile;
+    final subtitle =
+        profile == null ? '手机端会议控制中心' : '欢迎，${profile.defaultDisplayName}';
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: _palette.heroBorder),
+        gradient: LinearGradient(
+          colors: [_palette.heroGradientStart, _palette.heroGradientEnd],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  '智能会议控制台',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  subtitle,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: _palette.heroMutedText,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          IconButton(
+            tooltip: '刷新全部',
+            onPressed: _busy ? null : _refreshDashboardData,
+            icon: const Icon(Icons.refresh, color: Colors.white),
+          ),
+          IconButton(
+            tooltip: '退出登录',
+            onPressed: _busy ? null : _logout,
+            icon: const Icon(Icons.logout, color: Colors.white),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMobileMeetingsTab(ThemeData theme) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(child: Text('我的会议', style: theme.textTheme.titleLarge)),
+            FilledButton.icon(
+              onPressed: _busy ? null : _openCreateDialog,
+              icon: const Icon(Icons.add),
+              label: const Text('创建'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        Expanded(
+          child: _meetings.isEmpty
+              ? Center(child: Text('暂无会议', style: theme.textTheme.bodyMedium))
+              : ListView.separated(
+                  itemCount: _meetings.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 8),
+                  itemBuilder: (context, index) =>
+                      _buildMeetingCard(_meetings[index]),
+                ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildMobileActionsTab() {
+    return SingleChildScrollView(
+      child: Card(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                '快捷操作',
+                style: TextStyle(
+                  color: Color(0xFF101828),
+                  fontWeight: FontWeight.w700,
+                  fontSize: 16,
+                ),
+              ),
+              const SizedBox(height: 4),
+              const Text(
+                '按移动端流程快速创建、入会和维护资料。',
+                style: TextStyle(color: Color(0xFF475467), fontSize: 13),
+              ),
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton.icon(
+                  onPressed: _busy ? null : _openCreateDialog,
+                  icon: const Icon(Icons.add),
+                  label: const Text('创建会议'),
+                ),
+              ),
+              const SizedBox(height: 8),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: _busy ? null : _openJoinDialog,
+                  icon: const Icon(Icons.video_call_outlined),
+                  label: const Text('加入会议'),
+                ),
+              ),
+              const SizedBox(height: 8),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: _busy ? null : _openProfileDialog,
+                  icon: const Icon(Icons.person_outline),
+                  label: const Text('编辑资料'),
+                ),
+              ),
+              const SizedBox(height: 8),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: _busy ? null : _refreshMeetings,
+                  icon: const Icon(Icons.list_alt_outlined),
+                  label: const Text('刷新会议'),
+                ),
+              ),
+              const SizedBox(height: 8),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton.tonalIcon(
+                  onPressed: _busy ? null : _logout,
+                  icon: const Icon(Icons.logout),
+                  label: const Text('退出登录'),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMobileTabs(ThemeData theme) {
+    return DefaultTabController(
+      length: 2,
+      child: Column(
+        children: [
+          Container(
+            decoration: BoxDecoration(
+              color: _palette.surface,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: _palette.panelBorder),
+            ),
+            child: const TabBar(
+              indicatorSize: TabBarIndicatorSize.tab,
+              tabs: [
+                Tab(text: '会议', icon: Icon(Icons.event_note_outlined)),
+                Tab(text: '操作', icon: Icon(Icons.flash_on_outlined)),
+              ],
+            ),
+          ),
+          const SizedBox(height: 8),
+          Expanded(
+            child: TabBarView(
+              children: [
+                _buildMobileMeetingsTab(theme),
+                _buildMobileActionsTab(),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMobileHomeView(ThemeData theme) {
+    return Container(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [_palette.pageBackground, _palette.primarySoft],
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+        ),
+      ),
+      child: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(10, 10, 10, 8),
+          child: Column(
+            children: [
+              _buildMobileHeader(theme),
+              const SizedBox(height: 8),
+              _buildStatusBanner(theme),
+              const SizedBox(height: 8),
+              Expanded(child: _buildMobileTabs(theme)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildHomeView(ThemeData theme) {
     return Row(
       children: [
@@ -1642,9 +1990,17 @@ class _WindowsLauncherPageState extends State<WindowsLauncherPage> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final useMobileLayout =
+        DeviceProfile.isPhoneWidth(context, breakpoint: 840);
     return Scaffold(
       backgroundColor: _palette.pageBackground,
-      body: _authed ? _buildHomeView(theme) : _buildLoginView(theme),
+      body: _authed
+          ? (useMobileLayout
+              ? _buildMobileHomeView(theme)
+              : _buildHomeView(theme))
+          : (useMobileLayout
+              ? _buildMobileLoginView(theme)
+              : _buildLoginView(theme)),
     );
   }
 }

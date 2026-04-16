@@ -72,3 +72,37 @@ String normalizeDesktopTargetInput(String rawInput) {
 
   return '/m/$trimmed';
 }
+
+String resolveDesktopLivekitUrl({
+  required String tokenPayloadUrl,
+  required String publicUrlOverrideInput,
+}) {
+  final override = publicUrlOverrideInput.trim();
+  if (override.isEmpty) {
+    return tokenPayloadUrl.trim();
+  }
+
+  final parsedOverride = Uri.tryParse(override);
+  if (parsedOverride != null && parsedOverride.hasScheme) {
+    if (!override.contains('://')) {
+      final withWs = Uri.tryParse('ws://$override');
+      if (withWs != null && withWs.hasAuthority) {
+        return withWs.toString();
+      }
+    }
+    final scheme = parsedOverride.scheme.toLowerCase();
+    if (scheme == 'http' || scheme == 'https') {
+      return parsedOverride
+          .replace(scheme: scheme == 'https' ? 'wss' : 'ws')
+          .toString();
+    }
+    return override;
+  }
+
+  final withWs = Uri.tryParse('ws://$override');
+  if (withWs != null && withWs.hasAuthority) {
+    return withWs.toString();
+  }
+
+  return override;
+}

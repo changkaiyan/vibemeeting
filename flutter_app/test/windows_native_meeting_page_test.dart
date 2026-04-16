@@ -73,6 +73,41 @@ ChatMessage _chatMessage({
 }
 
 void main() {
+  testWidgets('renders mobile meeting scaffold on narrow viewport',
+      (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      SmartMeetingApp(
+        home: NativeMeetingPage(
+          joinPayload: _joinPayload(),
+          meetingTitle: '\u79fb\u52a8\u7aef\u4f1a\u8bae',
+          baseUri: Uri.parse('https://example.com'),
+          accessToken: 'token',
+          currentUsername: 'alice',
+          autoConnect: false,
+        ),
+      ),
+    );
+
+    expect(find.text('\u624b\u673a\u4f1a\u8bae\u6a21\u5f0f'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey<String>('nativeMeetingMobileDock')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('nativeMeetingTopActions')),
+      findsNothing,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('nativeMeetingBottomControls')),
+      findsNothing,
+    );
+  });
+
   testWidgets('renders meeting room controls and right panel tabs in Chinese',
       (tester) async {
     await tester.binding.setSurfaceSize(const Size(1400, 900));
@@ -141,6 +176,12 @@ void main() {
     );
     expect(
       find.descendant(
+          of: topActions,
+          matching: find.text('\u9000\u56de\u63a7\u5236\u53f0')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
         of: bottomControls,
         matching: find.text('\u4f1a\u8bae\u4fe1\u606f'),
       ),
@@ -183,6 +224,36 @@ void main() {
 
     expect(find.text('\u5f55\u5236\u5df2\u7981\u7528'), findsOneWidget);
     expect(find.text('\u5171\u4eab\u5df2\u7981\u7528'), findsOneWidget);
+  });
+
+  testWidgets('shows pre-join setup dialog before connecting', (tester) async {
+    await tester.pumpWidget(
+      SmartMeetingApp(
+        home: NativeMeetingPage(
+          joinPayload: _joinPayload(),
+          meetingTitle: '\u5165\u4f1a\u524d\u6d4b\u8bd5',
+          baseUri: Uri.parse('https://example.com'),
+          accessToken: 'token',
+          currentUsername: 'alice',
+          autoConnect: false,
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('\u52a0\u5165\u4f1a\u8bae').first);
+    await tester.pumpAndSettle();
+
+    expect(find.text('\u5165\u4f1a\u524d\u786e\u8ba4'), findsOneWidget);
+    expect(
+        find.text(
+            '\u8fdb\u5165\u4f1a\u8bae\u65f6\u5f00\u542f\u9ea6\u514b\u98ce'),
+        findsOneWidget);
+    expect(
+        find.text(
+            '\u8fdb\u5165\u4f1a\u8bae\u65f6\u5f00\u542f\u6444\u50cf\u5934'),
+        findsOneWidget);
+    expect(find.text('\u7a0d\u540e\u52a0\u5165'), findsOneWidget);
+    expect(find.text('\u786e\u8ba4\u5165\u4f1a'), findsOneWidget);
   });
 
   testWidgets('shows moderator control entry for host role', (tester) async {

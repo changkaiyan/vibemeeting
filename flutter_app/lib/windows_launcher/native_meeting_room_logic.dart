@@ -40,9 +40,34 @@ bool shouldUseDesktopSourcePicker({
       normalized == 'macos';
 }
 
+bool shouldUseSystemWindowFullscreen({
+  required bool isWeb,
+  required String platform,
+}) {
+  if (isWeb) return false;
+  return platform.trim().toLowerCase() == 'windows';
+}
+
+bool shouldUseSystemWindowFullscreenForTile({
+  required bool isWeb,
+  required String platform,
+  required bool isRemoteControlTileActive,
+}) {
+  if (isRemoteControlTileActive) {
+    return false;
+  }
+  return shouldUseSystemWindowFullscreen(isWeb: isWeb, platform: platform);
+}
+
 bool isScreenShareSourceNotFoundError(Object error) {
   final normalized = error.toString().trim().toLowerCase();
   return normalized.contains('source not found');
+}
+
+bool isJoinWithoutMediaTrackError(Object error) {
+  final normalized = error.toString().trim().toLowerCase();
+  return normalized.contains('failed to create stream') &&
+      normalized.contains('at least 1 video or audio track should exist');
 }
 
 String mapScreenShareErrorToStatus(Object error) {
@@ -189,6 +214,54 @@ bool shouldStartRemoteControlScreenShare({
   return !screenShareEnabled && canScreenShare;
 }
 
+bool shouldSendRemoteHoverPointerMoves({
+  required bool isWeb,
+  required String platform,
+}) {
+  if (isWeb) return false;
+  final normalized = platform.trim().toLowerCase();
+  return normalized == 'windows' ||
+      normalized == 'linux' ||
+      normalized == 'macos';
+}
+
+bool shouldForceReliableRemotePointerMove(int moveSequence) {
+  if (moveSequence <= 0) return true;
+  return moveSequence % 5 == 0;
+}
+
+bool shouldIncludeWindowSourcesInDesktopPicker({
+  required bool forRemoteControlAutoStart,
+}) {
+  return !forRemoteControlAutoStart;
+}
+
+bool shouldSendRemotePointerReliably({
+  required String event,
+  required int moveSequence,
+}) {
+  final normalized = event.trim().toLowerCase();
+  if (normalized == 'down' || normalized == 'up') {
+    return true;
+  }
+  if (normalized == 'move') {
+    return shouldForceReliableRemotePointerMove(moveSequence);
+  }
+  return false;
+}
+
+bool shouldStopAutoStartedRemoteControlScreenShare({
+  required bool autoStartedByRemoteControl,
+  required bool sessionWasBeingControlled,
+}) {
+  return autoStartedByRemoteControl && sessionWasBeingControlled;
+}
+
 String remoteControlScreenShareRequiredStatusZh() {
   return '\u8fdc\u7a0b\u63a7\u5236\u9700\u5148\u5f00\u542f\u5c4f\u5e55\u5171\u4eab';
+}
+
+String remoteControlTargetScreenNotReadyStatusZh() {
+  return '\u8fdc\u7a0b\u753b\u9762\u6682\u672a\u5c31\u7eea\uff0c'
+      '\u8bf7\u5bf9\u65b9\u91cd\u65b0\u5171\u4eab\u5c4f\u5e55\u540e\u91cd\u8bd5';
 }
