@@ -20,6 +20,14 @@ vibemeeting --port 18000 --data-dir ./meeting-data
 vibemeeting info --data-dir ./meeting-data
 ```
 
+v0.1.1 支持指定监听和媒体地址：
+
+```bash
+vibemeeting --host 0.0.0.0 --port 8000
+```
+
+远程会议可进一步指定 `--public-url https://meeting.example.com`、`--livekit-public-url wss://rtc.example.com` 和 `--livekit-node-ip <服务器可达IPv4>`；`--livekit-url` 用于后端 API 地址，`--turn-host` 用于 TURN 地址。地址设置会持久保存。HTTPS/WSS 代理、证书与媒体网络需在部署环境配置。
+
 主程序前台运行，按 Ctrl+C 停止本次创建的音视频和录制服务；账号、数据库、录像会保留。首次启动会下载官方 LiveKit、Redis、TURN 和 Egress 镜像。会议录制服务一起启动，具体会议由主持人开始和停止录制。
 
 默认地址仅供当前电脑浏览器使用。跨设备访问需要配置 HTTPS/WSS 和媒体网络。可选语音转写与 Agent 服务需要另外配置。

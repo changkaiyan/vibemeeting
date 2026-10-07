@@ -1,5 +1,7 @@
 # 一键安装运行（含会议录制）
 
+启动脚本同样支持 `--host`、`--public-url`、`--livekit-url`、`--livekit-public-url`、`--livekit-node-ip`、`--turn-host`、`--allowed-hosts` 和 `--csrf-trusted-origins`。参数说明与远程部署示例见 [地址配置](./pip-install.md#v011监听地址与远程访问)。
+
 如果希望通过 Python 包安装并直接执行 `vibemeeting`，请阅读 [pip 安装指南](./pip-install.md)。包方式内置网页编译产物，无需克隆仓库或安装 Flutter；音视频与录制仍使用 Docker。
 
 下载或克隆完整仓库后，在仓库根目录执行。默认用于当前电脑的浏览器，支持摄像头、麦克风、共享屏幕和会议录制。AI 模型、语音转写及外部 Agent 不属于基础启动依赖，需要时按相应专题文档配置；启动脚本不会安装已废弃的原生客户端。

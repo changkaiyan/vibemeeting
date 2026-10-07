@@ -30,6 +30,47 @@ python -m vibemeeting
 
 ## 命令与持久化
 
+### v0.1.1：监听地址与远程访问
+
+升级后，Windows / Linux / macOS 均可指定 IPv4 监听地址：
+
+```bash
+pip install --upgrade vibemeeting
+vibemeeting --host 0.0.0.0 --port 8000
+```
+
+`0.0.0.0` 是监听地址，浏览器应访问服务器的实际 IP 或域名。该选项同时控制配套 Docker 媒体端口的宿主机监听接口。
+
+已配置 HTTPS / WSS 反向代理的团队部署示例：
+
+```bash
+vibemeeting --host 0.0.0.0 --port 8000 \
+  --public-url https://meeting.example.com \
+  --livekit-url ws://127.0.0.1:7880 \
+  --livekit-public-url wss://rtc.example.com \
+  --livekit-node-ip 192.0.2.10 \
+  --turn-host turn.example.com
+```
+
+PowerShell 可将上面的命令写在一行。域名和 `192.0.2.10` 均为示例，请替换成部署环境中可达的地址。
+
+| 参数 | 用途 |
+| --- | --- |
+| `--host` | Web 与配套媒体端口的监听 IPv4 地址，支持 `0.0.0.0` |
+| `--public-url` | 用户访问网页的 HTTP/HTTPS origin，自动加入 Host 与 CSRF 配置 |
+| `--livekit-url` | Django 后端调用 LiveKit API 的 WS/WSS 地址 |
+| `--livekit-public-url` | 浏览器连接 LiveKit 的 WS/WSS 地址；HTTPS 页面应使用 WSS |
+| `--livekit-node-ip` | 配套 LiveKit 公告给客户端的可达 IPv4 地址，不能为 `0.0.0.0` |
+| `--turn-host` | 配套 TURN 的可达域名或 IPv4 地址；默认使用媒体 IP |
+| `--allowed-hosts` | 额外允许的主机名，以逗号分隔 |
+| `--csrf-trusted-origins` | 额外信任的 HTTP/HTTPS origin，以逗号分隔 |
+
+参数保存在当前数据目录，后续直接执行 `vibemeeting` 会复用，再次传入可更新。`--prepare-only` 可先验证并生成配置。已有账号、密钥和录像保留。
+
+这些参数不会自动申请证书、创建反向代理或配置路由器。网页 HTTPS 代理指向 Web 端口，WSS 代理指向 LiveKit 信令端口；媒体 TCP/UDP 与 TURN TCP 端口还需按实际网络放行。远程浏览器的摄像头、麦克风和屏幕共享需要可信 HTTPS。详见 [HTTPS 指南](./https-testing.md)。
+
+默认仍启动配套 LiveKit、Redis、TURN 和 Egress。`--livekit-url` 只修改后端 API 目标，不会切换为外部媒体服务模式；若指向独立 LiveKit，需自行匹配该服务的 API 凭据、Redis/Egress 和回调配置。常规安装请保留本机后端地址，只设置浏览器公开地址和媒体 IP。
+
 ```bash
 vibemeeting --help
 vibemeeting --version

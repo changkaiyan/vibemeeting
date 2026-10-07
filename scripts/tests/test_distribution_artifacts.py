@@ -6,23 +6,24 @@ import unittest
 from email.parser import BytesParser
 from pathlib import Path
 from zipfile import ZipFile
+from vibemeeting import __version__ as VERSION
 
 ROOT = Path(__file__).resolve().parents[2]
-WHEEL = ROOT / 'dist/vibemeeting-0.1.0-py3-none-any.whl'
-SDIST = ROOT / 'dist/vibemeeting-0.1.0.tar.gz'
+WHEEL = ROOT / f'dist/vibemeeting-{VERSION}-py3-none-any.whl'
+SDIST = ROOT / f'dist/vibemeeting-{VERSION}.tar.gz'
 
 
 @unittest.skipUnless(WHEEL.is_file() and SDIST.is_file(), 'Build wheel and sdist first to verify distribution artifacts.')
 class DistributionArtifactTests(unittest.TestCase):
     def test_wheel_declares_console_entry_python_range_license_and_dependencies(self):
         with ZipFile(WHEEL) as archive:
-            metadata = BytesParser().parsebytes(archive.read('vibemeeting-0.1.0.dist-info/METADATA'))
+            metadata = BytesParser().parsebytes(archive.read(f'vibemeeting-{VERSION}.dist-info/METADATA'))
             self.assertEqual(metadata['Name'], 'vibemeeting')
-            self.assertEqual(metadata['Version'], '0.1.0')
+            self.assertEqual(metadata['Version'], VERSION)
             self.assertEqual(metadata['Requires-Python'], '<3.14,>=3.10')
             self.assertEqual(metadata['License-Expression'], 'Apache-2.0')
             self.assertIn('django==5.2.2', metadata.get_all('Requires-Dist'))
-            entries = archive.read('vibemeeting-0.1.0.dist-info/entry_points.txt').decode()
+            entries = archive.read(f'vibemeeting-{VERSION}.dist-info/entry_points.txt').decode()
             self.assertIn('vibemeeting = vibemeeting.cli:main', entries)
 
     def test_wheel_has_complete_verified_application_and_no_runtime_data(self):
@@ -48,7 +49,7 @@ class DistributionArtifactTests(unittest.TestCase):
 
     def test_sdist_contains_prebuilt_application_equal_to_wheel(self):
         with tarfile.open(SDIST, 'r:gz') as archive, ZipFile(WHEEL) as wheel:
-            prefix = 'vibemeeting-0.1.0/vibemeeting/_app/'
+            prefix = f'vibemeeting-{VERSION}/vibemeeting/_app/'
             manifest = json.load(archive.extractfile(prefix + 'bundle-manifest.json'))
             wheel_manifest = json.loads(wheel.read('vibemeeting/_app/bundle-manifest.json'))
             self.assertEqual(manifest, wheel_manifest)

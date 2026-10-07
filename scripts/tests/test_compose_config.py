@@ -11,10 +11,10 @@ from scripts.launcher import ROOT, prepare_config
 
 @unittest.skipUnless(shutil.which('docker'), 'Docker CLI is not installed')
 class ComposeConfigTests(unittest.TestCase):
-    def config(self, mode, filename):
+    def config(self, mode, filename, **options):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            config = prepare_config(root, mode, port=18080)
+            config = prepare_config(root, mode, port=18080, **options)
             shutil.copyfile(ROOT / filename, root / filename)
             result = subprocess.run([
                 'docker', 'compose', '--project-name', 'smart-meeting-test',
@@ -22,6 +22,12 @@ class ComposeConfigTests(unittest.TestCase):
                 '-f', str(root / filename), 'config', '--format', 'json',
             ], capture_output=True, text=True, encoding='utf-8', check=True)
             return json.loads(result.stdout), config
+
+    def test_explicit_host_publishes_web_and_media_on_requested_interfaces(self):
+        for mode, filename in [('local', 'compose.recording.yaml'), ('docker', 'compose.yaml')]:
+            compose, _ = self.config(mode, filename, host='0.0.0.0')
+            for service in ['livekit'] + (['web'] if mode == 'docker' else []):
+                self.assertTrue(all(p['host_ip'] == '0.0.0.0' for p in compose['services'][service]['ports']))
 
     def test_docker_services_have_recording_dependencies_and_shared_storage(self):
         compose, config = self.config('docker', 'compose.yaml')

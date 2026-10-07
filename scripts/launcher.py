@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import ipaddress
 import json
 import os
 import secrets
@@ -12,10 +13,42 @@ import subprocess
 import sys
 import time
 import urllib.request
+from urllib.parse import urlsplit
 from pathlib import Path
 
 FLUTTER_VERSION = '3.41.6'
 ROOT = Path(__file__).resolve().parents[1]
+NETWORK_OPTIONS = {
+    'host': 'Web and managed media bind IPv4 address (for example 0.0.0.0).',
+    'public_url': 'Browser-facing Web origin, for example https://meeting.example.com.',
+    'livekit_url': 'Backend LiveKit API URL (ws:// or wss://).',
+    'livekit_public_url': 'Browser-facing LiveKit URL (ws:// or wss://).',
+    'livekit_node_ip': 'Reachable IPv4 address advertised by managed LiveKit.',
+    'turn_host': 'Reachable hostname or IPv4 address advertised for managed TURN.',
+    'allowed_hosts': 'Additional comma-separated Django hostnames.',
+    'csrf_trusted_origins': 'Additional comma-separated HTTP/HTTPS origins.',
+}
+
+
+def validate_host(value):
+    import re
+    if not value or not re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?', value):
+        raise ValueError('Expected a hostname or IPv4 address without a scheme or port.')
+    return value
+
+
+def validate_url(value, schemes, *, origin=False):
+    parsed = urlsplit(value)
+    if (any(c.isspace() for c in value) or parsed.scheme not in schemes or
+            not parsed.hostname or parsed.username is not None or parsed.password is not None or
+            parsed.query or parsed.fragment or (origin and parsed.path not in ('', '/'))):
+        raise ValueError('Invalid address: use an HTTP(S) origin or WS(S) LiveKit URL without credentials.')
+    validate_host(parsed.hostname)
+    if parsed.hostname in ('0.0.0.0', str(ipaddress.IPv4Address(0xFFFFFFFF))):
+        raise ValueError('Public URLs must use a reachable hostname or address, not a wildcard bind address.')
+    if parsed.port is not None and not 1 <= parsed.port <= 65535:
+        raise ValueError('Invalid URL port.')
+    return value.rstrip('/')
 
 
 def read_env(path):
@@ -31,9 +64,44 @@ def read_env(path):
 
 
 def prepare_config(root, mode, *, port=None, livekit_port=None,
-                   rtc_tcp_port=None, rtc_udp_port=None, turn_port=None, host_root=None):
+                   rtc_tcp_port=None, rtc_udp_port=None, turn_port=None, host_root=None,
+                   host=None, public_url=None, livekit_url=None, livekit_public_url=None,
+                   livekit_node_ip=None, turn_host=None, allowed_hosts=None, csrf_trusted_origins=None):
     runtime = root / '.runtime'
     config = read_env(runtime / f'{mode}.env')
+    old_signal_port = config.get('INSTALL_LIVEKIT_PORT', '7880')
+    old_media_host = config.get('INSTALL_PUBLISH_HOST', '127.0.0.1')
+    old_media_host = '127.0.0.1' if old_media_host == '0.0.0.0' else old_media_host
+    old_public_host = config.get('INSTALL_NODE_IP', '127.0.0.1')
+    if old_public_host == '127.0.0.1':
+        old_public_host = old_media_host
+    network = json.loads(config.get('INSTALL_NETWORK_OPTIONS', '{}'))
+    if not isinstance(network, dict) or any(k not in NETWORK_OPTIONS or not isinstance(v, str) for k, v in network.items()):
+        raise ValueError('Invalid saved network options.')
+    supplied = dict(host=host, public_url=public_url, livekit_url=livekit_url,
+                    livekit_public_url=livekit_public_url, livekit_node_ip=livekit_node_ip,
+                    turn_host=turn_host, allowed_hosts=allowed_hosts, csrf_trusted_origins=csrf_trusted_origins)
+    network.update({k: v for k, v in supplied.items() if v is not None})
+    if 'host' in network:
+        network['host'] = str(ipaddress.IPv4Address('127.0.0.1' if network['host'] == 'localhost' else network['host']))
+    if 'livekit_node_ip' in network:
+        node = ipaddress.IPv4Address(network['livekit_node_ip'])
+        if node.is_unspecified or node.is_multicast or int(node) == 0xFFFFFFFF:
+            raise ValueError('LiveKit node IP must be a reachable unicast address.')
+    if 'turn_host' in network:
+        validate_host(network['turn_host'])
+        if network['turn_host'] == '0.0.0.0':
+            raise ValueError('TURN host must be reachable.')
+    for key in ['public_url', 'livekit_url', 'livekit_public_url']:
+        if key in network:
+            network[key] = validate_url(network[key], ('http', 'https') if key == 'public_url' else ('ws', 'wss'), origin=key == 'public_url')
+    for item in network.get('allowed_hosts', '').split(','):
+        if item.strip():
+            validate_host(item.strip())
+    for item in network.get('csrf_trusted_origins', '').split(','):
+        if item.strip():
+            validate_url(item.strip(), ('http', 'https'), origin=True)
+    config['INSTALL_NETWORK_OPTIONS'] = json.dumps(network, separators=(',', ':'))
     config.setdefault('SECRET_KEY', secrets.token_hex(32))
     config.setdefault('LIVEKIT_API_KEY', 'meeting_' + secrets.token_hex(8))
     config.setdefault('LIVEKIT_API_SECRET', secrets.token_hex(32))
@@ -53,24 +121,42 @@ def prepare_config(root, mode, *, port=None, livekit_port=None,
     numbers = [int(config[key]) for key in ports]
     if any(p < 1024 or p > 65535 for p in numbers) or len(set(numbers)) != len(numbers):
         raise ValueError('Ports must be distinct numbers between 1024 and 65535.')
-    config['INSTALL_NODE_IP'] = '127.0.0.1'
+    config['INSTALL_NODE_IP'] = network.get('livekit_node_ip', config.get('INSTALL_NODE_IP', '127.0.0.1'))
     # Linux Docker's host-gateway cannot reach a host process bound to loopback.
-    config['INSTALL_BIND_HOST'] = '127.0.0.1' if mode == 'local' and sys.platform == 'win32' else '0.0.0.0'
+    config['INSTALL_BIND_HOST'] = network.get('host', config.get('INSTALL_BIND_HOST',
+        '127.0.0.1' if mode == 'local' and sys.platform == 'win32' else '0.0.0.0'))
+    config['INSTALL_PUBLISH_HOST'] = network.get('host', config.get('INSTALL_PUBLISH_HOST', '127.0.0.1'))
+    config['INSTALL_TURN_HOST'] = network.get('turn_host', config['INSTALL_NODE_IP'])
     web_port, signal_port = config['INSTALL_WEB_PORT'], config['INSTALL_LIVEKIT_PORT']
+    visit_host = config['INSTALL_BIND_HOST'] if config['INSTALL_BIND_HOST'] != '0.0.0.0' else '127.0.0.1'
+    media_host = config['INSTALL_PUBLISH_HOST'] if config['INSTALL_PUBLISH_HOST'] != '0.0.0.0' else '127.0.0.1'
+    rtc_public_host = config['INSTALL_NODE_IP'] if config['INSTALL_NODE_IP'] != '127.0.0.1' else media_host
+    config['INSTALL_PUBLIC_URL'] = network.get('public_url', f'http://{visit_host}:{web_port}')
+    public_host = urlsplit(config['INSTALL_PUBLIC_URL']).hostname
+    hosts = ['127.0.0.1', 'localhost', 'web', 'host.docker.internal', visit_host, public_host]
+    hosts.extend(x.strip() for x in network.get('allowed_hosts', '').split(',') if x.strip())
+    origins = [f'http://127.0.0.1:{web_port}', f'http://localhost:{web_port}', config['INSTALL_PUBLIC_URL']]
+    origins.extend(x.strip().rstrip('/') for x in network.get('csrf_trusted_origins', '').split(',') if x.strip())
     recordings = (str(host_root).replace('\\', '/').rstrip('/') if host_root else root.as_posix()) + '/.runtime/recordings'
     config['INSTALL_RECORDINGS_DIR'] = recordings
     defaults = {
-        'DEBUG': '0', 'HTTPS_TEST': '0', 'ALLOWED_HOSTS': '127.0.0.1,localhost,web,host.docker.internal',
-        'CSRF_TRUSTED_ORIGINS': f'http://127.0.0.1:{web_port},http://localhost:{web_port}',
+        'DEBUG': '0', 'HTTPS_TEST': '0', 'ALLOWED_HOSTS': ','.join(dict.fromkeys(hosts)),
+        'CSRF_TRUSTED_ORIGINS': ','.join(dict.fromkeys(origins)),
         'DATABASE_URL': 'sqlite:////data/smart_meeting.db' if mode == 'docker' else
                         'sqlite:///' + (runtime / 'data/smart_meeting.db').as_posix(),
-        'LIVEKIT_URL': 'ws://livekit:7880' if mode == 'docker' else f'ws://127.0.0.1:{signal_port}',
-        'LIVEKIT_PUBLIC_URL': f'ws://127.0.0.1:{signal_port}',
+        'LIVEKIT_URL': 'ws://livekit:7880' if mode == 'docker' else f'ws://{media_host}:{signal_port}',
+        'LIVEKIT_PUBLIC_URL': f'ws://{rtc_public_host}:{signal_port}',
         'LIVEKIT_EGRESS_OUTPUT_ROOT': '/recordings',
         'RECORDING_STORAGE_ROOT': '/recordings' if mode == 'docker' else recordings,
         'MEETING_STT_PROVIDER': 'disabled', 'MEETING_REALTIME_STT_WORKER_URL': '',
         'MEETING_AGENT_BRIDGE_MODE': 'disabled', 'MEETING_AGENT_BRIDGE_URL': '',
     }
+    for key, option, old_default in [
+        ('LIVEKIT_URL', 'livekit_url', 'ws://livekit:7880' if mode == 'docker' else f'ws://{old_media_host}:{old_signal_port}'),
+        ('LIVEKIT_PUBLIC_URL', 'livekit_public_url', f'ws://{old_public_host}:{old_signal_port}')]:
+        saved = config.get(key, old_default)
+        defaults[key] = network.get(option, saved if saved != old_default else defaults[key])
+        validate_url(defaults[key], ('ws', 'wss'))
     # Address-derived values follow port changes; optional integrations remain editable.
     for key, value in defaults.items():
         if key.startswith('MEETING_'):
@@ -96,7 +182,7 @@ def prepare_config(root, mode, *, port=None, livekit_port=None,
                 'udp_port': int(config['INSTALL_RTC_UDP_PORT']),
                 'use_external_ip': False, 'node_ip': config['INSTALL_NODE_IP'],
                 'enable_loopback_candidate': True,
-                'turn_servers': [{'host': '127.0.0.1', 'port': int(config['INSTALL_TURN_PORT']),
+                'turn_servers': [{'host': config['INSTALL_TURN_HOST'], 'port': int(config['INSTALL_TURN_PORT']),
                                   'protocol': 'tcp', 'username': 'meeting',
                                   'credential': config['TURN_PASSWORD']}]},
         'keys': {config['LIVEKIT_API_KEY']: config['LIVEKIT_API_SECRET']},
@@ -223,7 +309,7 @@ def wait_http(url, children, timeout=120):
 
 
 def show_access(config, mode):
-    print(f"\nOpen http://127.0.0.1:{config['INSTALL_WEB_PORT']}/accounts/login")
+    print(f"\nOpen {config.get('INSTALL_PUBLIC_URL', 'http://127.0.0.1:' + config['INSTALL_WEB_PORT'])}/accounts/login")
     print(f"Admin: {config['DJANGO_SUPERUSER_USERNAME']}")
     print(f'Initial password is in .runtime/{mode}.env (DJANGO_SUPERUSER_PASSWORD).')
     print('Recording files: .runtime/recordings/\n', flush=True)
@@ -284,9 +370,11 @@ def local(args):
             options = {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}
             children.append((name, subprocess.Popen(list(map(str, command)), cwd=ROOT, env=env,
                                                    stdout=output, stderr=subprocess.STDOUT, **options)))
-        wait_http(f"http://127.0.0.1:{config['INSTALL_WEB_PORT']}/healthz", children)
+        probe_host = config['INSTALL_BIND_HOST'] if config['INSTALL_BIND_HOST'] != '0.0.0.0' else '127.0.0.1'
+        wait_http(f"http://{probe_host}:{config['INSTALL_WEB_PORT']}/healthz", children)
         run(compose + ['up', '-d', '--force-recreate', '--wait', '--wait-timeout', '120'], env=env)
-        wait_http(f"http://127.0.0.1:{config['INSTALL_LIVEKIT_PORT']}/", children)
+        media_host = config['INSTALL_PUBLISH_HOST'] if config['INSTALL_PUBLISH_HOST'] != '0.0.0.0' else '127.0.0.1'
+        wait_http(f"http://{media_host}:{config['INSTALL_LIVEKIT_PORT']}/", children)
         show_access(config, 'local')
         print('Web, LiveKit, Redis, TURN and Egress are ready. Press Ctrl+C to stop.', flush=True)
         supervise(children)
@@ -301,15 +389,17 @@ def local(args):
 
 
 def config_options(args):
-    return {key: getattr(args, key) for key in [
-        'port', 'livekit_port', 'rtc_tcp_port', 'rtc_udp_port', 'turn_port', 'host_root']}
+    return {key: getattr(args, key, None) for key in [
+        'port', 'livekit_port', 'rtc_tcp_port', 'rtc_udp_port', 'turn_port', 'host_root', *NETWORK_OPTIONS]}
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description='Install and run Smart Meeting with recording.')
+    parser = argparse.ArgumentParser(description='Install and run VibeMeeting with recording.')
     parser.add_argument('mode', choices=['local', 'docker-config', 'docker-info'])
     for flag in ['port', 'livekit-port', 'rtc-tcp-port', 'rtc-udp-port', 'turn-port']:
         parser.add_argument('--' + flag, type=int)
+    for flag, help_text in NETWORK_OPTIONS.items():
+        parser.add_argument('--' + flag.replace('_', '-'), help=help_text)
     parser.add_argument('--host-root', help=argparse.SUPPRESS)
     parser.add_argument('--prepare-only', action='store_true')
     parser.add_argument('--rebuild', action='store_true')

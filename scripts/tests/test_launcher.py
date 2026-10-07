@@ -10,6 +10,52 @@ from scripts import launcher
 
 
 class LauncherTests(unittest.TestCase):
+    def test_remote_addresses_persist_and_configure_media_and_web(self):
+        first = launcher.prepare_config(self.root, 'local', host='0.0.0.0',
+            public_url='https://meeting.example.com',
+            livekit_url='ws://127.0.0.1:17880',
+            livekit_public_url='wss://rtc.example.com',
+            livekit_node_ip='192.0.2.10', turn_host='turn.example.com')
+        self.assertEqual(first['INSTALL_BIND_HOST'], '0.0.0.0')
+        self.assertEqual(first['INSTALL_PUBLISH_HOST'], '0.0.0.0')
+        self.assertIn('meeting.example.com', first['ALLOWED_HOSTS'])
+        self.assertIn('https://meeting.example.com', first['CSRF_TRUSTED_ORIGINS'])
+        again = launcher.prepare_config(self.root, 'local', port=18000)
+        for key in ['INSTALL_BIND_HOST', 'INSTALL_PUBLIC_URL', 'LIVEKIT_URL',
+                    'LIVEKIT_PUBLIC_URL', 'INSTALL_NODE_IP', 'INSTALL_TURN_HOST']:
+            self.assertEqual(first[key], again[key], key)
+        media = json.loads((self.root / '.runtime/local-livekit.yaml').read_text())
+        self.assertEqual(media['rtc']['node_ip'], '192.0.2.10')
+        self.assertEqual(media['rtc']['turn_servers'][0]['host'], 'turn.example.com')
+
+    def test_invalid_network_options_do_not_modify_existing_config(self):
+        launcher.prepare_config(self.root, 'local')
+        path = self.root / '.runtime/local.env'
+        before = path.read_bytes()
+        for options in [{'host': 'bad host'}, {'public_url': 'https://user:pass@example.com'},
+                        {'public_url': 'https://0.0.0.0'}, {'livekit_public_url': 'https://rtc.example.com'},
+                        {'livekit_node_ip': '0.0.0.0'}, {'turn_host': 'bad\nhost'},
+                        {'csrf_trusted_origins': 'https://example.com/path'}]:
+            with self.subTest(options=options), self.assertRaises(ValueError):
+                launcher.prepare_config(self.root, 'local', **options)
+            self.assertEqual(path.read_bytes(), before)
+
+    def test_cli_passes_network_options_into_configuration(self):
+        with patch.object(launcher, 'ROOT', self.root):
+            self.assertEqual(launcher.main(['local', '--prepare-only', '--host', '0.0.0.0',
+                '--public-url', 'http://meeting.example.com:8000',
+                '--livekit-public-url', 'ws://rtc.example.com:7880',
+                '--livekit-node-ip', '192.0.2.10']), 0)
+        self.assertEqual(launcher.read_env(self.root / '.runtime/local.env')['INSTALL_BIND_HOST'], '0.0.0.0')
+
+    def test_specific_interface_uses_reachable_backend_address(self):
+        config = launcher.prepare_config(self.root, 'local', host='127.0.0.2')
+        self.assertEqual(config['LIVEKIT_URL'], 'ws://127.0.0.2:7880')
+        self.assertEqual(config['LIVEKIT_PUBLIC_URL'], 'ws://127.0.0.2:7880')
+        changed = launcher.prepare_config(self.root, 'local', host='127.0.0.3')
+        self.assertEqual(changed['LIVEKIT_URL'], 'ws://127.0.0.3:7880')
+        self.assertEqual(changed['LIVEKIT_PUBLIC_URL'], 'ws://127.0.0.3:7880')
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

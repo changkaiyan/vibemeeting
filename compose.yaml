@@ -17,10 +17,10 @@ services:
     volumes:
       - ./.runtime/docker-livekit.yaml:/etc/livekit.yaml:ro
     ports:
-      - "127.0.0.1:${INSTALL_LIVEKIT_PORT}:7880"
-      - "127.0.0.1:${INSTALL_RTC_TCP_PORT}:${INSTALL_RTC_TCP_PORT}/tcp"
-      - "127.0.0.1:${INSTALL_RTC_UDP_PORT}:${INSTALL_RTC_UDP_PORT}/udp"
-      - "127.0.0.1:${INSTALL_TURN_PORT}:${INSTALL_TURN_PORT}/tcp"
+      - "${INSTALL_PUBLISH_HOST:-127.0.0.1}:${INSTALL_LIVEKIT_PORT}:7880"
+      - "${INSTALL_PUBLISH_HOST:-127.0.0.1}:${INSTALL_RTC_TCP_PORT}:${INSTALL_RTC_TCP_PORT}/tcp"
+      - "${INSTALL_PUBLISH_HOST:-127.0.0.1}:${INSTALL_RTC_UDP_PORT}:${INSTALL_RTC_UDP_PORT}/udp"
+      - "${INSTALL_PUBLISH_HOST:-127.0.0.1}:${INSTALL_TURN_PORT}:${INSTALL_TURN_PORT}/tcp"
     depends_on:
       redis:
         condition: service_healthy
@@ -46,7 +46,7 @@ services:
         source: ${INSTALL_RECORDINGS_DIR}
         target: /recordings
     ports:
-      - "127.0.0.1:${INSTALL_WEB_PORT}:8000"
+      - "${INSTALL_PUBLISH_HOST:-127.0.0.1}:${INSTALL_WEB_PORT}:8000"
     depends_on:
       livekit:
         condition: service_started

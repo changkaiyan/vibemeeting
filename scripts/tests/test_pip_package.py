@@ -13,6 +13,23 @@ from build_support import populate_bundle
 
 
 class PipPackageTests(unittest.TestCase):
+    def test_cli_forwards_network_settings_to_packaged_launcher(self):
+        self.bundle().rename(self.root / '_app')
+        module = Mock()
+        module.main.return_value = 0
+        flags = ['--host', '0.0.0.0', '--public-url', 'https://meeting.example.com',
+                 '--livekit-url', 'ws://127.0.0.1:7880',
+                 '--livekit-public-url', 'wss://rtc.example.com',
+                 '--livekit-node-ip', '192.0.2.10', '--turn-host', 'turn.example.com',
+                 '--allowed-hosts', 'meeting.example.com',
+                 '--csrf-trusted-origins', 'https://meeting.example.com']
+        with patch.object(cli, '__file__', str(self.root / '__init__.py')), \
+             patch.object(cli, 'load_launcher', return_value=module), patch.object(cli, 'materialize'):
+            self.assertEqual(cli.main(['--data-dir', str(self.root / 'home'), '--prepare-only'] + flags), 0)
+        actual = module.main.call_args.args[0]
+        for index in range(0, len(flags), 2):
+            self.assertEqual(actual[actual.index(flags[index]) + 1], flags[index + 1])
+
     def test_build_hook_loads_in_pep517_isolation_without_source_on_sys_path(self):
         source = Path(__file__).resolve().parents[2] / 'build_support.py'
         code = ('import importlib.util; '

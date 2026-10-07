@@ -125,6 +125,18 @@ def main(argv=None):
     parser.add_argument('--prepare-only', action='store_true', help='Initialize files and credentials without starting services.')
     for flag in ['port', 'livekit-port', 'rtc-tcp-port', 'rtc-udp-port', 'turn-port']:
         parser.add_argument('--' + flag, type=int)
+    network_flags = {
+        'host': 'Web and managed media bind IPv4 address, for example 0.0.0.0.',
+        'public-url': 'Browser-facing Web origin (http:// or https://).',
+        'livekit-url': 'Backend LiveKit API URL (ws:// or wss://).',
+        'livekit-public-url': 'Browser-facing LiveKit URL (ws:// or wss://).',
+        'livekit-node-ip': 'Reachable IPv4 address advertised by managed LiveKit.',
+        'turn-host': 'Reachable hostname or IPv4 address advertised for TURN.',
+        'allowed-hosts': 'Additional comma-separated Django hostnames.',
+        'csrf-trusted-origins': 'Additional comma-separated HTTP/HTTPS origins.',
+    }
+    for flag, help_text in network_flags.items():
+        parser.add_argument('--' + flag, help=help_text)
     args = parser.parse_args(argv)
     home = args.data_dir.expanduser().resolve()
     try:
@@ -150,6 +162,10 @@ def main(argv=None):
                 value = getattr(args, flag)
                 if value is not None:
                     options += ['--' + flag.replace('_', '-'), str(value)]
+            for flag in network_flags:
+                value = getattr(args, flag.replace('-', '_'))
+                if value is not None:
+                    options += ['--' + flag, value]
             return module.main(options)
     except (OSError, ValueError, RuntimeError, KeyError) as exc:
         print(f'VibeMeeting failed: {exc}', file=sys.stderr)
