@@ -53,7 +53,7 @@
 需要 Python 3.10–3.13，以及已启动的 Docker（Linux 容器、Compose v2.20+）。
 
 ```bash
-pip install vibemeeting
+pip install -i https://pypi.org/simple  vibemeeting
 vibemeeting
 ```
 
