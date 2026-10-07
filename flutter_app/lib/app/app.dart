@@ -42,7 +42,7 @@ class _SmartMeetingAppState extends State<SmartMeetingApp> {
         return MeetingThemeControllerScope(
           controller: _themeController,
           child: MaterialApp(
-            title: '智能会议控制台',
+            title: 'VibeMeeting',
             debugShowCheckedModeBanner: false,
             theme: buildMeetingTheme(_themeController.preset),
             home: widget.home,

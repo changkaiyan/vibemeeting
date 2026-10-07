@@ -1,0 +1,65 @@
+# Used by run-local: Django runs on the host; media services share a container network.
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  livekit:
+    image: livekit/livekit-server:v1.10.1
+    command: ["--config", "/etc/livekit.yaml"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./.runtime/local-livekit.yaml:/etc/livekit.yaml:ro
+    ports:
+      - "127.0.0.1:${INSTALL_LIVEKIT_PORT}:7880"
+      - "127.0.0.1:${INSTALL_RTC_TCP_PORT}:${INSTALL_RTC_TCP_PORT}/tcp"
+      - "127.0.0.1:${INSTALL_RTC_UDP_PORT}:${INSTALL_RTC_UDP_PORT}/udp"
+      - "127.0.0.1:${INSTALL_TURN_PORT}:${INSTALL_TURN_PORT}/tcp"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  turn:
+    image: coturn/coturn:4.6.3
+    network_mode: service:livekit
+    command: ["-c", "/etc/coturn/turnserver.conf"]
+    volumes:
+      - ./.runtime/local-turn.conf:/etc/coturn/turnserver.conf:ro
+    depends_on:
+      livekit:
+        condition: service_started
+
+  egress:
+    image: livekit/egress:v1.15.0
+    cap_add: [SYS_ADMIN]
+    shm_size: 1gb
+    network_mode: service:livekit
+    environment:
+      EGRESS_CONFIG_FILE: /etc/egress.yaml
+    volumes:
+      - ./.runtime/local-egress.yaml:/etc/egress.yaml:ro
+      - type: bind
+        source: ${INSTALL_RECORDINGS_DIR}
+        target: /recordings
+    depends_on:
+      livekit:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8081/ >/dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+volumes:
+  redis-data:

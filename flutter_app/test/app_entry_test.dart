@@ -16,6 +16,7 @@ void main() {
     );
 
     expect(find.text('billing'), findsOneWidget);
+    expect(find.text('© 2026 VibeMeeting contributors'), findsOneWidget);
     expect(find.text('meeting'), findsNothing);
   });
 
@@ -34,6 +35,7 @@ void main() {
     );
 
     expect(find.text('meeting:demo:false'), findsOneWidget);
+    expect(find.text('© 2026 VibeMeeting contributors'), findsNothing);
   });
 
   testWidgets('AppEntry falls back to dashboard builder', (tester) async {
@@ -49,5 +51,12 @@ void main() {
     );
 
     expect(find.text('dashboard'), findsOneWidget);
+    expect(find.text('© 2026 VibeMeeting contributors'), findsOneWidget);
+    expect(
+      find.ancestor(
+          of: find.text('© 2026 VibeMeeting contributors'),
+          matching: find.byType(Material)),
+      findsWidgets,
+    );
   });
 }

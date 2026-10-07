@@ -1,10 +1,16 @@
 .venv/
 __pycache__/
 *.pyc
+build/
+dist/
+*.egg-info/
+vibemeeting/_app/
 
 .idea/
-app/static
-app/static/flutter_app/
+app/static/*
+!app/static/meeting-room.js
+!app/static/style.css
+!app/static/brand/
 .certs/
 
 .env
@@ -14,12 +20,15 @@ livekit-keys.yaml
 
 *.log
 .runlogs/
+.runtime/
 
 smart_meeting.db
 
 flutter_app/.dart_tool/
 flutter_app/build/
+flutter_dashboard/
 artifacts/flutter_app_web/
+artifacts/releases/
 !artifacts/README.md
 staticfiles/
 tools/

@@ -52,8 +52,6 @@ from conference.meeting_refs import ensure_meeting_ref
 from conference.share import build_meeting_share_code
 import conference.realtime_audio_ws as conference_realtime_audio_ws
 import conference.views as conference_views
-from services.stt_worker.stt_worker.config import SttWorkerConfig
-from services.stt_worker.stt_worker.server import DEFAULT_WS_PATH, start_server
 from smart_meeting.asgi import application
 
 
@@ -1931,6 +1929,22 @@ class MeetingModerationControlTests(TestCase):
 
 
 class MeetingRecordingTests(TestCase):
+    def test_egress_duration_migration_preserves_uploaded_recording_seconds(self):
+        from django.apps import apps
+        migration = importlib.import_module('conference.migrations.0023_egress_duration_seconds')
+        common = {'meeting': self.meeting, 'owner': self.host,
+                  'storage_root': self.temp_dir.name, 'relative_path': 'example.mp4'}
+        egress = MeetingRecording.objects.create(**common, file_name='egress.mp4',
+                                                egress_id='example-egress', duration_seconds=18_750_000_000)
+        uploaded = MeetingRecording.objects.create(**common, file_name='upload.mp4', duration_seconds=12)
+        unknown = MeetingRecording.objects.create(**common, file_name='unknown.mp4', egress_id='unknown-egress')
+        migration.convert_existing_duration(apps, SimpleNamespace(connection=connection))
+        for recording in [egress, uploaded, unknown]:
+            recording.refresh_from_db()
+        self.assertEqual(egress.duration_seconds, 18)
+        self.assertEqual(uploaded.duration_seconds, 12)
+        self.assertIsNone(unknown.duration_seconds)
+
     def setUp(self):
         self.super_admin = User.objects.create_superuser(
             username="admin_recording",
@@ -2369,7 +2383,7 @@ class MeetingRecordingTests(TestCase):
                 filename="final.mp4",
                 location=str((Path(self.temp_dir.name) / relative_path).resolve()),
                 size=4321,
-                duration=18,
+                duration=18_750_000_000,
             ),
             file_results=[],
         )
@@ -2393,6 +2407,7 @@ class MeetingRecordingTests(TestCase):
         recording = MeetingRecording.objects.filter(egress_id="egress_stop_1").first()
         self.assertIsNotNone(recording)
         self.assertEqual(recording.file_name, "final.mp4")
+        self.assertEqual(recording.duration_seconds, 18)
         self.assertEqual(recording.owner_id, self.host.id)
 
         self.meeting.refresh_from_db()
@@ -3148,6 +3163,9 @@ class MeetingRealtimeSpeechToTextTests(TestCase):
         return outputs
 
     async def _run_ws_session_with_real_worker(self, token: str, frames: list[dict], *, provider: str = "mock"):
+        from services.stt_worker.stt_worker.config import SttWorkerConfig
+        from services.stt_worker.stt_worker.server import DEFAULT_WS_PATH, start_server
+
         server = await start_server(
             SttWorkerConfig(
                 host="127.0.0.1",
@@ -3623,7 +3641,7 @@ class MeetingRealtimeAudioWebSocketTests(TestCase):
     @patch("conference.realtime_audio_ws.meeting_views._volcengine_build_request", return_value=b"req")
     @patch("conference.realtime_audio_ws.meeting_views._volcengine_ws_headers", return_value=["X-Test: 1"])
     @patch("conference.realtime_audio_ws.threading.Thread")
-    def test_stream_bridge_start_matches_kaiyan_session_audio_params(
+    def test_stream_bridge_start_uses_expected_session_audio_params(
         self,
         mock_thread_cls,
         mock_headers,
@@ -3702,7 +3720,7 @@ class MeetingRealtimeAudioWebSocketTests(TestCase):
 
     @patch("conference.realtime_audio_ws.meeting_views._auto_gain_pcm16_for_asr")
     @patch("conference.realtime_audio_ws.meeting_views._decode_and_normalize_pcm16_audio")
-    def test_decode_audio_chunk_applies_same_auto_gain_path_as_kaiyan_streaming(
+    def test_decode_audio_chunk_applies_streaming_auto_gain_path(
         self,
         mock_decode_audio,
         mock_auto_gain,

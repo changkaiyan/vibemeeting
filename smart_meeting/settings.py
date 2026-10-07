@@ -7,13 +7,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-_ARTIFACT_FLUTTER_APP_BUILD_DIR = BASE_DIR / "artifacts" / "flutter_app_web"
-_APP_STATIC_FLUTTER_APP_BUILD_DIR = BASE_DIR / "app" / "static" / "flutter_app"
-FLUTTER_APP_BUILD_DIR = (
-    _ARTIFACT_FLUTTER_APP_BUILD_DIR
-    if _ARTIFACT_FLUTTER_APP_BUILD_DIR.exists()
-    else _APP_STATIC_FLUTTER_APP_BUILD_DIR
-)
+FLUTTER_APP_BUILD_DIR = BASE_DIR / "artifacts" / "flutter_app_web"
 
 
 def _csv_env(name: str, default: str = "") -> list[str]:
@@ -92,12 +86,8 @@ USE_TZ = False
 
 STATIC_URL = "/static/"
 STATICFILES_DIRS = []
-if (
-    FLUTTER_APP_BUILD_DIR.exists()
-    and FLUTTER_APP_BUILD_DIR != _APP_STATIC_FLUTTER_APP_BUILD_DIR
-):
-    # Put generated Flutter assets ahead of app/static so /static/flutter_app/*
-    # resolves to the latest build instead of the checked-in fallback bundle.
+if FLUTTER_APP_BUILD_DIR.exists():
+    # Serve generated Flutter assets from the single deployment directory.
     STATICFILES_DIRS.append(("flutter_app", FLUTTER_APP_BUILD_DIR))
 STATICFILES_DIRS.append(BASE_DIR / "app" / "static")
 STATIC_ROOT = BASE_DIR / "staticfiles"

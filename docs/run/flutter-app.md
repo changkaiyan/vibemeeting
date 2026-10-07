@@ -1,6 +1,6 @@
 # Flutter App (Web)
 
-该目录是会议控制台的 Flutter Web 源码。
+该目录是会议控制台的 Flutter Web 源码。当前仅维护浏览器客户端，适用于桌面和手机浏览器。原生安装包和远程桌面控制已废弃。
 
 当前主要结构：
 
@@ -30,6 +30,8 @@ flutter run -d chrome
 当前前端默认通过 `Uri.base.resolve(...)` 访问与页面同源的 Django API，
 入口代码已不再维护单独的 `baseUrl` 常量。
 
+会议室顶部默认使用紧凑工具栏。点击右侧箭头可展开或收起会议号、参会统计和状态信息；分享、音视频设置、更多操作与录制指示始终可用。手机端的舞台、成员和聊天标签使用单行布局，以增加舞台可用高度。
+
 如果你联调本地 Django，请确保页面本身就是从 Django 提供的地址打开。
 
 ## 与 Django 集成（可选）
@@ -54,32 +56,3 @@ rsync -av --delete build/web/ ../artifacts/flutter_app_web/
 - `artifacts/flutter_app_web/` 是生成产物目录
 - 不要手改 `artifacts/flutter_app_web/` 下的文件
 - Flutter package 名为 `smart_meeting_app`
-
-## Native Android APK Build
-
-From repository root:
-
-```powershell
-.\scripts\build_flutter_android.ps1 -Mode Release -AndroidSdkPath "D:\Android\Sdk"
-```
-
-Debug build:
-
-```powershell
-.\scripts\build_flutter_android.ps1 -Mode Debug -AndroidSdkPath "D:\Android\Sdk"
-```
-
-Dry run (print commands only):
-
-```powershell
-.\scripts\build_flutter_android.ps1 -Mode Release -AndroidSdkPath "D:\Android\Sdk" -DryRun
-```
-
-Output APK:
-
-- Release: `flutter_app\build\app\outputs\flutter-apk\app-release.apk`
-- Debug: `flutter_app\build\app\outputs\flutter-apk\app-debug.apk`
-
-Note: if `flutter_app\android` is missing, the script auto-runs `puro flutter create --platforms=android .` before building.
-Note: Android native build targets `lib/main_windows.dart`.
-Note: when project path contains non-ASCII chars on Windows, the script auto-uses `subst X:` during build.

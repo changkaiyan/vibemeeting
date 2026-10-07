@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=77,<85", "wheel>=0.45"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vibemeeting"
+version = "0.1.0"
+description = "可自行部署的网页会议系统，支持音视频、屏幕共享和会议录制"
+readme = "docs/pypi.md"
+requires-python = ">=3.10,<3.14"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{name = "VibeMeeting contributors"}]
+keywords = ["meeting", "webrtc", "livekit", "django", "recording"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Framework :: Django :: 5.2",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Operating System :: OS Independent",
+]
+dynamic = ["dependencies"]
+
+[project.scripts]
+vibemeeting = "vibemeeting.cli:main"
+
+[project.urls]
+Repository = "https://github.com/changkaiyan/vibemeeting"
+Documentation = "https://github.com/changkaiyan/vibemeeting/blob/main/README.md"
+Issues = "https://github.com/changkaiyan/vibemeeting/issues"
+
+[tool.setuptools]
+packages = ["vibemeeting"]
+include-package-data = false
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
+
+[tool.setuptools.cmdclass]
+build_py = "build_support.BuildPy"
+sdist = "build_support.SourceDistribution"

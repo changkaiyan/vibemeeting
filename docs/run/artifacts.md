@@ -6,7 +6,14 @@ Current usage:
 
 - `artifacts/flutter_app_web/`
   - Flutter Web build output consumed by Django static serving
-  - Generated from the source project in [`flutter_app/`](../flutter_app)
+  - Generated from the source project in [`flutter_app/`](../../flutter_app)
+
+Django uses only `artifacts/flutter_app_web/` for the Flutter Web bundle.
+The retired `flutter_dashboard/` project residues and the old
+`app/static/flutter_app/` bundle have been removed. If the current bundle is
+missing, rebuild and copy it as described below; there is no fallback bundle.
+Keep the handwritten assets directly under `app/static/` and the collected
+deployment files under `staticfiles/`.
 
 Do not edit files under `artifacts/flutter_app_web/` manually.
 Regenerate them from the Flutter source project with:

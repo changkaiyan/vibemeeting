@@ -7,6 +7,8 @@ import 'package:http/http.dart' as http;
 
 import '../../app/theme/meeting_theme.dart';
 import '../../app/theme/theme_controller.dart';
+import '../../app/widgets/copyright_notice.dart';
+import '../../app/widgets/brand_mark.dart';
 import '../../core/api_exception.dart';
 import '../../device_profile.dart';
 import '../billing/models.dart';
@@ -1301,6 +1303,8 @@ class _DashboardPageState extends State<DashboardPage> {
               ),
               const SizedBox(height: 6),
               SelectableText(info),
+              const SizedBox(height: 8),
+              const CopyrightNotice(),
             ],
           ),
         ),
@@ -2881,16 +2885,10 @@ class _DashboardPageState extends State<DashboardPage> {
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Text(
-              '智能会议控制台',
-              style: TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.w700,
-                  color: Colors.white),
-            ),
+            const BrandMark(),
             const SizedBox(height: 2),
             Text(
-              '会议创建、入会、编辑与会控管理',
+              '创建会议 · 团队协作 · 录像回看',
               style: TextStyle(fontSize: 12.5, color: _palette.heroMutedText),
             ),
           ],
@@ -3052,14 +3050,7 @@ class _DashboardPageState extends State<DashboardPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text(
-                  '智能会议控制台',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 18,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
+                const BrandMark(fontSize: 18),
                 const SizedBox(height: 2),
                 Text(
                   profile == null

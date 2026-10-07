@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../device_profile.dart';
 import 'routing/app_route_parser.dart';
+import 'widgets/copyright_notice.dart';
 
 typedef MeetingRoomPageBuilder = Widget Function(
   AppRoute route,
@@ -34,9 +35,18 @@ class AppEntry extends StatelessWidget {
       case AppRouteKind.meetingRoom:
         return meetingRoomBuilder(route, preferMobileLayout);
       case AppRouteKind.billingAdmin:
-        return billingBuilder(preferMobileLayout);
+        return _withCopyright(billingBuilder(preferMobileLayout));
       case AppRouteKind.dashboard:
-        return dashboardBuilder(preferMobileLayout);
+        return _withCopyright(dashboardBuilder(preferMobileLayout));
     }
   }
+
+  Widget _withCopyright(Widget page) => Column(
+        children: [
+          Expanded(child: page),
+          const Material(
+            child: SafeArea(top: false, child: CopyrightNotice()),
+          ),
+        ],
+      );
 }

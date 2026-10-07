@@ -403,94 +403,13 @@ extension _MeetingRoomLayoutPanels on _MeetingRoomPageState {
     );
   }
 
-  List<Widget> _buildDesktopCommunicationHeaderActions({
-    required bool forChat,
-  }) {
-    final isChatExpanded = _desktopChatPanelExpanded;
-    final isWorkspaceExpanded = _desktopWorkspacePanelExpanded;
-    final targetExpanded = forChat ? isChatExpanded : isWorkspaceExpanded;
-    final targetLabel = forChat ? '聊天' : '工作区';
-    final otherExpanded = forChat ? isWorkspaceExpanded : isChatExpanded;
-    final switchLabel = forChat ? '看工作区' : '看聊天';
-    return [
-      MeetingPanelHeaderActionBar(
-        panelLabel: targetLabel,
-        isFullscreen: false,
-        onToggleFullscreen: () =>
-            _openCommunicationPanelFullscreen(forChat: forChat),
-      ),
-      Tooltip(
-        message: targetExpanded ? '还原$targetLabel' : '放大$targetLabel',
-        child: IconButton(
-          visualDensity: VisualDensity.compact,
-          onPressed: () {
-            setState(() {
-              if (forChat) {
-                _desktopChatPanelExpanded = !_desktopChatPanelExpanded;
-                if (_desktopChatPanelExpanded) {
-                  _desktopWorkspacePanelExpanded = false;
-                }
-              } else {
-                _desktopWorkspacePanelExpanded =
-                    !_desktopWorkspacePanelExpanded;
-                if (_desktopWorkspacePanelExpanded) {
-                  _desktopChatPanelExpanded = false;
-                }
-              }
-            });
-          },
-          icon: Icon(
-            targetExpanded ? Icons.fullscreen_exit : Icons.open_in_full,
-            size: 18,
-            color: _palette.primaryStrong,
-          ),
-        ),
-      ),
-      if (otherExpanded)
-        TextButton(
-          onPressed: () {
-            setState(() {
-              if (forChat) {
-                _desktopWorkspacePanelExpanded = false;
-              } else {
-                _desktopChatPanelExpanded = false;
-              }
-            });
-          },
-          child: Text(switchLabel),
-        ),
-    ];
-  }
-
   Widget _buildCommunicationPanel() {
-    if (_desktopChatPanelExpanded) {
-      return _buildChatPanel(
-        headerActions: _buildDesktopCommunicationHeaderActions(forChat: true),
-      );
-    }
-    if (_desktopWorkspacePanelExpanded) {
-      return _buildWorkspacePanel(
-        headerActions: _buildDesktopCommunicationHeaderActions(forChat: false),
-      );
-    }
-    return Column(
-      children: [
-        Expanded(
-          flex: 4,
-          child: _buildChatPanel(
-            headerActions: _buildDesktopCommunicationHeaderActions(
-              forChat: true,
-            ),
-          ),
-        ),
-        const SizedBox(height: 8),
-        Expanded(
-          flex: 5,
-          child: _buildWorkspacePanel(
-            headerActions: _buildDesktopCommunicationHeaderActions(
-              forChat: false,
-            ),
-          ),
+    return _buildChatPanel(
+      headerActions: [
+        MeetingPanelHeaderActionBar(
+          panelLabel: '聊天',
+          isFullscreen: false,
+          onToggleFullscreen: _openChatPanelFullscreen,
         ),
       ],
     );

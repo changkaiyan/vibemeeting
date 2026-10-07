@@ -1,0 +1,66 @@
+# pip 安装包验证
+
+包名：`vibemeeting`；版本：`0.1.0`；Python：3.10–3.13；许可证：Apache-2.0。
+
+当前完成的是本地分发包构建、安装与运行验证，尚未上传 PyPI。包名安装命令需正式发布后才可使用。
+
+## 实际执行的自动化检查
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s scripts/tests -p "test_*.py"
+.\.venv\Scripts\python.exe scripts/release_audit.py
+.\.runtime\package-build-venv\Scripts\python.exe -m build --no-isolation --outdir dist
+.\.runtime\package-build-venv\Scripts\python.exe -m twine check --strict dist/vibemeeting-0.1.0-py3-none-any.whl dist/vibemeeting-0.1.0.tar.gz
+```
+
+51 项脚本测试通过，包括 9 项包启动 / 构建测试、3 项实际分发文件测试、3 项发布工作流测试和 1 项可选 STT 依赖隔离测试。wheel 和 sdist 均通过 Twine 严格检查；正常构建流程从 sdist 生成 wheel，确认预编译网页可以随源码分发安装。
+
+在仅安装 wheel 声明依赖的干净环境执行：
+
+```powershell
+.\.runtime\pip-smoke-venv\Scripts\python.exe manage.py test conference.test_bootstrap_admin conference.test_web_assets conference.tests.MeetingRecordingTests --verbosity 0
+.\.runtime\actionlint\actionlint.exe -shellcheck='' .github/workflows/publish-pypi.yml
+```
+
+31 项后端测试通过；工作流通过 actionlint 1.7.12 语法检查。录制测试不再在导入阶段加载可选 STT worker；语音识别的真实 worker 测试仍需安装该服务自己的依赖。GitHub `pypi` 环境及 PyPI pending publisher 已配置，公开包仍需等待首次工作流上传。
+
+实际录像回看发现 Egress 时长单位为纳秒（[LiveKit API](https://docs.livekit.io/reference/other/egress/api/)），已补充失败回归后转换为秒，并通过 `0023` 数据迁移修复旧 Egress 录像时长，保留手动上传录像的秒数。
+
+版权署名覆盖登录 / 注册页、控制台页脚和会议分享弹窗。先执行新增测试确认失败，再实现界面；完整 Flutter 测试 111 项通过，覆盖统一品牌名称、Logo 与版权页脚：
+
+```powershell
+cd flutter_app
+..\tools\flutter\bin\flutter.bat test
+..\tools\flutter\bin\flutter.bat test test/app_entry_test.dart test/copyright_notice_test.dart
+```
+
+组件测试覆盖窄屏、两倍文字缩放和深浅主题，并确认会议页面不会因版权页脚缩小舞台。
+
+## 干净环境安装与实际运行
+
+```powershell
+.\.venv\Scripts\python.exe -m venv .runtime/pip-smoke-venv
+.\.runtime\pip-smoke-venv\Scripts\python.exe -m pip install --disable-pip-version-check --progress-bar off .\dist\vibemeeting-0.1.0-py3-none-any.whl
+```
+
+之后切换到仓库外的临时目录，使用该虚拟环境中的 `vibemeeting` 可执行入口，指定独立数据目录运行：
+
+```bash
+vibemeeting --version
+vibemeeting --prepare-only --data-dir <TEST_DATA_DIR> --port 38000 --livekit-port 37880 --rtc-tcp-port 37891 --rtc-udp-port 37882 --turn-port 33478
+vibemeeting info --data-dir <TEST_DATA_DIR>
+vibemeeting --data-dir <TEST_DATA_DIR>
+```
+
+上面的数据目录为脱敏占位符，实际使用项目内被忽略的独立测试目录。实际安装后的入口完成了：
+
+- 加载包内应用与编译好的网页，不安装 Flutter / Git，也不创建第二个 Python 虚拟环境。
+- 数据库迁移、随机管理员和录像路径初始化。
+- `/healthz`、Flutter 主脚本加载、管理员 API 登录、创建会议及获取参会 Token。
+- Windows 无头 Chrome 发布合成音频，媒体连接成功。
+- 通过 Django 会议接口启动 / 停止 Egress，生成 MP4（实测 112470 字节）。
+- 使用已登录用户的鉴权请求下载录像，文件与磁盘内容一致。
+- 同数据目录的并发启动被拒绝。
+- Ctrl+C 停止本次 Web 与媒体、录制服务，保留数据库、配置与录像。
+
+测试没有访问真实麦克风、摄像头或个人参会数据。Linux/macOS 的包入口、锁和媒体运行尚未实机验收。公开 PyPI 安装应在上传后再从正式索引复测。

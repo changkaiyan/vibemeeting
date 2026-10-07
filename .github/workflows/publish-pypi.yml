@@ -1,0 +1,109 @@
+name: Publish VibeMeeting to PyPI
+
+on:
+  pull_request:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Upload to PyPI (requires a version tag and configured Trusted Publisher)
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pypi-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+      - name: Verify publishing version tag
+        if: github.event_name == 'release' || inputs.publish
+        run: python scripts/validate_release.py --ref "$GITHUB_REF"
+      - name: Install test and build dependencies
+        run: python -m pip install -r requirements.txt -r requirements-dev.txt
+      - name: Audit release source
+        run: python scripts/release_audit.py
+      - name: Run script regressions
+        run: python -m unittest discover -s scripts/tests -p 'test_*.py'
+      - name: Build wheel and prebuilt sdist
+        run: python -m build
+      - name: Validate distributions and recording regressions
+        run: |
+          python -m twine check --strict dist/*
+          python -m unittest scripts.tests.test_distribution_artifacts
+          python manage.py test conference.test_bootstrap_admin conference.test_web_assets conference.tests.MeetingRecordingTests --verbosity 0
+      - name: Install and initialize from outside the repository
+        shell: bash
+        run: |
+          python -m venv "$RUNNER_TEMP/vibemeeting-test"
+          "$RUNNER_TEMP/vibemeeting-test/bin/python" -m pip install dist/*.whl
+          cd "$RUNNER_TEMP"
+          export PATH="$RUNNER_TEMP/vibemeeting-test/bin:$PATH"
+          vibemeeting --version
+          vibemeeting --prepare-only --data-dir "$RUNNER_TEMP/vibemeeting-data"
+          vibemeeting info --data-dir "$RUNNER_TEMP/vibemeeting-data"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: python-distributions
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    needs: build
+    if: github.repository == 'changkaiyan/vibemeeting' && (github.event_name == 'release' || inputs.publish)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: pypi
+      url: https://pypi.org/p/vibemeeting
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: python-distributions
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
+        with:
+          attestations: true
+
+  verify-pypi-install:
+    needs: publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Verify installation from the public index
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          for attempt in 1 2 3; do
+            if python -m pip install --index-url https://pypi.org/simple "vibemeeting==$version"; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then exit 1; fi
+            sleep 15
+          done
+          vibemeeting --version
+          vibemeeting --prepare-only --data-dir "$RUNNER_TEMP/vibemeeting-pypi"
