@@ -4,14 +4,14 @@
 
 需要 Python 3.10–3.13 和已启动的 Docker，Docker 使用 Linux 容器并提供 Compose v2.20+。安装包已经包含 Django 应用、模板、静态资源和 Flutter Web 编译产物，无需 Git 或 Flutter SDK。
 
-当前安装包尚未上传 PyPI。正式发布后使用：
+`vibemeeting 0.1.0` 已发布到 [PyPI](https://pypi.org/project/vibemeeting/0.1.0/)，使用：
 
 ```bash
 pip install vibemeeting
 vibemeeting
 ```
 
-建议在独立 Python 虚拟环境中安装，避免与其他应用的依赖冲突。在分发包已下载但尚未公开发布的阶段，使用：
+建议在独立 Python 虚拟环境中安装，避免与其他应用的依赖冲突。也可以安装已经下载的分发文件：
 
 ```bash
 pip install ./dist/vibemeeting-0.1.0-py3-none-any.whl

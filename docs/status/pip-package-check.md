@@ -2,7 +2,7 @@
 
 包名：`vibemeeting`；版本：`0.1.0`；Python：3.10–3.13；许可证：Apache-2.0。
 
-当前完成的是本地分发包构建、安装与运行验证，尚未上传 PyPI。包名安装命令需正式发布后才可使用。
+`0.1.0` 已通过 GitHub Trusted Publishing 正式上传到 [PyPI](https://pypi.org/project/vibemeeting/0.1.0/)。[发布工作流](https://github.com/changkaiyan/vibemeeting/actions/runs/37633662371) 的构建、OIDC 上传、正式索引安装验证全部成功；GitHub 仓库按维护者要求保持私有。
 
 ## 实际执行的自动化检查
 
@@ -22,7 +22,7 @@
 .\.runtime\actionlint\actionlint.exe -shellcheck='' .github/workflows/publish-pypi.yml
 ```
 
-31 项后端测试通过；工作流通过 actionlint 1.7.12 语法检查。录制测试不再在导入阶段加载可选 STT worker；语音识别的真实 worker 测试仍需安装该服务自己的依赖。GitHub `pypi` 环境及 PyPI pending publisher 已配置，公开包仍需等待首次工作流上传。
+31 项后端测试通过；工作流通过 actionlint 1.7.12 语法检查。录制测试不再在导入阶段加载可选 STT worker；语音识别的真实 worker 测试仍需安装该服务自己的依赖。GitHub `pypi` 环境仅允许 `v*` 标签部署，PyPI Trusted Publisher 已完成首次上传。
 
 实际录像回看发现 Egress 时长单位为纳秒（[LiveKit API](https://docs.livekit.io/reference/other/egress/api/)），已补充失败回归后转换为秒，并通过 `0023` 数据迁移修复旧 Egress 录像时长，保留手动上传录像的秒数。
 
@@ -35,6 +35,30 @@ cd flutter_app
 ```
 
 组件测试覆盖窄屏、两倍文字缩放和深浅主题，并确认会议页面不会因版权页脚缩小舞台。
+
+网页入口缓存版本的 3 项回归测试也通过：
+
+```bash
+node --test scripts/tests/flutter_bootstrap.test.cjs
+```
+
+## 正式 PyPI 安装复测
+
+使用全新的 Windows 虚拟环境，仅从正式索引安装，不复用本地 wheel 或 pip 缓存：
+
+```bash
+python -m pip --isolated install --disable-pip-version-check --no-cache-dir --progress-bar off --timeout 120 --retries 3 --index-url https://pypi.org/simple vibemeeting==0.1.0
+```
+
+首次下载遇到网络读取超时，延长超时后的重试成功。随后切换到仓库外目录，使用此环境的入口执行以下命令，全部返回成功：
+
+```bash
+vibemeeting --version
+vibemeeting --prepare-only --data-dir <TEST_DATA_DIR>
+vibemeeting info --data-dir <TEST_DATA_DIR>
+```
+
+版本输出为 `vibemeeting 0.1.0`。GitHub 发布工作流也在独立 Linux 环境中完成正式 PyPI 安装和初始化。完整 GitHub 仓库继续保持私有；发布包不包含其 Git 历史。
 
 ## 干净环境安装与实际运行
 
@@ -63,4 +87,4 @@ vibemeeting --data-dir <TEST_DATA_DIR>
 - 同数据目录的并发启动被拒绝。
 - Ctrl+C 停止本次 Web 与媒体、录制服务，保留数据库、配置与录像。
 
-测试没有访问真实麦克风、摄像头或个人参会数据。Linux/macOS 的包入口、锁和媒体运行尚未实机验收。公开 PyPI 安装应在上传后再从正式索引复测。
+测试没有访问真实麦克风、摄像头或个人参会数据。Linux 的构建、包入口及正式 PyPI 安装初始化已由发布工作流验证。Linux/macOS 的媒体运行尚未实机验收。
