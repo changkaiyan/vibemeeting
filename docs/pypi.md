@@ -1,4 +1,4 @@
-# VibeMeeting · 智能会议
+# VibeMeeting · 开源在线会议
 
 可自行部署的网页会议系统，支持音视频、屏幕共享、文字聊天、主持人控制与 MP4 会议录制。基于 Django、Flutter Web 和 LiveKit，采用标准 Apache-2.0 许可证。
 
