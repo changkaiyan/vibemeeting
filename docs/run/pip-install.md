@@ -4,7 +4,7 @@
 
 需要 Python 3.10–3.13 和已启动的 Docker，Docker 使用 Linux 容器并提供 Compose v2.20+。安装包已经包含 Django 应用、模板、静态资源和 Flutter Web 编译产物，无需 Git 或 Flutter SDK。
 
-`vibemeeting 0.1.1` 已发布到 [PyPI](https://pypi.org/project/vibemeeting/0.1.1/)，使用：
+`vibemeeting 0.1.2` 已发布到 [PyPI](https://pypi.org/project/vibemeeting/0.1.2/)，使用：
 
 ```bash
 pip install vibemeeting
@@ -14,7 +14,7 @@ vibemeeting
 建议在独立 Python 虚拟环境中安装，避免与其他应用的依赖冲突。也可以安装已经下载的分发文件：
 
 ```bash
-pip install ./dist/vibemeeting-0.1.1-py3-none-any.whl
+pip install ./dist/vibemeeting-0.1.2-py3-none-any.whl
 vibemeeting
 ```
 
@@ -114,7 +114,7 @@ python -m unittest discover -s scripts/tests -p "test_*.py"
 python scripts/release_audit.py
 python -m pip install -r requirements.txt -r requirements-dev.txt
 python -m build
-python -m twine check --strict dist/vibemeeting-0.1.1-py3-none-any.whl dist/vibemeeting-0.1.1.tar.gz
+python -m twine check --strict dist/vibemeeting-0.1.2-py3-none-any.whl dist/vibemeeting-0.1.2.tar.gz
 ```
 
 构建器仅从允许的应用源码和网页资源生成包，不读取 `.env`、`.runtime/`、数据库、录像、证书或日志。网页源文件发生变化时重新构建 Flutter；wheel 和 sdist 均带有文件校验清单。sdist 内已经包含预编译网页，从该 sdist 构建 wheel 无需 Flutter 或原始仓库。
@@ -123,7 +123,7 @@ Python 版本范围与当前固定的 Django 5.2.2 一致。Python 3.14 支持�
 
 ## PyPI 发布
 
-当前包名 `vibemeeting`，版本 `0.1.1`。仓库使用 [GitHub Actions 工作流](../../.github/workflows/publish-pypi.yml) 和 [PyPI Trusted Publishing](https://docs.pypi.org/trusted-publishers/)，通过 OIDC 身份发布，无需保存 PyPI Token。
+当前包名 `vibemeeting`，版本 `0.1.2`。仓库使用 [GitHub Actions 工作流](../../.github/workflows/publish-pypi.yml) 和 [PyPI Trusted Publishing](https://docs.pypi.org/trusted-publishers/)，通过 OIDC 身份发布，无需保存 PyPI Token。
 
 首次发布前，在 PyPI 账号的 Publishing 页面添加 pending publisher；已有项目则在该项目的 Publishing 页面添加：
 
@@ -140,7 +140,7 @@ GitHub 仓库创建 `pypi` environment，仅允许 `v*` 标签部署。工作流
 在 GitHub Actions 手动执行该工作流，保持 `publish=false`，可验证构建而不上传。正式发布时：
 
 1. 确认 `pyproject.toml` 与 `vibemeeting/__init__.py` 版本一致。
-2. 将审查后的源码提交至仓库，创建对应版本标签，例如 `v0.1.1`。
+2. 将审查后的源码提交至仓库，创建对应版本标签，例如 `v0.1.2`。
 3. 基于该标签发布 GitHub Release，自动触发构建、隐私扫描、测试、分发文件检查和安装验证。
 4. 检查通过后，独立发布任务获得 OIDC 权限，上传 wheel、sdist 与来源证明；随后自动从正式 PyPI 安装指定版本并检查入口。
 
