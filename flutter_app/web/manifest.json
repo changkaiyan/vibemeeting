@@ -1,11 +1,11 @@
 {
-    "name": "智能会议",
-    "short_name": "智能会议",
+    "name": "VibeMeeting",
+    "short_name": "VibeMeeting",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",
     "theme_color": "#0175C2",
-    "description": "智能会议控制台",
+    "description": "VibeMeeting",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

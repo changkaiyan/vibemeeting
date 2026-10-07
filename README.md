@@ -1,204 +1,136 @@
-# 智能会议（Django + LiveKit）
+<div align="center">
 
-基于 Django + DRF 的在线会议系统，支持会议管理、权限控制、聊天与 LiveKit 入会能力。
+<img src="./app/static/brand/vibemeeting-logo.png" alt="VibeMeeting Logo" width="96" height="96" />
 
-## 代码与产物目录
+# VibeMeeting 开源在线会议
 
-- `conference/`
-  - 后端核心业务代码
-- `docs/`
-  - 设计与架构文档
-- `smart_meeting/`
-  - Django 项目配置与入口
-- `app/templates/`
-  - Django 模板
-- `app/static/`
-  - 手写静态资源
-- `flutter_app/`
-  - Flutter Web 前端源码
-- `artifacts/flutter_app_web/`
-  - Flutter Web 构建产物，供 Django 作为静态文件挂载
-  - 不应手工编辑，应由 Flutter Web 构建结果同步过来
-- `tools/`
-  - 本地运行依赖和第三方工具，不纳入源码提交流程
+**把会议部署在自己的环境里，打开浏览器即可开会，不按人数、时长收取软件许可费用。**
 
-## 页面入口
 
-- 首页：`/`
-- 登录：`/accounts/login`
-- 注册：`/accounts/register`
-- 科技云 OAuth 发起：`/auth/techcloud/login`
-- 科技云 OAuth 回调：`/callback`
-- 会议控制台：`/dashboard`
-- Django 管理后台：`/admin`
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](./LICENSE)
 
-## 文档索引
+[项目动机](#项目动机) · [使用体验与Feature](#使用体验与Feature) · [一键安装](#一键安装) · [文档](#文档与开发) · [许可证与联系](#许可证与联系)
 
-文档入口：
+</div>
 
-- [文档总览](./docs/README.md)
+## 项目动机
 
-开发与联调：
+会议聊的是自己的业务，工具也应该由自己掌握。VibeMeeting 面向希望自主部署、控制成本、按需改造的团队：
 
-- [本地开发指南](./docs/run/development.md)
-- [HTTPS 启动](./docs/run/https-testing.md)
-- [部署说明](./docs/run/deployment.md)
-- [Git 工作流](./docs/run/git-workflow.md)
+- **内部讨论，留在内部。** 会议服务可以部署在单位内网，账号、访问权限和录像存储由自己管理。
+- **免费开源，不按人数购买许可。** 个人、团队和商业场景都可以使用；只需承担自己的服务器、存储和网络等运行成本。
+- **流程合适，才用得顺手。** 完整源码开放，可以调整界面、接入内部系统，或按需扩展语音转写与 Agent。
 
-架构与方案：
-
-- [AI 双工作流总览](./docs/design/ai-workflows-overview.md)
-- [工作区近实时 STT 设计](./docs/design/near-realtime-stt-design.md)
-- [流式 STT worker 设计](./docs/design/streaming-stt-worker-design.md)
-- [火山云端 STT 设计](./docs/design/volcengine-cloud-stt-design.md)
-- [会议工作区与实时语音助手边界](./docs/design/meeting-workspace-boundaries.md)
-- [会议上下文驱动 AI 架构方案](./docs/design/meeting-context-agent-architecture.md)
-- [会议上下文 MVP 实施计划](./docs/design/meeting-context-mvp-implementation-plan.md)
-- [虚拟 Agent 参会设计方案](./docs/design/virtual-agent-meeting-design.md)
-- [虚拟 Agent 参会当前实现状态](./docs/status/virtual-agent-meeting-current-status.md)
-
-运行组件：
-
-- [LiveKit SSL 启动](./docs/run/livekit-ssl-startup.md)
-- [LiveKit Egress 配置](./docs/run/livekit-egress-setup.md)
-- [STT Worker 说明](./docs/run/stt-worker.md)
-- [Flutter App 说明](./docs/run/flutter-app.md)
-- [构建产物说明](./docs/run/artifacts.md)
-
-历史参考：
-
-- [Kaiyan / Zhaoyilun 集成方案](./docs/history/kaiyan-zhaoyilun-integration-plan.md)
-- [火山实时语音测试](./docs/history/volcengine-realtime-voice-testing.md)
+从浏览器入会，到共享方案、会后回看，先把日常会议做好，再把它变成适合自己团队的工具。
 
 ## 功能概览
 
-- 用户注册/登录（Django 认证体系）
-- 登录失败风控（失败次数锁定）
-- 会议创建、加入、编辑、删除
-- 角色模型（主持人 / 联席主持人 / 参会者）
-- 成员管理（邀请、改角色、移除、静音）
-- 会议聊天消息
-- 审计日志
-- 组织维度隔离
-- LiveKit 房间与参会 Token 签发
-- 超级管理员可配置登录策略（科技云 OAuth、本地注册、本地用户名密码登录）
-- 超级管理员可导出用户信息与用量报表（CSV）
+| 能力 | 当前提供 |
+| --- | --- |
+| 账号与会议 | 注册登录、创建和管理会议、会议链接入会、会议等候室 |
+| 实时沟通 | 摄像头、麦克风、屏幕共享、文字聊天 |
+| 主持人管理 | 主持人 / 联席主持人 / 参会者角色、成员管理和静音控制 |
+| 会议录制 | 启动 / 停止录制、MP4 文件、存储路径配置 |
+| 浏览器界面 | Flutter Web、可收起的会议顶部信息、桌面及移动浏览器 |
+| 部署与数据 | Docker / 本地启动、随机初始密码、独立数据库和持久化录像 |
 
-## 本地开发快速启动（uv）
 
-推荐使用 `uv` 管理本地 Python 环境，当前已验证可用的 Python 版本为 `3.10.19`。
+## 使用体验与Feature
 
-```bash
-uv venv --python 3.10.19 .venv
-uv pip install --python .venv/bin/python -r requirements.txt
-uv pip install --python .venv/bin/python -r services/stt_worker/requirements.txt
-cp .env.example .env
-uv run --python .venv/bin/python manage.py migrate
-uv run --python .venv/bin/python -m uvicorn smart_meeting.asgi:application --host 127.0.0.1 --port 8000
-```
+**让讨论内容成为主角。** 共享方案、面对面交流、同步文字消息；顶部信息可收起，给会议舞台留出更多空间。
 
-启动后访问 `http://127.0.0.1:8000`，或检查 `http://127.0.0.1:8000/healthz`。
+![会议室：共享方案与团队交流](./docs/images/demo-meeting.jpg)
 
-完整的本地开发部署说明见 [docs/run/development.md](./docs/run/development.md)。
+**把会议和回看放在同一个地方。** 创建会议、邀请同事，结束后查找和下载录像，让临时沟通也有迹可循。
 
-如果你要从同一内网的另一台机器访问，尤其要测试：
+![会议控制台：会议管理与录像回看](./docs/images/demo-dashboard.jpg)
 
-- 浏览器麦克风权限
-- Flutter 会议页里的实时字幕
-- LiveKit 实时音视频
 
-请优先使用 `HTTPS + WSS` 拓扑，而不是 `http://内网IP:8000`。原因是多数浏览器不会把 `http://内网IP` 视为安全上下文，麦克风与部分 WebSocket 能力会被拦截。
+## 一键安装
 
-如果需要刷新 Flutter Web 静态产物：
+### 方式一：pip 安装与直接运行
+
+需要 Python 3.10–3.13，以及已启动的 Docker（Linux 容器、Compose v2.20+）。
 
 ```bash
-cd flutter_app
-flutter pub get
-flutter build web
+pip install vibemeeting
+vibemeeting
 ```
 
-然后将 `flutter_app/build/web/` 的内容同步到 `artifacts/flutter_app_web/`。
-
-## 环境变量
-
-以 `.env.example` 为模板创建 `.env`：
+访问 `http://127.0.0.1:8000`。用户名 `admin`，初始随机密码保存在用户主目录的 `.vibemeeting/.runtime/local.env`。音视频和录制服务一起启动，按 Ctrl+C 停止；账号和录像保留。
 
 ```bash
-cp .env.example .env
+vibemeeting --help
+vibemeeting --version
+vibemeeting --port 18000 --data-dir ./meeting-data
+vibemeeting info --data-dir ./meeting-data
 ```
 
-关键配置：
+命令不在 PATH 时可使用 `python -m vibemeeting`。数据目录、升级与 PyPI 发布步骤见 [pip 安装指南](./docs/run/pip-install.md)。
 
-- `SECRET_KEY`：Django 密钥
-- `DEBUG`：开发建议 `1`，生产设为 `0`
-- `ALLOWED_HOSTS`：允许访问域名/IP 列表
-- `DATABASE_URL`：数据库连接（默认 SQLite）
-- `LIVEKIT_URL`：服务端连接 LiveKit 的地址
-- `LIVEKIT_PUBLIC_URL`：前端可访问的 LiveKit 地址（HTTPS 页面需 `wss://`）
-- `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET`：LiveKit 服务端鉴权
-- `LIVEKIT_MEET_URL`：打开 LiveKit Meet 的地址（默认官方托管）
-- `MEETING_STT_PROVIDER`：上传音频转写模式；当前本地默认对齐 `faster_whisper`
-- `MEETING_REALTIME_STT_WORKER_URL`：主应用连接实时 STT worker 的 WebSocket 地址
-- `STT_WORKER_PROVIDER`：独立 STT worker 的 provider，当前支持 `faster_whisper` 与 `volcengine_realtime`
-- `STT_WORKER_VOLCENGINE_APP_ID`：火山流式语音识别大模型 appid
-- `STT_WORKER_VOLCENGINE_ACCESS_TOKEN`：火山流式语音识别大模型 access token
-- `STT_WORKER_VOLCENGINE_RESOURCE_ID`：火山资源 ID，当前默认 `volc.bigasr.sauc.duration`
-- `STT_WORKER_VOLCENGINE_WS_URL`：火山 WebSocket 地址，当前默认 `wss://openspeech.bytedance.com/api/v3/sauc/bigmodel`
-- `MEETING_AGENT_BRIDGE_MODE`：Agent bridge 模式；当前本地默认对齐 `http`
-- `MEETING_AGENT_BRIDGE_URL`：HTTP 模式下的 Agent bridge 地址
-- `TECHCLOUD_OAUTH_CLIENT_ID`：中国科技云通行证应用 `client_id`
-- `TECHCLOUD_OAUTH_CLIENT_SECRET`：中国科技云通行证应用 `client_secret`
-- `TECHCLOUD_OAUTH_REDIRECT_URI`：OAuth 回调地址（建议与应用平台登记一致）
-- `TECHCLOUD_OAUTH_AUTHORIZE_URL`：授权地址（默认 `https://passport.escience.cn/oauth2/authorize`）
-- `TECHCLOUD_OAUTH_TOKEN_URL`：换取 Token 地址（默认 `https://passport.escience.cn/oauth2/token`）
-- `TECHCLOUD_OAUTH_THEME`：登录页风格（默认 `full`，可选 `simple` / `embed`）
-- `TECHCLOUD_OAUTH_SCOPE`：可选，按通行证平台要求填写
-- `TECHCLOUD_OAUTH_LOGOUT_URL`：通行证退出地址（默认 `https://passport.escience.cn/logout`）
-- `TECHCLOUD_OAUTH_LOGOUT_REDIRECT_PARAM`：退出回跳参数名（默认 `WebServerURL`）
+### 方式二：从源码一键启动
 
-说明：
+下面的 Docker / 本地脚本方式需要先[下载完整源码](https://github.com/changkaiyan/vibemeeting/archive/refs/heads/main.zip)，或克隆仓库并进入项目根目录：
 
-- `.env` 已被 `.gitignore` 忽略，不应提交到仓库。
-- 仅提交 `.env.example` 作为变量模板。
+```bash
+git clone https://github.com/changkaiyan/vibemeeting.git
+cd vibemeeting
+```
 
-## 科技云 OAuth 登录说明
+> 首次运行需要联网下载镜像、依赖与 Flutter SDK，并构建网页。建议为 Docker 预留至少 4 CPU、4 GB 内存用于录制。
 
-项目已支持中国科技云通行证 OAuth 2.0 授权码模式：
+| 方式 | Windows | Linux / macOS | 前置依赖 |
+| --- | --- | --- | --- |
+| Docker（推荐） | 双击 `run-docker.cmd` | `bash run-docker.sh` | 已启动的 Docker（Linux 容器）与 Compose v2.20+ |
+| 本地 | 双击 `run-local.cmd` | `bash run-local.sh` | Python 3.10+、Git、Docker 与 Compose |
 
-1. 用户在 `/accounts/login` 点击“使用中国科技云通行证登录”。
-2. 系统跳转到 `https://passport.escience.cn/oauth2/authorize`。
-3. 通行证登录成功后回调到应用 `TECHCLOUD_OAUTH_REDIRECT_URI`（例如 `https://meeting.chipgpt.chat/callback`）。
-4. 后端使用 `code` 调用 `https://passport.escience.cn/oauth2/token` 换取 token 与 `userInfo`。
-5. 系统自动创建或更新本地用户并完成登录。
+本地方式在本机运行 Django 和网页构建，音视频及录制组件使用 Docker。两种方式都会自动迁移数据库、初始化管理员并启动会议录制服务。
 
-注意事项：
+### 方式三：Docker 启动
 
-- `TECHCLOUD_OAUTH_REDIRECT_URI` 必须与通行证应用管理后台登记值完全一致，否则会出现 `redirect_uri_mismatch`。
-- 生产环境请务必配置 `TECHCLOUD_OAUTH_CLIENT_ID` 与 `TECHCLOUD_OAUTH_CLIENT_SECRET`，未配置时登录页不会显示科技云登录按钮。
+```powershell
+# Windows PowerShell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\run-docker.ps1
+```
 
-## 超级管理员登录策略与导出
+```bash
+# Linux / macOS
+bash run-docker.sh
+```
 
-- 超级管理员可在计费管理界面（`/billing`）配置：
-  - 是否允许科技云 OAuth 登录
-  - 是否允许本地注册（`/accounts/register`、`/api/auth/register`）
-  - 是否允许本地用户名密码登录（`/accounts/login`、`/api/auth/login`）
-- 超级管理员可在计费管理界面导出用户信息 CSV（包含邮箱、套餐、用量和限制信息）。
+访问 `http://127.0.0.1:8080`。用户名 `admin`，初始随机密码位于 `.runtime/docker.env` 的 `DJANGO_SUPERUSER_PASSWORD`。
 
-## 主要 API
+Docker 版停止：Windows 执行 `.\run-docker.ps1 --stop`，Linux/macOS 执行 `bash run-docker.sh --stop`。查看日志使用相应入口的 `--logs` 参数。
 
-- `POST /api/auth/register`
-- `POST /api/auth/login`
-- `GET|PATCH /api/system/auth-options`
-- `GET|POST /api/meetings`
-- `GET|PATCH|DELETE /api/meetings/{meeting_id}`
-- `POST /api/meetings/join`
-- `POST /api/meetings/{meeting_id}/join-token`
-- `GET|POST /api/meetings/{meeting_id}/members`
-- `PATCH /api/meetings/{meeting_id}/members/{target_user_id}/role`
-- `PATCH /api/meetings/{meeting_id}/members/{target_user_id}/mute`
-- `DELETE /api/meetings/{meeting_id}/members/{target_user_id}`
-- `GET|POST /api/meetings/{meeting_id}/messages`
-- `GET /api/orgs/my`
-- `GET|POST /api/orgs/{org_id}/members`
-- `GET /api/audit/logs`
-- `GET /api/billing/users/export`
+重复运行启动脚本会复用配置与数据；源码更新后重新运行即可安装依赖或重建网页。录像保存在 `.runtime/recordings/`，停止服务不会删除录像和数据库。初始密码不会在后续启动时重置用户已修改的密码。
+
+端口冲突、自定义端口、目录说明和局域网部署请阅读 [一键安装运行指南](./docs/run/one-click.md)。Windows 已完成两种方式的实际验证；Linux/macOS 入口已做 Shell 语法验证，尚未在对应系统实机验证。
+
+
+
+## 文档与开发
+
+| 资料 | 内容 |
+| --- | --- |
+| [文档总览](./docs/README.md) | 运行、设计及历史资料索引 |
+| [pip 安装](./docs/run/pip-install.md) | Python 包、直接运行、数据与发布 |
+| [一键安装](./docs/run/one-click.md) | 启动、停止、账号与录制 |
+| [本地开发](./docs/run/development.md) | 开发环境、联调及可选集成 |
+| [接口与配置](./docs/run/api.md) | API、OAuth、管理员策略及环境变量 |
+| [部署说明](./docs/run/deployment.md) | 服务部署和运行配置 |
+| [HTTPS 指南](./docs/run/https-testing.md) | 可信证书与跨设备访问 |
+| [流程测试](./docs/run/testing.md) | 安装验收与自动化回归 |
+| [发布与隐私](./docs/run/release-privacy.md) | 源码审查、历史与安全导出 |
+
+欢迎通过 [Issues](https://github.com/changkaiyan/vibemeeting/issues) 报告问题、提出需求，或提交带测试的 Pull Request。提交日志和截图前请先删除个人信息和密钥；敏感漏洞请按 [安全说明](./SECURITY.md) 处理。
+
+## 许可证与联系
+
+本项目采用标准 [Apache License 2.0](./LICENSE)。使用、修改和分发时应遵守许可证中的保留版权声明、附带许可证、标明修改等要求，并明确声明Copyright。
+欢迎就商业合作、团队部署、定制开发和技术支持自愿联系作者**[changkaiyan@live.com](mailto:changkaiyan@live.com)**，也可通过 [GitHub Issues](https://github.com/changkaiyan/vibemeeting/issues) 交流。
+
+第三方组件保留各自许可证和版权声明；本项目的许可不改变第三方权利。
+
+## 致谢与文档参考
+
+感谢 Django、Flutter、LiveKit、Redis 和 Coturn 等项目提供基础能力。

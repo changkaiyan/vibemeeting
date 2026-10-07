@@ -7,13 +7,13 @@ import 'dart:math' as math;
 import 'dart:ui_web' as ui_web;
 import 'dart:typed_data';
 
-import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:livekit_client/livekit_client.dart' as lk;
 import 'package:web/web.dart' as web;
 import '../app/theme/meeting_theme.dart';
+import '../app/widgets/copyright_notice.dart';
 import '../device_profile.dart';
 import 'chat_menu/chat_message_menu_builder.dart';
 import 'debug/debug_flags.dart';
@@ -28,10 +28,10 @@ import 'workspace_stt/workspace_stt_pcm_capture_web.dart';
 import 'workspace_stt/workspace_stt_protocol.dart';
 import 'workspace_stt/workspace_stt_runtime.dart';
 import 'participant_menu/participant_menu_builder.dart';
-import 'remote_control_protocol.dart';
 import 'utils/audio_level.dart';
 import 'widgets/media_test_widgets.dart';
 import 'widgets/panel_widgets.dart';
+import 'widgets/meeting_room_header.dart';
 import 'widgets/selectable_region.dart';
 part 'logic/chat_logic.dart';
 part 'widgets/chat_widgets.dart';
@@ -39,7 +39,6 @@ part 'widgets/layout_panels.dart';
 part 'logic/meeting_service_logic.dart';
 part 'logic/moderation_logic.dart';
 part 'logic/recording.dart';
-part 'logic/remote_control_logic.dart';
 part 'logic/room_session_logic.dart';
 part 'logic/workspace_logic.dart';
 part 'widgets/workspace_widgets.dart';
@@ -201,17 +200,8 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
   RemoteShareViewMode _remoteShareViewMode = RemoteShareViewMode.original;
   final Map<String, TransformationController> _tileZoomControllers =
       <String, TransformationController>{};
-  final FocusNode _remoteControlFocusNode = FocusNode();
-  String? _remoteControlSessionId;
-  String? _remoteControlTargetIdentity;
-  String? _remoteControlPendingTargetIdentity;
-  String? _remoteControlPendingRequestId;
-  DateTime? _remoteControlLastPointerMoveAt;
-  String _remoteControlLastPointerButton = 'left';
   bool _desktopParticipantsCollapsed = false;
   bool _desktopChatCollapsed = false;
-  bool _desktopChatPanelExpanded = false;
-  bool _desktopWorkspacePanelExpanded = false;
   int _cameraPreviewFactoryCounter = 0;
 
   static const double _minTileZoomScale = 1.0;
@@ -271,8 +261,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     return math.sqrt(rawLevel.clamp(0.0, 1.0)).clamp(0.0, 1.0);
   }
 
-  void _openCommunicationPanelFullscreen({required bool forChat}) {
-    final panelLabel = forChat ? '聊天' : '工作区';
+  void _openChatPanelFullscreen() {
     showDialog<void>(
       context: context,
       barrierDismissible: true,
@@ -280,27 +269,15 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
         child: SafeArea(
           child: Padding(
             padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
-            child: forChat
-                ? _buildChatPanel(
-                    headerActions: [
-                      MeetingPanelHeaderActionBar(
-                        panelLabel: panelLabel,
-                        isFullscreen: true,
-                        onToggleFullscreen: () =>
-                            Navigator.of(dialogContext).pop(),
-                      ),
-                    ],
-                  )
-                : _buildWorkspacePanel(
-                    headerActions: [
-                      MeetingPanelHeaderActionBar(
-                        panelLabel: panelLabel,
-                        isFullscreen: true,
-                        onToggleFullscreen: () =>
-                            Navigator.of(dialogContext).pop(),
-                      ),
-                    ],
-                  ),
+            child: _buildChatPanel(
+              headerActions: [
+                MeetingPanelHeaderActionBar(
+                  panelLabel: '聊天',
+                  isFullscreen: true,
+                  onToggleFullscreen: () => Navigator.of(dialogContext).pop(),
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -643,7 +620,6 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     _stopWaitingRoomPolling();
     _fullscreenSubscription?.cancel();
     _disposeAllZoomControllers();
-    _remoteControlFocusNode.dispose();
     unawaited(_stopWorkspaceRealtimeStt(immediate: true));
     unawaited(_stopRealtimeBotAudioIngress());
     unawaited(_disposeRoom());
@@ -1102,6 +1078,8 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                   ],
                 ),
               ),
+              const SizedBox(height: 8),
+              const CopyrightNotice(),
             ],
           ),
         ),
@@ -1770,7 +1748,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
   }) {
     final resolvedAccent = accent ?? _palette.heroMutedText;
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(
         color: _palette.surfaceMuted,
         borderRadius: BorderRadius.circular(999),
@@ -4752,474 +4730,6 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     );
   }
 
-  Future<void> _openAiControlDialog() async {
-    if (!_canUseModeratorControls) return;
-    var enabled = _realtimeBotEnabled;
-    var muted = _realtimeBotMuted;
-    var debugPanelVisible = _realtimeBotDebugPanelVisible;
-    var provider = _realtimeBotProvider.trim().toLowerCase();
-    if (provider != 'volcengine') provider = 'openai';
-    var apiKeySet = _realtimeBotApiKeySet;
-    var volcAppKeySet = _realtimeBotVolcAppKeySet;
-    var volcAccessKeySet = _realtimeBotVolcAccessKeySet;
-    final baseUrlController = TextEditingController(text: _realtimeBotBaseUrl);
-    final openaiModelController =
-        TextEditingController(text: _realtimeBotOpenaiModel);
-    final openaiVoiceController =
-        TextEditingController(text: _realtimeBotOpenaiVoice);
-    final volcModelController =
-        TextEditingController(text: _realtimeBotVolcModel);
-    final volcVoiceController =
-        TextEditingController(text: _realtimeBotVolcVoice);
-    final volcWsUrlController =
-        TextEditingController(text: _realtimeBotVolcWsUrl);
-    final volcAppIdController =
-        TextEditingController(text: _realtimeBotVolcAppId);
-    final volcResourceIdController =
-        TextEditingController(text: _realtimeBotVolcResourceId);
-    final volcUidController = TextEditingController(text: _realtimeBotVolcUid);
-    final displayNameController =
-        TextEditingController(text: _realtimeBotDisplayName);
-    final apiKeyController = TextEditingController();
-    final volcAppKeyController = TextEditingController();
-    final volcAccessKeyController = TextEditingController();
-    var busy = false;
-    String? errorMessage;
-    String? testMessage;
-
-    Future<void> saveConfig(StateSetter setDialogState) async {
-      if (busy) return;
-      final baseUrl = baseUrlController.text.trim();
-      final openaiModel = openaiModelController.text.trim();
-      final openaiVoice = openaiVoiceController.text.trim();
-      final volcModelRaw = volcModelController.text.trim();
-      final volcModel = volcModelRaw.isEmpty ? '2.2.0.0' : volcModelRaw;
-      final volcVoice = volcVoiceController.text.trim();
-      final volcWsUrl = volcWsUrlController.text.trim();
-      final volcAppId = volcAppIdController.text.trim();
-      final volcResourceId = volcResourceIdController.text.trim();
-      final volcUid = volcUidController.text.trim();
-      final displayName = displayNameController.text.trim();
-      final keyInput = apiKeyController.text.trim();
-      final volcAppKeyInput = volcAppKeyController.text.trim();
-      final volcAccessKeyInput = volcAccessKeyController.text.trim();
-      final draft = MeetingRealtimeBotControlsDraft(
-        provider: provider,
-        enabled: enabled,
-        muted: muted,
-        displayName: displayName,
-        baseUrl: baseUrl,
-        openaiModel: openaiModel,
-        openaiVoice: openaiVoice,
-        volcModel: volcModel,
-        volcVoice: volcVoice,
-        volcWsUrl: volcWsUrl,
-        volcAppId: volcAppId,
-        volcResourceId: volcResourceId,
-        volcUid: volcUid,
-        apiKeyAlreadySet: apiKeySet,
-        volcAccessKeyAlreadySet: volcAccessKeySet,
-      );
-      final validationError = draft.validateForSave(
-        apiKey: keyInput,
-        volcAccessKey: volcAccessKeyInput,
-      );
-      if (validationError != null) {
-        setDialogState(() => errorMessage = validationError);
-        return;
-      }
-      final payload = draft.buildSavePayload(
-        apiKey: keyInput,
-        volcAppKey: volcAppKeyInput,
-        volcAccessKey: volcAccessKeyInput,
-      );
-      setDialogState(() {
-        busy = true;
-        errorMessage = null;
-        testMessage = null;
-      });
-      try {
-        await _patchMeetingAiControls(payload);
-        setDialogState(() {
-          enabled = _realtimeBotEnabled;
-          muted = _realtimeBotMuted;
-          provider = _realtimeBotProvider;
-          apiKeySet = _realtimeBotApiKeySet;
-          volcAppKeySet = _realtimeBotVolcAppKeySet;
-          volcAccessKeySet = _realtimeBotVolcAccessKeySet;
-          baseUrlController.text = _realtimeBotBaseUrl;
-          openaiModelController.text = _realtimeBotOpenaiModel;
-          openaiVoiceController.text = _realtimeBotOpenaiVoice;
-          volcModelController.text = _realtimeBotVolcModel;
-          volcVoiceController.text = _realtimeBotVolcVoice;
-          volcWsUrlController.text = _realtimeBotVolcWsUrl;
-          volcAppIdController.text = _realtimeBotVolcAppId;
-          volcResourceIdController.text = _realtimeBotVolcResourceId;
-          volcUidController.text = _realtimeBotVolcUid;
-          displayNameController.text = _realtimeBotDisplayName;
-          apiKeyController.clear();
-          volcAppKeyController.clear();
-          volcAccessKeyController.clear();
-          busy = false;
-          errorMessage = null;
-          testMessage = '配置已保存';
-        });
-      } catch (e) {
-        setDialogState(() {
-          busy = false;
-          errorMessage = _friendlyError(e);
-        });
-      }
-    }
-
-    Future<void> testConnectivity(StateSetter setDialogState) async {
-      if (busy) return;
-      final baseUrl = baseUrlController.text.trim();
-      final openaiModel = openaiModelController.text.trim();
-      final openaiVoice = openaiVoiceController.text.trim();
-      final volcModelRaw = volcModelController.text.trim();
-      final volcModel = volcModelRaw.isEmpty ? '2.2.0.0' : volcModelRaw;
-      final volcVoice = volcVoiceController.text.trim();
-      final volcWsUrl = volcWsUrlController.text.trim();
-      final volcAppId = volcAppIdController.text.trim();
-      final volcResourceId = volcResourceIdController.text.trim();
-      final volcUid = volcUidController.text.trim();
-      final keyInput = apiKeyController.text.trim();
-      final volcAppKeyInput = volcAppKeyController.text.trim();
-      final volcAccessKeyInput = volcAccessKeyController.text.trim();
-      if (provider == 'volcengine') {
-        if (volcWsUrl.isEmpty || volcAppId.isEmpty || volcResourceId.isEmpty) {
-          setDialogState(
-              () => errorMessage = '请先填写火山引擎 WebSocket / App ID / Resource ID');
-          return;
-        }
-        if (!volcAccessKeySet && volcAccessKeyInput.isEmpty) {
-          setDialogState(() => errorMessage = '连通性测试需要火山引擎 Access Key');
-          return;
-        }
-      } else {
-        if (baseUrl.isEmpty || openaiModel.isEmpty || openaiVoice.isEmpty) {
-          setDialogState(
-              () => errorMessage = '请先填写 OpenAI Base URL / Model / Voice');
-          return;
-        }
-        if (!apiKeySet && keyInput.isEmpty) {
-          setDialogState(() => errorMessage = '连通性测试需要 OpenAI API Key');
-          return;
-        }
-      }
-      final testModel = provider == 'volcengine' ? volcModel : openaiModel;
-      final testVoice = provider == 'volcengine' ? volcVoice : openaiVoice;
-      setDialogState(() {
-        busy = true;
-        errorMessage = null;
-        testMessage = null;
-      });
-      try {
-        final result = await _testMeetingAiConnectivity(
-          provider: provider,
-          baseUrl: baseUrl,
-          model: testModel,
-          voice: testVoice,
-          apiKey: keyInput,
-          volcWsUrl: volcWsUrl,
-          volcAppId: volcAppId,
-          volcAppKey: volcAppKeyInput,
-          volcAccessKey: volcAccessKeyInput,
-          volcResourceId: volcResourceId,
-          volcUid: volcUid,
-          prompt: '请回复：连通性测试成功',
-        );
-        final latency = _intFromJson(result['latency_ms'], 0);
-        final preview = (result['preview_text'] ?? '').toString().trim();
-        setDialogState(() {
-          busy = false;
-          testMessage = preview.isEmpty
-              ? '连通性测试成功（${latency}ms）'
-              : '连通性测试成功（${latency}ms）：$preview';
-        });
-      } catch (e) {
-        setDialogState(() {
-          busy = false;
-          errorMessage = _friendlyError(e);
-        });
-      }
-    }
-
-    try {
-      await showDialog<void>(
-        context: context,
-        builder: (context) => StatefulBuilder(
-          builder: (context, setDialogState) {
-            return AlertDialog(
-              title: const Text('AI管控'),
-              content: SizedBox(
-                width: 680,
-                child: SingleChildScrollView(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      SwitchListTile.adaptive(
-                        value: enabled,
-                        onChanged: busy
-                            ? null
-                            : (v) => setDialogState(() => enabled = v),
-                        contentPadding: EdgeInsets.zero,
-                        title: const Text('启用实时语音成员'),
-                      ),
-                      SwitchListTile.adaptive(
-                        value: muted,
-                        onChanged: busy
-                            ? null
-                            : (v) => setDialogState(() => muted = v),
-                        contentPadding: EdgeInsets.zero,
-                        title: const Text('静音实时语音成员'),
-                      ),
-                      if (_isSuperAdminUser)
-                        SwitchListTile.adaptive(
-                          value: debugPanelVisible,
-                          onChanged: busy
-                              ? null
-                              : (v) {
-                                  setDialogState(() => debugPanelVisible = v);
-                                  if (_realtimeBotDebugPanelVisible == v ||
-                                      !mounted) {
-                                    return;
-                                  }
-                                  setState(() {
-                                    _realtimeBotDebugPanelVisible = v;
-                                  });
-                                },
-                          contentPadding: EdgeInsets.zero,
-                          title: const Text('显示 AI Debug'),
-                        ),
-                      const SizedBox(height: 8),
-                      DropdownButtonFormField<String>(
-                        value: provider,
-                        decoration: const InputDecoration(labelText: '模型厂商'),
-                        items: const [
-                          DropdownMenuItem(
-                            value: 'openai',
-                            child: Text('OpenAI'),
-                          ),
-                          DropdownMenuItem(
-                            value: 'volcengine',
-                            child: Text('火山引擎'),
-                          ),
-                        ],
-                        onChanged: busy
-                            ? null
-                            : (v) => setDialogState(() {
-                                  provider =
-                                      (v ?? 'openai').trim().toLowerCase() ==
-                                              'volcengine'
-                                          ? 'volcengine'
-                                          : 'openai';
-                                  errorMessage = null;
-                                  testMessage = null;
-                                }),
-                      ),
-                      const SizedBox(height: 8),
-                      TextField(
-                        controller: displayNameController,
-                        enabled: !busy,
-                        decoration: const InputDecoration(
-                          labelText: '会议内显示名称',
-                          hintText: '实时语音助手',
-                        ),
-                      ),
-                      if (provider == 'volcengine') ...[
-                        const SizedBox(height: 8),
-                        TextField(
-                          controller: volcModelController,
-                          enabled: !busy,
-                          decoration: const InputDecoration(
-                            labelText: 'Volcengine Model',
-                            hintText: '2.2.0.0',
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        TextField(
-                          controller: volcVoiceController,
-                          enabled: !busy,
-                          decoration: const InputDecoration(
-                            labelText: 'Volcengine Voice',
-                            hintText: '可选',
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        TextField(
-                          controller: volcWsUrlController,
-                          enabled: !busy,
-                          decoration: const InputDecoration(
-                            labelText: 'Volcengine WebSocket URL',
-                            hintText:
-                                'wss://openspeech.bytedance.com/api/v3/realtime/dialogue',
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        TextField(
-                          controller: volcAppIdController,
-                          enabled: !busy,
-                          decoration: const InputDecoration(
-                            labelText: 'Volcengine App ID',
-                            hintText: '必填',
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        TextField(
-                          controller: volcResourceIdController,
-                          enabled: !busy,
-                          decoration: const InputDecoration(
-                            labelText: 'Volcengine Resource ID',
-                            hintText: 'volc.speech.dialog',
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        TextField(
-                          controller: volcUidController,
-                          enabled: !busy,
-                          decoration: const InputDecoration(
-                            labelText: 'Volcengine UID（可选）',
-                            hintText: '用于日志定位',
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        TextField(
-                          controller: volcAppKeyController,
-                          enabled: !busy,
-                          obscureText: true,
-                          decoration: InputDecoration(
-                            labelText: volcAppKeySet
-                                ? 'Volcengine App Key（留空沿用已保存）'
-                                : 'Volcengine App Key',
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        TextField(
-                          controller: volcAccessKeyController,
-                          enabled: !busy,
-                          obscureText: true,
-                          decoration: InputDecoration(
-                            labelText: volcAccessKeySet
-                                ? 'Volcengine Access Key（留空沿用已保存）'
-                                : 'Volcengine Access Key',
-                          ),
-                        ),
-                      ] else ...[
-                        const SizedBox(height: 8),
-                        TextField(
-                          controller: baseUrlController,
-                          enabled: !busy,
-                          decoration: const InputDecoration(
-                            labelText: 'OpenAI Base URL',
-                            hintText: 'https://api.openai.com',
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        TextField(
-                          controller: openaiModelController,
-                          enabled: !busy,
-                          decoration: const InputDecoration(
-                            labelText: 'Model',
-                            hintText: 'gpt-realtime',
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        TextField(
-                          controller: openaiVoiceController,
-                          enabled: !busy,
-                          decoration: const InputDecoration(
-                            labelText: 'Voice',
-                            hintText: 'marin',
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        TextField(
-                          controller: apiKeyController,
-                          enabled: !busy,
-                          obscureText: true,
-                          decoration: InputDecoration(
-                            labelText: apiKeySet
-                                ? 'OpenAI API Key（留空沿用已保存）'
-                                : 'OpenAI API Key',
-                          ),
-                        ),
-                      ],
-                      const SizedBox(height: 10),
-                      Wrap(
-                        spacing: 8,
-                        runSpacing: 8,
-                        children: [
-                          FilledButton.icon(
-                            onPressed: busy
-                                ? null
-                                : () => unawaited(saveConfig(setDialogState)),
-                            icon: const Icon(Icons.save_outlined),
-                            label: const Text('保存配置'),
-                          ),
-                          OutlinedButton.icon(
-                            onPressed: busy
-                                ? null
-                                : () =>
-                                    unawaited(testConnectivity(setDialogState)),
-                            icon: const Icon(Icons.network_check_outlined),
-                            label: const Text('测试连通性'),
-                          ),
-                        ],
-                      ),
-                      if ((testMessage ?? '').trim().isNotEmpty) ...[
-                        const SizedBox(height: 8),
-                        Text(
-                          testMessage!,
-                          style: TextStyle(
-                            color: _palette.success,
-                            fontSize: 12.5,
-                          ),
-                        ),
-                      ],
-                      if ((errorMessage ?? '').trim().isNotEmpty) ...[
-                        const SizedBox(height: 8),
-                        Text(
-                          errorMessage!,
-                          style: TextStyle(
-                            color: _palette.danger,
-                            fontSize: 12.5,
-                          ),
-                        ),
-                      ],
-                    ],
-                  ),
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: busy ? null : () => Navigator.pop(context),
-                  child: const Text('关闭'),
-                ),
-              ],
-            );
-          },
-        ),
-      );
-    } finally {
-      baseUrlController.dispose();
-      openaiModelController.dispose();
-      openaiVoiceController.dispose();
-      volcModelController.dispose();
-      volcVoiceController.dispose();
-      volcWsUrlController.dispose();
-      volcAppIdController.dispose();
-      volcResourceIdController.dispose();
-      volcUidController.dispose();
-      displayNameController.dispose();
-      apiKeyController.dispose();
-      volcAppKeyController.dispose();
-      volcAccessKeyController.dispose();
-    }
-  }
-
   void _appendEmoji(String emoji) {
     final value = _chatController.value;
     final text = value.text;
@@ -5737,11 +5247,6 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
           await _openModeratorControlDialog();
         }
         return;
-      case 'ai_control':
-        if (_canUseModeratorControls) {
-          await _openAiControlDialog();
-        }
-        return;
       case 'display_name':
         await _openMeetingDisplayNameDialog();
         return;
@@ -5763,29 +5268,6 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
       default:
         return;
     }
-  }
-
-  Widget _buildMobileTopAction({
-    required String tooltip,
-    required IconData icon,
-    required VoidCallback onPressed,
-  }) {
-    return Container(
-      margin: const EdgeInsets.only(left: 6),
-      decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.15),
-        borderRadius: BorderRadius.circular(11),
-        border:
-            Border.all(color: _palette.heroMutedText.withValues(alpha: 0.27)),
-      ),
-      child: IconButton(
-        tooltip: tooltip,
-        visualDensity: VisualDensity.compact,
-        iconSize: 19,
-        onPressed: onPressed,
-        icon: Icon(icon, color: Colors.white),
-      ),
-    );
   }
 
   PopupMenuEntry<String> _buildMobileMenuItem({
@@ -5916,14 +5398,6 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                 subtitle: '成员权限、等候室与主持控制',
               ),
             );
-            entries.add(
-              _buildMobileMenuItem(
-                value: 'ai_control',
-                icon: Icons.smart_toy_outlined,
-                title: 'AI管控',
-                subtitle: '实时语音模型配置与连通性测试',
-              ),
-            );
           }
           entries.add(const PopupMenuDivider(height: 6));
           entries.add(
@@ -5980,67 +5454,64 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     );
   }
 
-  Widget _buildMobileTopBar() {
-    return Container(
-      padding: const EdgeInsets.fromLTRB(14, 12, 10, 12),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: _palette.heroBorder),
-        gradient: LinearGradient(
-          colors: [_palette.heroGradientStart, _palette.heroGradientEnd],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
+  Widget _buildMeetingHeader() {
+    final activeCount = _activeParticipantCount();
+    final displayName =
+        _meetingDisplayName.isEmpty ? _defaultDisplayName : _meetingDisplayName;
+    return MeetingRoomHeader(
+      title: _meetingTitle,
+      summary: '${_networkQualityLabel()} · $activeCount 人 · ${_meetingElapsedText()}',
+      status: '网络：${_networkQualityLabel()} · $_status',
+      statusColor: _networkQualityTint(),
+      recordingLabel: _recordingUploading
+          ? '录制上传中'
+          : (_recordingActive ? '正在录制' : null),
+      actions: [
+        IconButton(
+          tooltip: '会议分享',
+          icon: const Icon(Icons.share_outlined),
+          onPressed: _openMeetingShareDialog,
         ),
-      ),
-      child: Row(
+        IconButton(
+          tooltip: '音视频设置',
+          icon: const Icon(Icons.tune),
+          onPressed: _openMediaSettingsDialog,
+        ),
+        _buildMobileMoreAction(),
+      ],
+      details: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  _meetingTitle,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.w700,
-                    fontSize: 17,
-                  ),
+          Wrap(
+            spacing: 12,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              TextButton.icon(
+                style: TextButton.styleFrom(
+                  foregroundColor: Colors.white,
+                  visualDensity: VisualDensity.compact,
                 ),
-                const SizedBox(height: 2),
-                Text(
-                  '会议号：$_roomNumber',
-                  style: TextStyle(
-                    color: _palette.heroMutedText,
-                    fontSize: 12.5,
-                  ),
-                ),
-                Text(
-                  _meetingDisplayName.isEmpty
-                      ? _defaultDisplayName
-                      : _meetingDisplayName,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: _palette.heroMutedText,
-                    fontSize: 11.5,
-                  ),
-                ),
-              ],
+                onPressed: _copyMeetingNumber,
+                icon: const Icon(Icons.copy_outlined, size: 14),
+                label: Text('会议号：$_roomNumber'),
+              ),
+              TextButton(
+                style: TextButton.styleFrom(foregroundColor: Colors.white),
+                onPressed: _openMeetingDisplayNameDialog,
+                child: Text('显示名：$displayName'),
+              ),
+            ],
+          ),
+          _buildMeetingMetricsStrip(),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+            child: MeetingStatusText(
+              _status,
+              maxLines: 2,
+              style: TextStyle(color: _palette.heroMutedText, fontSize: 12),
             ),
           ),
-          _buildMobileTopAction(
-            tooltip: '会议分享',
-            icon: Icons.share_outlined,
-            onPressed: _openMeetingShareDialog,
-          ),
-          _buildMobileTopAction(
-            tooltip: '音视频设置',
-            icon: Icons.tune,
-            onPressed: _openMediaSettingsDialog,
-          ),
-          _buildMobileMoreAction(),
+          if (_showRealtimeBotDebugPanel) _buildRealtimeBotDebugPanel(dark: true),
         ],
       ),
     );
@@ -6486,37 +5957,10 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
           ),
           child: SafeArea(
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(10, 10, 10, 8),
+              padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
               child: Column(
                 children: [
-                  _buildMobileTopBar(),
-                  const SizedBox(height: 8),
-                  _buildMeetingMetricsStrip(),
-                  const SizedBox(height: 8),
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 10,
-                      vertical: 8,
-                    ),
-                    decoration: BoxDecoration(
-                      color: _palette.primarySoft,
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(color: _palette.primaryBorder),
-                    ),
-                    child: MeetingStatusText(
-                      _status,
-                      maxLines: 2,
-                      style: TextStyle(
-                        color: _palette.primaryStrong,
-                        fontSize: 12,
-                      ),
-                    ),
-                  ),
-                  if (_showRealtimeBotDebugPanel) ...[
-                    const SizedBox(height: 8),
-                    _buildRealtimeBotDebugPanel(),
-                  ],
+                  _buildMeetingHeader(),
                   if ((_permissionWarning ?? '').isNotEmpty) ...[
                     const SizedBox(height: 8),
                     _buildPermissionBanner(),
@@ -6524,7 +5968,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                   const SizedBox(height: 8),
                   Expanded(
                     child: DefaultTabController(
-                      length: 4,
+                      length: 3,
                       child: Column(
                         children: [
                           Container(
@@ -6536,22 +5980,19 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                               ),
                             ),
                             child: const TabBar(
+                              labelPadding: EdgeInsets.symmetric(horizontal: 8),
                               tabs: [
                                 Tab(
-                                  icon: Icon(Icons.grid_view_rounded),
+                                  height: 40,
                                   text: '舞台',
                                 ),
                                 Tab(
-                                  icon: Icon(Icons.groups_outlined),
+                                  height: 40,
                                   text: '成员',
                                 ),
                                 Tab(
-                                  icon: Icon(Icons.chat_bubble_outline),
+                                  height: 40,
                                   text: '聊天',
-                                ),
-                                Tab(
-                                  icon: Icon(Icons.hub_outlined),
-                                  text: '工作区',
                                 ),
                               ],
                             ),
@@ -6568,21 +6009,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
                                       panelLabel: '聊天',
                                       isFullscreen: false,
                                       onToggleFullscreen: () =>
-                                          _openCommunicationPanelFullscreen(
-                                        forChat: true,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                                _buildWorkspacePanel(
-                                  headerActions: [
-                                    MeetingPanelHeaderActionBar(
-                                      panelLabel: '工作区',
-                                      isFullscreen: false,
-                                      onToggleFullscreen: () =>
-                                          _openCommunicationPanelFullscreen(
-                                        forChat: false,
-                                      ),
+                                          _openChatPanelFullscreen(),
                                     ),
                                   ],
                                 ),
@@ -6642,240 +6069,6 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
               text: _recordingUploading ? '录制上传中' : '正在录制',
               accent: _palette.danger,
             ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildDesktopHeaderAction({
-    required String label,
-    required IconData icon,
-    required VoidCallback? onPressed,
-    bool filled = false,
-    Color? backgroundColor,
-  }) {
-    if (filled) {
-      return FilledButton.icon(
-        style: FilledButton.styleFrom(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
-          backgroundColor: backgroundColor,
-        ),
-        onPressed: onPressed,
-        icon: Icon(icon, size: 16),
-        label: Text(label),
-      );
-    }
-    return OutlinedButton.icon(
-      style: OutlinedButton.styleFrom(
-        foregroundColor: Colors.white,
-        side: BorderSide(color: _palette.heroMutedText),
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-        visualDensity: VisualDensity.compact,
-        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-      ),
-      onPressed: onPressed,
-      icon: Icon(icon, size: 16),
-      label: Text(label),
-    );
-  }
-
-  Widget _buildDesktopCompactHeader() {
-    final activeCount = _activeParticipantCount();
-    final maxParticipants = _maxParticipants <= 0 ? 100 : _maxParticipants;
-    final displayName =
-        _meetingDisplayName.isEmpty ? _defaultDisplayName : _meetingDisplayName;
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: _palette.heroBorder),
-        gradient: LinearGradient(
-          colors: [_palette.heroGradientStart, _palette.heroGradientEnd],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    MeetingTitleText(
-                      _meetingTitle,
-                      maxLines: 1,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w700,
-                        fontSize: 18,
-                      ),
-                    ),
-                    const SizedBox(height: 3),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 2,
-                      crossAxisAlignment: WrapCrossAlignment.center,
-                      children: [
-                        MeetingMetaText(
-                          '会议号：$_roomNumber',
-                          style: TextStyle(
-                            color: _palette.heroMutedText,
-                            fontSize: 12.5,
-                          ),
-                        ),
-                        GestureDetector(
-                          onDoubleTap: _openMeetingDisplayNameDialog,
-                          child: MeetingMetaText(
-                            '显示名：$displayName',
-                            style: TextStyle(
-                              color: _palette.heroMutedText,
-                              fontSize: 12.5,
-                            ),
-                          ),
-                        ),
-                        TextButton.icon(
-                          style: TextButton.styleFrom(
-                            foregroundColor: _palette.heroMutedText,
-                            padding: const EdgeInsets.symmetric(horizontal: 2),
-                            visualDensity: VisualDensity.compact,
-                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                          ),
-                          onPressed: _copyMeetingNumber,
-                          icon: const Icon(Icons.copy_outlined, size: 14),
-                          label: const Text('复制会议号'),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 10),
-              Flexible(
-                child: Align(
-                  alignment: Alignment.topRight,
-                  child: Wrap(
-                    spacing: 6,
-                    runSpacing: 6,
-                    alignment: WrapAlignment.end,
-                    children: [
-                      _buildDesktopHeaderAction(
-                        label: '分享',
-                        icon: Icons.share_outlined,
-                        onPressed: _openMeetingShareDialog,
-                      ),
-                      _buildDesktopHeaderAction(
-                        label: '音视频设置',
-                        icon: Icons.tune,
-                        onPressed: _openMediaSettingsDialog,
-                      ),
-                      if (_canUseModeratorControls)
-                        _buildDesktopHeaderAction(
-                          label: '会议管控',
-                          icon: _waitingRoomEntries.isNotEmpty
-                              ? Icons.notifications_active
-                              : Icons.admin_panel_settings,
-                          onPressed: _openModeratorControlDialog,
-                        ),
-                      if (_canUseModeratorControls)
-                        _buildDesktopHeaderAction(
-                          label: 'AI管控',
-                          icon: Icons.smart_toy_outlined,
-                          onPressed: _openAiControlDialog,
-                        ),
-                      _buildDesktopHeaderAction(
-                        label: _isShareEntry ? '返回首页' : '返回控制台',
-                        icon: Icons.arrow_back_rounded,
-                        onPressed: () => html.window.location
-                            .assign(_isShareEntry ? '/' : '/dashboard'),
-                      ),
-                      _buildDesktopHeaderAction(
-                        label: _waitingForAdmission
-                            ? '等候室等待中'
-                            : (_joining ? '连接中...' : '加入会议'),
-                        icon: _joining ? Icons.sync : Icons.login,
-                        onPressed:
-                            (_connected || _joining || _waitingForAdmission)
-                                ? null
-                                : _openJoinSetupDialog,
-                        filled: true,
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              _buildTopMetricChip(
-                icon: _networkQualityIcon(),
-                text: '网络：${_networkQualityLabel()}',
-                accent: _networkQualityTint(),
-              ),
-              _buildTopMetricChip(
-                icon: Icons.groups_rounded,
-                text: '参会/预订：$activeCount/$maxParticipants',
-                accent: _palette.primaryStrong,
-              ),
-              _buildTopMetricChip(
-                icon: Icons.timer_outlined,
-                text: '时长：${_meetingElapsedText()}',
-                accent: _palette.primaryStrong,
-              ),
-              if (_recordingActive || _recordingUploading)
-                _buildTopMetricChip(
-                  icon: _recordingUploading
-                      ? Icons.cloud_upload_outlined
-                      : Icons.fiber_manual_record,
-                  text: _recordingUploading ? '录制上传中' : '正在录制',
-                  accent: _palette.danger,
-                ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.15),
-              borderRadius: BorderRadius.circular(9),
-              border: Border.all(
-                color: _palette.heroMutedText.withValues(alpha: 0.35),
-              ),
-            ),
-            child: Row(
-              children: [
-                Icon(
-                  Icons.info_outline,
-                  size: 14,
-                  color: _palette.heroMutedText,
-                ),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: MeetingStatusText(
-                    _status,
-                    maxLines: 1,
-                    style: TextStyle(
-                      color: _palette.heroMutedText,
-                      fontSize: 12,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          if (_showRealtimeBotDebugPanel) ...[
-            const SizedBox(height: 8),
-            _buildRealtimeBotDebugPanel(dark: true),
-          ],
         ],
       ),
     );
@@ -7075,7 +6268,6 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
         child: Stack(
           children: [
             Positioned.fill(child: mediaLayer),
-            _buildRemoteControlOverlay(tile),
             Positioned(
               top: 8,
               right: 8,
@@ -7257,7 +6449,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
       }
       final placeholder = _joining
           ? '正在连接会议，请稍候...'
-          : (widget.autoJoin ? '自动入会未完成，可点击右上角“加入会议”重试' : '点击“加入会议”后开始音视频通话');
+          : (widget.autoJoin ? '自动入会未完成，可在“更多操作”中选择“加入会议”重试' : '在“更多操作”中选择“加入会议”后开始音视频通话');
       return Container(
         alignment: Alignment.center,
         decoration: BoxDecoration(
@@ -7327,7 +6519,7 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     }
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
       decoration: BoxDecoration(
         color: _palette.warningSurface,
         borderRadius: BorderRadius.circular(10),
@@ -7342,9 +6534,14 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
           ),
           const SizedBox(width: 8),
           Expanded(
-            child: Text(
-              warning,
-              style: TextStyle(color: _palette.warning, fontSize: 12.5),
+            child: Tooltip(
+              message: warning,
+              child: Text(
+                warning,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(color: _palette.warning, fontSize: 12),
+              ),
             ),
           ),
           TextButton(
@@ -7467,14 +6664,6 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
       }
       return;
     }
-    if (action == 'request_remote_control') {
-      await _requestRemoteControl(row);
-      return;
-    }
-    if (action == 'stop_remote_control') {
-      await _stopRemoteControl(reason: 'controller_stop');
-      return;
-    }
     if (row.isRealtimeBot) {
       if (!_isModerator || !_hasPrivateMeetingApiScope) return;
       try {
@@ -7486,10 +6675,6 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
         if (action == 'unmute') {
           await _patchMeetingAiControls({'realtime_bot_muted': false});
           _setStatus('已取消实时语音成员静音');
-          return;
-        }
-        if (action == 'ai_control' || action == 'rename_member') {
-          await _openAiControlDialog();
           return;
         }
       } catch (e) {
@@ -7961,10 +7146,6 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
         return Icons.person_remove_alt_1_outlined;
       case ParticipantMenuIcon.personOff:
         return Icons.person_off_outlined;
-      case ParticipantMenuIcon.remoteControl:
-        return Icons.keyboard_command_key_rounded;
-      case ParticipantMenuIcon.remoteControlOff:
-        return Icons.stop_circle_outlined;
     }
   }
 
@@ -8064,13 +7245,6 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
         videoRequestPending: row.videoRequestPending,
         screenShareRequestPending: row.screenShareRequestPending,
         isScreenSharing: row.isScreenSharing,
-        remoteControlAvailable: !isSelf &&
-            !row.isRealtimeBot &&
-            _connected &&
-            _canPublishRemoteControlData,
-        remoteControlActive: _isRemoteControlActiveForIdentity(row.identity),
-        remoteControlRequestPending:
-            _isRemoteControlPendingForIdentity(row.identity),
       ),
     );
     return specs.map((spec) {
@@ -8208,10 +7382,10 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
           ),
           child: SafeArea(
             child: Padding(
-              padding: const EdgeInsets.all(14),
+              padding: const EdgeInsets.all(8),
               child: Column(
                 children: [
-                  _buildDesktopCompactHeader(),
+                  _buildMeetingHeader(),
                   if ((_permissionWarning ?? '').isNotEmpty) ...[
                     const SizedBox(height: 8),
                     _buildPermissionBanner(),

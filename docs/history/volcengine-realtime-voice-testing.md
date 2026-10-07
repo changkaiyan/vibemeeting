@@ -61,7 +61,7 @@
   - `X-Api-App-Key`
   - `X-Api-Access-Key`
   - `X-Api-Resource-Id`
-- 结合保存于 `origin/kaiyan` 分支的官方文档快照，`X-Api-App-Key` 对当前接口是固定值：
+- 结合保存于 `历史实时语音分支` 分支的官方文档快照，`X-Api-App-Key` 对当前接口是固定值：
   - `PlgvMymc7f3tQnJ6`
 
 ## 4. 模型与音色选择

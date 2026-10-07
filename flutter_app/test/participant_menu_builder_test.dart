@@ -77,7 +77,7 @@ void main() {
     expect(share.enabled, isFalse);
   });
 
-  test('moderator menu for realtime bot exposes ai controls only', () {
+  test('moderator can mute realtime bot without opening removed AI controls', () {
     final specs = buildParticipantMenuSpecs(
       _input(
         isRealtimeBot: true,
@@ -92,10 +92,10 @@ void main() {
       specs.where((spec) => spec.value == 'unmute').single.title,
       '允许 AI 发言',
     );
-    expect(specs.where((spec) => spec.value == 'ai_control'), hasLength(1));
+    expect(specs.where((spec) => spec.value == 'ai_control'), isEmpty);
     expect(
       specs.where((spec) => spec.kind == ParticipantMenuEntryKind.action),
-      hasLength(2),
+      hasLength(1),
     );
   });
 

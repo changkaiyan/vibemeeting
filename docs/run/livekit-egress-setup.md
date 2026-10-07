@@ -20,7 +20,7 @@ LiveKit egress 录制不是 `livekit-server` 单进程功能，必须同时具�
 ## 最小要求
 1. 启动 Redis（示例：`127.0.0.1:6379`）。
 2. 用 Redis 参数启动 LiveKit Server：
-   - `livekit-server.exe --bind 0.0.0.0 --port 7880 --keys "devkey: secret" --redis-host 127.0.0.1:6379 --node-ip 192.168.1.157`
+   - `livekit-server.exe --bind 0.0.0.0 --port 7880 --keys "devkey: secret" --redis-host 127.0.0.1:6379 --node-ip <LAN_IP>`
    - node-ip必须为宿主机可达ip，根因是 egress 内部浏览器被喂了 url=ws://127.0.0.1:7880。
 127.0.0.1 在容器里指向容器自己，不是宿主机 livekit-server，所以会立即断开。
 3. 启动 livekit-egress（配置需包含）：
@@ -31,7 +31,7 @@ LiveKit egress 录制不是 `livekit-server` 单进程功能，必须同时具�
    - ```docker run --rm `
   -e EGRESS_CONFIG_FILE=/out/config.yaml `
   -v "${HOME}/egress-test:/out" `
--v 'D:\2026综合事务\tmp_recording:/recordings' `
+-v '<RECORDINGS_ROOT>:/recordings' `
   livekit/egress``` (把Windows外层系统盘映射到Egress内层盘)
 ## 验证
 在 Django 项目根目录执行：

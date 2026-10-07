@@ -1,6 +1,6 @@
 # LiveKit SSL 启动手册（本项目）
 
-适用目录：`D:\2026综合事务\智能会议`  
+适用目录：`<PROJECT_ROOT>`
 适用 LiveKit：`livekit_1.10.1_windows_amd64\livekit-server.exe`
 
 ## 架构说明
@@ -8,8 +8,8 @@
 当前方案是三段式：
 
 1. LiveKit 原生服务（内部）：`ws://127.0.0.1:7880`
-2. 本地 TLS 反向代理（对外）：`wss://192.168.1.157:7443`
-3. Django HTTPS：`https://192.168.1.157:8443`
+2. 本地 TLS 反向代理（对外）：`wss://<LAN_IP>:7443`
+3. Django HTTPS：`https://<LAN_IP>:8443`
 
 说明：`livekit-server 1.10.1` 不支持直接配置 `tls:` 作为信令口 HTTPS，因此用 `livekit_tls_proxy.py` 做 TLS 终止。
 
@@ -18,7 +18,7 @@
 ### 1. 生成证书（包含局域网 IP）
 
 ```powershell
-.\.venv\Scripts\python manage.py gendevcert --hosts "localhost,127.0.0.1,::1,192.168.1.157" --force
+.\.venv\Scripts\python manage.py gendevcert --hosts "localhost,127.0.0.1,::1,<LAN_IP>" --force
 ```
 
 ### 2. 准备 `.env`
@@ -28,18 +28,18 @@
 ```dotenv
 SECRET_KEY=replace-with-your-secret
 DEBUG=1
-ALLOWED_HOSTS=127.0.0.1,localhost,192.168.1.157
+ALLOWED_HOSTS=127.0.0.1,localhost,<LAN_IP>
 TIME_ZONE=Asia/Shanghai
 ACCESS_TOKEN_EXPIRE_MINUTES=480
 DATABASE_URL=sqlite:///./smart_meeting.db
 
 HTTPS_TEST=1
-CSRF_TRUSTED_ORIGINS=https://localhost:8443,https://127.0.0.1:8443,https://192.168.1.157:8443
+CSRF_TRUSTED_ORIGINS=https://localhost:8443,https://127.0.0.1:8443,https://<LAN_IP>:8443
 HTTPS_CERT_FILE=.certs/localhost.crt
 HTTPS_KEY_FILE=.certs/localhost.key
 
 LIVEKIT_URL=ws://127.0.0.1:7880
-LIVEKIT_PUBLIC_URL=wss://192.168.1.157:7443
+LIVEKIT_PUBLIC_URL=wss://<LAN_IP>:7443
 LIVEKIT_API_KEY=devkey
 LIVEKIT_API_SECRET=secret
 LIVEKIT_MEET_URL=https://meet.livekit.io
@@ -85,7 +85,7 @@ curl.exe -k -s -X POST "https://127.0.0.1:8443/api/public/meetings/share/<你的
 返回 JSON 中应看到：
 
 ```text
-"livekit_url":"wss://192.168.1.157:7443"
+"livekit_url":"wss://<LAN_IP>:7443"
 ```
 
 ## 停止服务
@@ -102,7 +102,7 @@ Get-CimInstance Win32_Process | Where-Object {
 
 1. 会议页出现 Mixed Content（`ws://` 被拦截）
    - 先看 `join-token` 返回是否是 `wss://...`
-   - 确认 `.env` 里 `LIVEKIT_PUBLIC_URL` 是 `wss://192.168.1.157:7443`
+   - 确认 `.env` 里 `LIVEKIT_PUBLIC_URL` 是 `wss://<LAN_IP>:7443`
    - 重启 Django 服务让 `.env` 生效
 
 2. 浏览器提示证书不受信任
@@ -111,7 +111,7 @@ Get-CimInstance Win32_Process | Where-Object {
    - Windows（当前用户）命令：
 
 ```powershell
-Import-Certificate -FilePath "D:\2026综合事务\智能会议\.certs\localhost.crt" -CertStoreLocation "Cert:\CurrentUser\Root"
+Import-Certificate -FilePath "<PROJECT_ROOT>\.certs\localhost.crt" -CertStoreLocation "Cert:\CurrentUser\Root"
 ```
 
    - 如果客户端不在这台服务器上，请先把 `localhost.crt` 拷贝到客户端，再执行上面命令

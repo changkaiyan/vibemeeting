@@ -1,4 +1,13 @@
-# Docs Guide
+# 文档导航
+
+公开发布与使用入口：
+
+- [项目介绍与 Demo](../README.md)
+- [一键安装运行](./run/one-click.md)
+- [pip 安装与发布](./run/pip-install.md)
+- [流程测试](./run/testing.md)
+- [接口与集成配置](./run/api.md)
+- [源码发布与隐私](./run/release-privacy.md)
 
 `docs/` 当前按文档性质分为四层：
 
@@ -23,6 +32,7 @@
 
 如果你只想快速启动本地环境，优先看：
 
+- `docs/run/one-click.md`（用户安装、运行与会议录制）
 - `docs/run/development.md`
 - `docs/run/https-testing.md`
 

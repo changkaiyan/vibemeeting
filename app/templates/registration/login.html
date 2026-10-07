@@ -3,14 +3,16 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>登录 - 智能会议</title>
+  <title>登录 - VibeMeeting</title>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body class="auth-body">
   <main class="auth-shell">
     <section class="auth-card">
+      <img class="auth-logo" src="/static/brand/vibemeeting-logo.png" alt="VibeMeeting" width="56" height="56" />
+      <p class="auth-brand">VibeMeeting</p>
       <h1>登录账号</h1>
-      <p class="hint">使用 Django 原生认证系统</p>
+      <p class="hint">登录后创建会议，或加入团队讨论</p>
       {% if request.GET.oauth_error %}
       <ul class="errorlist">
         <li>{{ request.GET.oauth_error }}</li>
@@ -41,6 +43,7 @@
       <p class="hint">还没有账号？<a href="/accounts/register">立即注册</a></p>
       {% endif %}
     </section>
+    {% include "includes/copyright.html" %}
   </main>
 </body>
 </html>

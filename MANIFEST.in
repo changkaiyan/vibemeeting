@@ -1,0 +1,6 @@
+include pyproject.toml build_support.py requirements.txt README.md LICENSE NOTICE
+include docs/pypi.md
+recursive-include vibemeeting *.py
+global-exclude *.pyc
+prune vibemeeting/__pycache__
+prune vibemeeting/_app

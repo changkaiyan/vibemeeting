@@ -1653,7 +1653,8 @@ def _finalize_active_egress_if_ready(meeting, *, wait_seconds: int = 0) -> dict:
             location = (getattr(file_info, "location", "") or "").strip()
             size_bytes = int(getattr(file_info, "size", 0) or 0)
             duration_raw = int(getattr(file_info, "duration", 0) or 0)
-            duration_seconds = duration_raw if duration_raw > 0 else None
+            # LiveKit FileInfo.duration is nanoseconds; uploaded files already use seconds.
+            duration_seconds = duration_raw // 1_000_000_000 if duration_raw > 0 else None
             relative_path = _relative_recording_path_from_location(
                 storage_root=storage_root_hint,
                 fallback_relative_path=relative_path_hint,

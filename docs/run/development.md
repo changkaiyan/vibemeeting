@@ -348,7 +348,7 @@ LIVEKIT_PUBLIC_URL=wss://<LAN_IP>:7443
 
 补充说明：
 
-- 这里的 `<LAN_IP>` 必须替换成运行 Django HTTPS 服务那台机器的真实内网 IP，比如 `10.208.128.244`
+- 这里的 `<LAN_IP>` 必须替换成运行 Django HTTPS 服务那台机器的真实内网 IP，比如 `<LAN_IP>`
 - 如果你能打开 `https://127.0.0.1:8443/`，但打开 `https://<LAN_IP>:8443/` 出现 `DisallowedHost`，通常就是 `.env` 里的 `ALLOWED_HOSTS` 或 `CSRF_TRUSTED_ORIGINS` 漏了这个 IP
 - 改完 `.env` 之后要重启 Django 相关进程，再重新访问
 - 如果你能打开 HTTPS 页面，但点“入会”后进不去会议，通常是 `LIVEKIT_PUBLIC_URL` 没配成 `wss://<LAN_IP>:7443`

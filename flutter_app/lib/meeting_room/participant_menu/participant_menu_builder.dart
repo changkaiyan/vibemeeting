@@ -23,8 +23,6 @@ enum ParticipantMenuIcon {
   personRemove,
   personRemoveAlt,
   personOff,
-  remoteControl,
-  remoteControlOff,
 }
 
 class ParticipantMenuEntrySpec {
@@ -83,9 +81,6 @@ class ParticipantMenuBuilderInput {
     required this.videoRequestPending,
     required this.screenShareRequestPending,
     required this.isScreenSharing,
-    this.remoteControlAvailable = false,
-    this.remoteControlActive = false,
-    this.remoteControlRequestPending = false,
   });
 
   final bool isSelf;
@@ -106,9 +101,6 @@ class ParticipantMenuBuilderInput {
   final bool videoRequestPending;
   final bool screenShareRequestPending;
   final bool isScreenSharing;
-  final bool remoteControlAvailable;
-  final bool remoteControlActive;
-  final bool remoteControlRequestPending;
 }
 
 List<ParticipantMenuEntrySpec> buildParticipantMenuSpecs(
@@ -161,34 +153,6 @@ List<ParticipantMenuEntrySpec> buildParticipantMenuSpecs(
     return items;
   }
 
-  if (!input.isRealtimeBot && input.remoteControlAvailable) {
-    items.add(
-        const ParticipantMenuEntrySpec.section('\u8fdc\u7a0b\u534f\u52a9'));
-    if (input.remoteControlActive) {
-      items.add(
-        const ParticipantMenuEntrySpec.action(
-          value: 'stop_remote_control',
-          title: '\u7ed3\u675f\u8fdc\u7a0b\u63a7\u5236',
-          icon: ParticipantMenuIcon.remoteControlOff,
-        ),
-      );
-    } else {
-      items.add(
-        ParticipantMenuEntrySpec.action(
-          value: 'request_remote_control',
-          title: input.remoteControlRequestPending
-              ? '\u8fdc\u7a0b\u63a7\u5236\u8bf7\u6c42\u5df2\u53d1\u9001'
-              : '\u8bf7\u6c42\u8fdc\u7a0b\u63a7\u5236',
-          subtitle: input.remoteControlRequestPending
-              ? '\u7b49\u5f85\u5bf9\u65b9\u786e\u8ba4'
-              : '\u5bf9\u65b9\u540c\u610f\u540e\u53ef\u4f7f\u7528\u952e\u9f20\u8fdb\u884c\u534f\u52a9',
-          icon: ParticipantMenuIcon.remoteControl,
-          enabled: !input.remoteControlRequestPending,
-        ),
-      );
-    }
-  }
-
   if (!(input.isModerator && input.hasPrivateMeetingApiScope)) {
     return items;
   }
@@ -203,14 +167,6 @@ List<ParticipantMenuEntrySpec> buildParticipantMenuSpecs(
         icon: input.mutedByHost
             ? ParticipantMenuIcon.mic
             : ParticipantMenuIcon.micOff,
-      ),
-    );
-    items.add(
-      const ParticipantMenuEntrySpec.action(
-        value: 'ai_control',
-        title: '打开 AI 管控',
-        subtitle: '配置模型参数并测试连通性',
-        icon: ParticipantMenuIcon.robot,
       ),
     );
     return items;

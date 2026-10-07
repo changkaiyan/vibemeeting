@@ -697,3 +697,29 @@ pre {
   color: #b42318;
   font-size: 13px;
 }
+
+.auth-copyright {
+  margin-top: 16px;
+  padding: 0 12px;
+  color: #667085;
+  font-size: 11px;
+  line-height: 1.5;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+.auth-logo {
+  display: block;
+  width: 56px;
+  height: 56px;
+  margin-bottom: 12px;
+  object-fit: contain;
+}
+
+.auth-brand {
+  margin: 0 0 18px;
+  color: #155eef;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.4px;
+}
