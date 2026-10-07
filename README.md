@@ -127,7 +127,7 @@ Docker 版停止：Windows 执行 `.\run-docker.ps1 --stop`，Linux/macOS 执行
 ## 许可证与联系
 
 本项目采用标准 [Apache License 2.0](./LICENSE)。使用、修改和分发时应遵守许可证中的保留版权声明、附带许可证、标明修改等要求，并明确声明Copyright。
-欢迎就商业合作、团队部署、定制开发和技术支持自愿联系作者**[changkaiyan@live.com](mailto:changkaiyan@live.com)**，也可通过 [GitHub Issues](https://github.com/changkaiyan/vibemeeting/issues) 交流。
+欢迎就商业合作、团队部署、定制开发和技术支持自愿联系作者，也可通过 [GitHub Issues](https://github.com/changkaiyan/vibemeeting/issues) 交流。
 
 第三方组件保留各自许可证和版权声明；本项目的许可不改变第三方权利。
 

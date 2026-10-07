@@ -9,7 +9,7 @@
 - [接口与集成配置](./run/api.md)
 - [源码发布与隐私](./run/release-privacy.md)
 
-`docs/` 当前按文档性质分为四层：
+`docs/` 按用途组织：
 
 - `docs/run/`
   - 开发、联调、部署、运行组件相关文档
@@ -17,8 +17,6 @@
   - 当前有效的架构设计、边界定义、子系统设计
 - `docs/status/`
   - 当前实现状态、已完成 / 未完成能力盘点
-- `docs/history/`
-  - 阶段性方案、专项验证记录、历史集成文档
 - `docs/diagrams/`
   - Mermaid 源文件和导出的 PNG 图
 
@@ -42,4 +40,4 @@
 - `docs/design/meeting-workspace-boundaries.md`
 - `docs/design/volcengine-cloud-stt-design.md`
 
-`docs/history/` 下的文档默认不作为当前实现的主依据，只作为背景参考。
+旧阶段方案和历史验证文档已从发布源码中移除。
