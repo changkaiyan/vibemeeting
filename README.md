@@ -50,7 +50,7 @@
 
 ### 方式一：pip 安装与直接运行
 
-需要 Python 3.10–3.13，以及已启动的 Docker（Linux 容器、Compose v2.20+）。
+需要 Python >=3.10，以及已启动的 Docker（Compose v2.20+）。
 
 ```bash
 pip install -i https://pypi.org/simple  vibemeeting
