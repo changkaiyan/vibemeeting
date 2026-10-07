@@ -14,6 +14,7 @@ import '../../device_profile.dart';
 import '../billing/models.dart';
 import 'models.dart';
 import 'widgets/dashboard_header_actions.dart';
+import '../../app/widgets/scrollable_panels.dart';
 
 class DashboardPage extends StatefulWidget {
   final bool preferMobileLayout;
@@ -2222,7 +2223,7 @@ class _DashboardPageState extends State<DashboardPage> {
         child: Row(
           children: [
             Expanded(
-              child: _buildSectionTitle('快捷操作', '创建会议和加入会议已收纳为弹窗，页面更聚焦会议列表'),
+              child: const Text('我的会议', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
             ),
             Wrap(
               spacing: 10,
@@ -2801,73 +2802,23 @@ class _DashboardPageState extends State<DashboardPage> {
     );
   }
 
-  Widget _buildResponsiveLayout() {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final actionPanel = _buildActionLauncherPanel();
-        final profilePanel = _buildProfilePanel();
-        final listPanel = _buildMeetingListPanel();
-        final recordingPanel = _buildRecordingPanel();
-        final recordingStoragePanel = _buildRecordingStoragePanel();
-        final showStoragePanel = _profile?.isAdmin ?? false;
-        if (constraints.maxWidth >= 980) {
-          return Column(
-            children: [
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Expanded(child: actionPanel),
-                  const SizedBox(width: 12),
-                  SizedBox(width: 360, child: profilePanel),
-                ],
-              ),
-              if (showStoragePanel) ...[
-                const SizedBox(height: 12),
-                recordingStoragePanel,
-              ],
-              const SizedBox(height: 12),
-              Expanded(
-                child: Row(
-                  children: [
-                    Expanded(flex: 6, child: listPanel),
-                    const SizedBox(width: 12),
-                    Expanded(flex: 5, child: recordingPanel),
-                  ],
-                ),
-              ),
-            ],
-          );
-        }
-        return Column(
-          children: [
-            profilePanel,
-            const SizedBox(height: 12),
-            actionPanel,
-            if (showStoragePanel) ...[
-              const SizedBox(height: 12),
-              recordingStoragePanel,
-            ],
-            const SizedBox(height: 12),
-            Expanded(
-              child: Column(
-                children: [
-                  Expanded(flex: 6, child: listPanel),
-                  const SizedBox(height: 12),
-                  Expanded(flex: 5, child: recordingPanel),
-                ],
-              ),
-            ),
-          ],
-        );
-      },
-    );
-  }
+  Widget _buildResponsiveLayout() => ScrollablePanels(
+        status: _buildStatusBanner(),
+        actions: _buildActionLauncherPanel(),
+        primary: _buildMeetingListPanel(),
+        secondary: _buildRecordingPanel(),
+        details: {
+          '个人资料': _buildProfilePanel(),
+          if (_profile?.isAdmin ?? false)
+            '录制存储设置': _buildRecordingStoragePanel(),
+        },
+      );
 
   Widget _buildDesktopScaffold() {
     final profile = _profile;
     return Scaffold(
       appBar: AppBar(
-        toolbarHeight: 74,
+        toolbarHeight: 64,
         titleSpacing: 20,
         flexibleSpace: Container(
           decoration: BoxDecoration(
@@ -2931,16 +2882,7 @@ class _DashboardPageState extends State<DashboardPage> {
         child: Center(
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 1500),
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                children: [
-                  _buildStatusBanner(),
-                  const SizedBox(height: 12),
-                  Expanded(child: _buildResponsiveLayout()),
-                ],
-              ),
-            ),
+            child: _buildResponsiveLayout(),
           ),
         ),
       ),

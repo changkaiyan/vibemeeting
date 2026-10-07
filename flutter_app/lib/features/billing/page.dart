@@ -9,6 +9,7 @@ import '../../app/theme/meeting_theme.dart';
 import '../../core/api_exception.dart';
 import '../../device_profile.dart';
 import 'models.dart';
+import '../../app/widgets/scrollable_panels.dart';
 
 class BillingAdminPage extends StatefulWidget {
   const BillingAdminPage({super.key, this.preferMobileLayout = false});
@@ -1278,64 +1279,6 @@ class _BillingAdminPageState extends State<BillingAdminPage> {
     );
   }
 
-  Widget _buildDesktopBody() {
-    return Column(
-      children: [
-        _buildAuthOptionsPanel(),
-        const SizedBox(height: 10),
-        Expanded(
-          child: Row(
-            children: [
-              Expanded(flex: 4, child: _buildPlansPanel()),
-              const SizedBox(width: 12),
-              Expanded(flex: 6, child: _buildUsersPanel()),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildMobileBody() {
-    return Column(
-      children: [
-        _buildAuthOptionsPanel(),
-        const SizedBox(height: 8),
-        Expanded(
-          child: DefaultTabController(
-            length: 2,
-            child: Column(
-              children: [
-                Container(
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: const Color(0xFFDDE6FF)),
-                  ),
-                  child: const TabBar(
-                    tabs: [
-                      Tab(text: '套餐', icon: Icon(Icons.sell_outlined)),
-                      Tab(text: '用户', icon: Icon(Icons.people_outline)),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Expanded(
-                  child: TabBarView(
-                    children: [
-                      _buildPlansPanel(),
-                      _buildUsersPanel(),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     final useMobileLayout = widget.preferMobileLayout ||
@@ -1382,22 +1325,15 @@ class _BillingAdminPageState extends State<BillingAdminPage> {
         child: Center(
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 1500),
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Column(
-                children: [
-                  _buildStatusBanner(),
-                  const SizedBox(height: 10),
-                  Expanded(
-                    child: _loading
-                        ? const Center(child: CircularProgressIndicator())
-                        : (useMobileLayout
-                            ? _buildMobileBody()
-                            : _buildDesktopBody()),
+            child: _loading
+                ? const Center(child: CircularProgressIndicator())
+                : ScrollablePanels(
+                    status: _buildStatusBanner(),
+                    primary: _buildPlansPanel(),
+                    secondary: _buildUsersPanel(),
+                    stackPanels: useMobileLayout,
+                    details: {'登录与注册设置': _buildAuthOptionsPanel()},
                   ),
-                ],
-              ),
-            ),
           ),
         ),
       ),
