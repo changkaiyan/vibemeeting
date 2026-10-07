@@ -70,6 +70,8 @@ vibemeeting info --data-dir ./meeting-data
 
 需要监听所有网卡时，使用 `vibemeeting --host 0.0.0.0 --port 8000`。跨设备开会还需设置 `--public-url`、`--livekit-public-url` 和 `--livekit-node-ip`，并配置 HTTPS/WSS；完整示例见 [远程访问配置](./docs/run/pip-install.md#v011监听地址与远程访问)。
 
+网页不会仅因 HTTP 而禁用会议功能：媒体接口可用时照常使用；接口缺失时跳过采集、继续尝试入会。普通局域网 HTTP 的麦克风、摄像头和屏幕共享仍受浏览器限制，完整音视频体验推荐 HTTPS。
+
 ### 方式二：从源码一键启动
 
 下面的 Docker / 本地脚本方式需要先[下载完整源码](https://github.com/changkaiyan/vibemeeting/archive/refs/heads/main.zip)，或克隆仓库并进入项目根目录：

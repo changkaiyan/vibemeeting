@@ -25,7 +25,7 @@ safe_target, write_manifest = _cli.safe_target, _cli.write_manifest
 
 
 def frontend_fingerprint(root):
-    paths = [p for folder in ['lib', 'web'] for p in (root / 'flutter_app' / folder).rglob('*') if p.is_file()]
+    paths = [p for folder in ['lib', 'web', 'vendor'] for p in (root / 'flutter_app' / folder).rglob('*') if p.is_file()]
     paths += [root / 'flutter_app/pubspec.yaml', root / 'flutter_app/pubspec.lock']
     digest = hashlib.sha256()
     for path in sorted(paths):
@@ -84,7 +84,8 @@ def populate_bundle(root, destination):
         sources.extend((p, p.relative_to(root).as_posix()) for p in (root / 'app/templates').rglob('*') if p.is_file())
         for name in ['app/static/meeting-room.js', 'app/static/style.css',
                      'app/static/brand/vibemeeting-logo.png', 'manage.py',
-                     'requirements.txt', 'compose.recording.yaml', 'scripts/launcher.py', 'LICENSE', 'NOTICE']:
+                     'requirements.txt', 'compose.recording.yaml', 'scripts/launcher.py', 'LICENSE', 'NOTICE',
+                     'flutter_app/vendor/dart_webrtc/LICENSE']:
             sources.append((root / name, name))
         sources.extend((p, 'artifacts/flutter_app_web/' + p.relative_to(frontend).as_posix())
                        for p in frontend.rglob('*') if p.is_file() and not p.name.startswith('.'))

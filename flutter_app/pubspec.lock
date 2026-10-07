@@ -98,12 +98,11 @@ packages:
     source: hosted
     version: "3.4.0"
   dart_webrtc:
-    dependency: transitive
+    dependency: "direct dev"
     description:
-      name: dart_webrtc
-      sha256: f6d615bddea5e458ce180a914f3055c234ffb52fb7397a51b3491e76d6d7edb2
-      url: "https://pub.dev"
-    source: hosted
+      path: "vendor/dart_webrtc"
+      relative: true
+    source: path
     version: "1.8.1"
   dbus:
     dependency: transitive

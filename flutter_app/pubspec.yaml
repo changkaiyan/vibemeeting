@@ -18,6 +18,11 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^5.0.0
+  dart_webrtc: 1.8.1
+
+dependency_overrides:
+  dart_webrtc:
+    path: vendor/dart_webrtc
 
 flutter:
   uses-material-design: true

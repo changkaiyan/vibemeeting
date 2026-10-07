@@ -19,6 +19,7 @@ import 'chat_menu/chat_message_menu_builder.dart';
 import 'debug/debug_flags.dart';
 import 'debug/stt_debug.dart';
 import 'models.dart';
+import 'join_capture_policy.dart';
 import 'realtime_bot_protocol.dart';
 import 'realtime_bot_streaming.dart';
 import 'workspace/workspace_state.dart';
@@ -2031,6 +2032,20 @@ class _MeetingRoomPageState extends State<MeetingRoomPage> {
     required bool enableMic,
     required bool enableCamera,
   }) async {
+    if (html.window.navigator.mediaDevices == null) {
+      if (mounted) {
+        setState(() {
+          _micPermissionGranted = false;
+          _cameraPermissionGranted = false;
+          _permissionWarning = const JoinCapturePolicy(
+            mediaDevicesAvailable: false,
+            microphoneRequested: false,
+            cameraRequested: false,
+          ).warning;
+        });
+      }
+      return [];
+    }
     final denied = <String>[];
     final micOk = !enableMic
         ? true

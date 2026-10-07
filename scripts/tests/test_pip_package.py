@@ -9,10 +9,28 @@ from unittest.mock import Mock, patch
 
 from vibemeeting import cli
 from scripts import launcher
-from build_support import populate_bundle
+from build_support import populate_bundle, frontend_fingerprint
 
 
 class PipPackageTests(unittest.TestCase):
+    def test_docker_build_includes_local_webrtc_dependency_before_pub_get(self):
+        root = Path(__file__).resolve().parents[2]
+        dockerfile = (root / 'Dockerfile').read_text()
+        self.assertLess(dockerfile.index('COPY flutter_app/vendor ./vendor'),
+                        dockerfile.index('RUN flutter pub get'))
+        self.assertIn('!flutter_app/vendor/**', (root / '.dockerignore').read_text())
+
+    def test_vendor_patch_changes_invalidate_prebuilt_frontend(self):
+        app = self.root / 'flutter_app'
+        vendor = app / 'vendor/dart_webrtc/lib/adapter.dart'
+        vendor.parent.mkdir(parents=True)
+        for name in ['pubspec.yaml', 'pubspec.lock']:
+            (app / name).write_text('fixture')
+        vendor.write_text('before')
+        before = frontend_fingerprint(self.root)
+        vendor.write_text('after')
+        self.assertNotEqual(before, frontend_fingerprint(self.root))
+
     def test_cli_forwards_network_settings_to_packaged_launcher(self):
         self.bundle().rename(self.root / '_app')
         module = Mock()

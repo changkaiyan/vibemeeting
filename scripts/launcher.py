@@ -340,7 +340,7 @@ def local(args):
         run([python, '-m', 'pip', 'install', '--disable-pip-version-check', '--progress-bar', 'off',
              '-r', requirements[0]], env=env)
         record_inputs(stamp, requirements)
-    inputs = [p for folder in ['lib', 'web'] for p in (ROOT / 'flutter_app' / folder).rglob('*') if p.is_file()]
+    inputs = [p for folder in ['lib', 'web', 'vendor'] for p in (ROOT / 'flutter_app' / folder).rglob('*') if p.is_file()]
     inputs += [ROOT / 'flutter_app/pubspec.yaml', ROOT / 'flutter_app/pubspec.lock']
     stamp = runtime / 'frontend.sha256'
     if packaged and not (ROOT / 'artifacts/flutter_app_web/index.html').is_file():

@@ -7,6 +7,7 @@ ENV PATH="/opt/flutter/bin:${PATH}"
 RUN flutter config --no-analytics --enable-web && flutter precache --web
 WORKDIR /frontend
 COPY flutter_app/pubspec.yaml flutter_app/pubspec.lock ./
+COPY flutter_app/vendor ./vendor
 RUN flutter pub get
 COPY flutter_app/lib ./lib
 COPY flutter_app/web ./web

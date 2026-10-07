@@ -231,6 +231,18 @@ extension _MeetingRoomSessionLogic on _MeetingRoomPageState {
     });
     try {
       var deniedPermissions = <String>[];
+      final capturePolicy = JoinCapturePolicy(
+        mediaDevicesAvailable: html.window.navigator.mediaDevices != null,
+        microphoneRequested: _micEnabled,
+        cameraRequested: _cameraEnabled,
+      );
+      if (capturePolicy.warning != null) {
+        setState(() {
+          _micEnabled = capturePolicy.microphoneEnabled;
+          _cameraEnabled = capturePolicy.cameraEnabled;
+          _permissionWarning = capturePolicy.warning;
+        });
+      }
       if (!fromWaitingPoll) {
         deniedPermissions = await _ensurePermissionsForJoin(
           enableMic: _micEnabled,
@@ -375,7 +387,7 @@ extension _MeetingRoomSessionLogic on _MeetingRoomPageState {
           _micEnabled = false;
           _cameraEnabled = false;
         }
-        if (deniedPermissions.isEmpty) {
+        if (deniedPermissions.isEmpty && capturePolicy.warning == null) {
           _permissionWarning = null;
         }
       });

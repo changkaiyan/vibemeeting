@@ -21,6 +21,8 @@
 !flutter_app/lib/**
 !flutter_app/web/
 !flutter_app/web/**
+!flutter_app/vendor/
+!flutter_app/vendor/**
 !scripts/
 !scripts/container_start.sh
 **/__pycache__/

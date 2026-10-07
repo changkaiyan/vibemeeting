@@ -5,3 +5,7 @@ Licensed under the Apache License, Version 2.0. See LICENSE.
 
 Third-party components retain their own copyright and license notices.
 This notice does not change the licenses of those components.
+
+Includes dart_webrtc 1.8.1 with VibeMeeting compatibility modifications.
+Copyright (c) 2020 Flutter WebRTC. Licensed under the MIT License;
+see flutter_app/vendor/dart_webrtc/LICENSE.
