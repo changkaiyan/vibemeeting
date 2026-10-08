@@ -181,7 +181,7 @@ def prepare_config(root, mode, *, port=None, livekit_port=None,
         'rtc': {'tcp_port': int(config['INSTALL_RTC_TCP_PORT']),
                 'udp_port': int(config['INSTALL_RTC_UDP_PORT']),
                 'use_external_ip': False, 'node_ip': config['INSTALL_NODE_IP'],
-                'enable_loopback_candidate': True,
+                'enable_loopback_candidate': ipaddress.ip_address(config['INSTALL_NODE_IP']).is_loopback,
                 'turn_servers': [{'host': config['INSTALL_TURN_HOST'], 'port': int(config['INSTALL_TURN_PORT']),
                                   'protocol': 'tcp', 'username': 'meeting',
                                   'credential': config['TURN_PASSWORD']}]},
@@ -202,9 +202,13 @@ def prepare_config(root, mode, *, port=None, livekit_port=None,
         path.write_text(json.dumps(data, indent=2), encoding='utf-8')
         path.chmod(0o644)  # Mounted into containers; parent .runtime is private.
     turn_file = runtime / f'{mode}-turn.conf'
+    # Loopback relay works for local-only LiveKit. For a LAN/public node,
+    # coturn must select the client-facing container interface; binding the
+    # relay socket to loopback can fail when sending to non-loopback peers.
+    relay_options = ['relay-ip=127.0.0.1'] if ipaddress.ip_address(config['INSTALL_NODE_IP']).is_loopback else []
     turn_file.write_text('\n'.join([
         'listening-ip=0.0.0.0', f"listening-port={config['INSTALL_TURN_PORT']}",
-        'relay-ip=127.0.0.1', 'min-port=40000', 'max-port=40100',
+        *relay_options, 'min-port=40000', 'max-port=40100',
         'realm=smart-meeting.local', 'lt-cred-mech', 'fingerprint',
         'user=meeting:' + config['TURN_PASSWORD'], 'allow-loopback-peers',
         'no-multicast-peers', 'no-cli', 'no-tls', 'no-dtls', 'no-udp',

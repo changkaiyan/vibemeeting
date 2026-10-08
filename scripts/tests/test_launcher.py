@@ -10,6 +10,16 @@ from scripts import launcher
 
 
 class LauncherTests(unittest.TestCase):
+    def test_remote_turn_uses_routable_interface_and_preserves_local_loopback(self):
+        for mode in ['local', 'docker']:
+            launcher.prepare_config(self.root, mode, livekit_node_ip='192.0.2.10')
+            rtc = json.loads((self.root / f'.runtime/{mode}-livekit.yaml').read_text())['rtc']
+            self.assertFalse(rtc['enable_loopback_candidate'])
+            path = self.root / f'.runtime/{mode}-turn.conf'
+            self.assertFalse(any(line.startswith('relay-ip=') for line in path.read_text().splitlines()))
+            launcher.prepare_config(self.root, mode, livekit_node_ip='127.0.0.1')
+            self.assertIn('relay-ip=127.0.0.1', path.read_text())
+
     def test_remote_addresses_persist_and_configure_media_and_web(self):
         first = launcher.prepare_config(self.root, 'local', host='0.0.0.0',
             public_url='https://meeting.example.com',
